@@ -35,10 +35,7 @@ Then run:
 
 import sys
 import os
-try:
-    import urllib.request, urllib.error, urllib.parse
-except ImportError:
-    import urllib.request as urllib2
+import urllib.request
 import tempfile
 import logging
 import hashlib
