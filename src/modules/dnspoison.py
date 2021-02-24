@@ -50,7 +50,7 @@ def setup():
 
     log.debug("Populating domain dictionary.")
 
-    for domain in list(domains.keys()):
+    for domain in domains:
         response = dns.resolver.query(domain)
         for record in response:
             log.debug("Domain %s maps to %s." % (domain, record.address))
@@ -98,7 +98,7 @@ def probe(exit_desc, run_python_over_tor, run_cmd_over_tor, **kwargs):
     Probe the given exit relay and check if all domains resolve as expected.
     """
 
-    for domain in list(domains.keys()):
+    for domain in domains:
         run_python_over_tor(resolve, exit_desc, domain, domains[domain])
 
 
