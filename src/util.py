@@ -166,7 +166,7 @@ def dump_to_file(blurb, exit_fpr):
                                          dir=analysis_dir)
 
     try:
-        with open(file_name, "w") as fd:
+        with open(file_name, "wb") as fd:
             fd.write(blurb)
     except IOError as err:
         log.warning("Couldn't write to \"%s\": %s" % (file_name, err))
