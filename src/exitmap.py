@@ -281,6 +281,7 @@ def lookup_destinations(module):
     Determine the set of destinations that the module might like to scan.
     This removes redundancies and reduces all hostnames to IP addresses.
     """
+    log.debug("Selecting destinations depending on the module.")
     destinations = set()
     addrs = {}
     if hasattr(module, 'destinations'):
@@ -361,6 +362,7 @@ def run_module(module_name, args, controller, socks_port, stats):
     exit_relays = list(exit_destinations.keys())
     random.shuffle(exit_relays)
 
+    log.debug("Running actually the module.")
     count = len(exit_relays)
     stats.total_circuits += count
 

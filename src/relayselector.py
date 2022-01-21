@@ -104,6 +104,17 @@ def get_exit_policies(cached_descriptors_path):
         sys.exit(1)
 
 
+def router_statuses_with_exit_flag(cached_consensus):
+    """Return a dict of relays with the EXIT flag from `cached_consensus`."""
+    have_exit_flag = dict(
+        filter(
+            lambda x: stem.Flag.EXIT in x[1].flags, cached_consensus.items()
+        )
+    )
+    log.debug("Number of relays with EXIT flag: %s", len(have_exit_flag))
+    return have_exit_flag
+
+
 def get_cached_consensus(cached_consensus_path):
     """Read relays' summarized descriptors from "cached_consensus"."""
     try:
@@ -161,13 +172,34 @@ def get_exits(data_dir,
     is a pseudo-set object for which '(host, port) in s' always
     returns True.)
     """
-
+    log.debug("Selecting exits depending on parameters.")
 
     cached_consensus_path = os.path.join(data_dir, "cached-consensus")
     cached_descriptors_path = os.path.join(data_dir, "cached-descriptors")
 
     cached_consensus = get_cached_consensus(cached_consensus_path)
     have_exit_policy = get_exit_policies(cached_descriptors_path)
+    log.debug("Number of relays with exit policy: %s", len(have_exit_policy))
+    have_exit_flag = router_statuses_with_exit_flag(cached_consensus)
+
+    # We want to start with the maximum possible number of exits, this set
+    # of possible exits can be filtered out later dependending on the
+    # parameters.
+    if len(have_exit_flag) >= len(have_exit_policy):
+        log.debug(
+            "The number of relays with EXIT flag is greater than the number "
+            "of relays with exit policy. Therefore taking relays with EXIT "
+            "flag as exit candidates."
+        )
+        exit_candidates = list(have_exit_flag.values())
+    else:  # len(have_exit_flag) < len(have_exit_policy)
+        log.debug(
+            "The number of relays with exit policy is greater than the number "
+            "of relays with EXIT flag. Therefore taking relays with exit "
+            "policy as exit candidates."
+        )
+        exit_candidates = list(have_exit_policy.values())
+    log.debug("Number of exit candidates: %s.", len(exit_candidates))
 
     # Drop all exit relays which have a descriptor, but either did not
     # make it into the consensus at all, or are not marked as exits there.
@@ -176,36 +208,53 @@ def get_exits(data_dir,
             self.flags = frozenset()
     stub_desc = StubDesc()
 
-    exit_candidates = [
+    # This var is not used later. It's here just to log the intersection set.
+    exit_candidates_have_policy = [
         desc
         for fpr, desc in have_exit_policy.items()
         if stem.Flag.EXIT in cached_consensus.get(fpr, stub_desc).flags
     ]
+    log.debug(
+        "Number of relays with exit policy AND exit flag: %s.",
+        len(exit_candidates_have_policy),
+    )
 
-    log.info("In addition to %d exit relays, %d relays have non-empty exit "
-             "policy but no exit flag.", len(exit_candidates),
-             len(have_exit_policy) - len(exit_candidates))
     if not exit_candidates:
-        log.warning("No relays have both a non-empty exit policy and an exit "
-                    "flag. This probably means the cached network consensus "
-                    "is invalid.")
+        log.warning(
+            "No relays have either a non-empty exit policy or an EXIT "
+            "flag. This probably means the cached network consensus "
+            "is invalid."
+        )
         return {}
 
     if bad_exit and good_exit:
         pass  # All exits are either bad or good.
     elif bad_exit:
         exit_candidates = [
-            desc for desc in exit_candidates
-            if stem.Flag.BADEXIT in cached_consensus[desc.fingerprint].flags
+            desc
+            for desc in exit_candidates
+            if desc.fingerprint in have_exit_flag
+            and stem.Flag.BADEXIT in cached_consensus[desc.fingerprint].flags
         ]
+        log.debug(
+            "Number of exit candidates with EXIT flag AND BADEXIT flag: %s",
+            len(exit_candidates),
+        )
         if not exit_candidates:
             log.warning("There are no bad exits in the current consensus.")
             return {}
     elif good_exit:
         exit_candidates = [
-            desc for desc in exit_candidates
-            if stem.Flag.BADEXIT not in cached_consensus[desc.fingerprint].flags
+            desc
+            for desc in exit_candidates
+            if desc.fingerprint in have_exit_flag
+            and stem.Flag.BADEXIT
+            not in cached_consensus[desc.fingerprint].flags
         ]
+        log.debug(
+            "Number of exit candidates with EXIT flag AND no BADEXIT flag: %s",
+            len(exit_candidates),
+        )
         if not exit_candidates:
             log.warning("There are no good exits in the current consensus.")
             return {}
@@ -261,17 +310,42 @@ def get_exits(data_dir,
         us = UniversalSet()
         exit_destinations = {
             desc.fingerprint: us for desc in exit_candidates}
-    else:
+        log.debug(
+            "Number of exit candidates with exit policy AND other conditions: "
+            "%s",
+            len(exit_destinations),
+        )
+    else:  # There are destinations
         exit_destinations = {}
         for desc in exit_candidates:
-            policy = have_exit_policy[desc.fingerprint].exit_policy
-            ok_dests = frozenset(d for d in destinations
-                                 if policy.can_exit_to(*d))
-            if ok_dests:
-                exit_destinations[desc.fingerprint] = ok_dests
+            # Since exit_candidates might have the relays with EXIT flag,
+            # they might not have an exit policy. Therefore check first that
+            # the relay have an exit policy before checking whether it can
+            # exit to the destination.
+            if desc.fingerprint in have_exit_policy.keys():
+                policy = have_exit_policy[desc.fingerprint].exit_policy
+                ok_dests = frozenset(
+                    d for d in destinations
+                    if policy.can_exit_to(*d)
+                )
+                if ok_dests:
+                    exit_destinations[desc.fingerprint] = ok_dests
+        log.debug(
+            "Number of relays with exit policy AND other conditions AND can "
+            "exit to the destinations: %s",
+            len(exit_destinations),
+        )
 
-    log.info("%d out of %d exit relays meet all filter conditions."
-             % (len(exit_destinations), len(have_exit_policy)))
+    # To this point, we don't know the initial number of exit candidates,
+    # therefore calculate it again as the maximum between relays with EXIT flag
+    # and relays with exit policy.
+    log.info(
+        "%d out of %d exit candidates meet all filter conditions."
+        % (
+            len(exit_destinations),
+            max([len(have_exit_flag), len(have_exit_policy)]),
+        )
+    )
     return exit_destinations
 
 
