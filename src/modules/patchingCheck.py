@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-# Copyright 2014-2016 Philipp Winter <phw@nymity.ch>
 # Copyright 2014 Josh Pitts <josh.pitts@leviathansecurity.com>
+# Copyright 2014-2020 Philipp Winter <phw@nymity.ch>
+# Copyright 2021 The Tor Project, Inc.
 #
 # This file is part of exitmap.
 #
