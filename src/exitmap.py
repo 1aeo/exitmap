@@ -74,7 +74,9 @@ def bootstrap_tor(args):
                 "CookieAuthentication": "1",
                 "LearnCircuitBuildTimeout": "0",
                 "CircuitBuildTimeout": "40",
-                "__DisablePredictedCircuits": "1",
+                # #36: Set this option at runtime, otherwise it doesn't
+                # bootstrap with an existing DataDirectory
+                # "__DisablePredictedCircuits": "1",
                 "__LeaveStreamsUnattached": "1",
                 "FetchHidServDescriptors": "0",
                 "UseMicroDescriptors": "0",
@@ -245,6 +247,10 @@ def main():
     socks_port, control_port = bootstrap_tor(args)
     controller = Controller.from_port(port=control_port)
     stem.connection.authenticate(controller)
+
+    # #36: Set this option at runtime, otherwise it doesn't bootstrap with
+    # an existing DataDirectory
+    controller.set_conf("__DisablePredictedCircuits", "1")
 
     # Redirect Tor's logging to work around the following problem:
     # https://bugs.torproject.org/9862
