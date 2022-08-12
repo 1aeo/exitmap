@@ -1,8 +1,6 @@
 ![exitmap logo](https://nullhypothesis.github.com/exitmap_logo.png)
 ===================================================================
 
-[![Build Status](https://travis-ci.org/NullHypothesis/exitmap.svg?branch=master)](https://travis-ci.org/NullHypothesis/exitmap)
-
 Overview
 --------
 
@@ -117,9 +115,3 @@ running:
 
     $ pip install -r requirements-dev.txt
     $ py.test --cov-report term-missing --cov-config .coveragerc --cov=src test
-
-Feedback
---------
-
-Contact: Philipp Winter <phw@nymity.ch>  
-OpenPGP fingerprint: `B369 E7A2 18FE CEAD EB96  8C73 CF70 89E3 D7FD C0D0`
