@@ -1,4 +1,4 @@
-![exitmap logo](https://nullhypothesis.github.com/exitmap_logo.png)
+![exitmap logo](doc/logo.png)
 ===================================================================
 
 Overview
