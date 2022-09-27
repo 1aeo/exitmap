@@ -20,6 +20,7 @@
 
 import os
 import sys
+import shutil
 
 current_path = os.path.dirname(__file__)
 
@@ -28,8 +29,19 @@ src_path = os.path.abspath(os.path.join(current_path, "../src"))
 sys.path.insert(0, src_path)
 
 from exitmap import main
+from exitmap import parse_cmd_args
+
+args = parse_cmd_args()
+failed = 0
 
 try:
-    sys.exit(main())
+    main()
+    sys.exit(0)
+
 except KeyboardInterrupt:
-    sys.exit(1)
+    failed = 1
+
+finally:
+    print("Removing tmp files...")
+    shutil.rmtree(args.tor_dir)
+    sys.exit(failed)
