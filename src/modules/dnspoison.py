@@ -74,9 +74,9 @@ def resolve(exit_desc, domain, whitelist):
     # Resolve the domain using Tor's SOCKS extension.
 
     try:
-        ipv4 = sock.resolve(domain)
+        ip = sock.resolve(domain)
     except error.SOCKSv5Error as err:
-        log.debug("Exit relay %s could not resolve IPv4 address for "
+        log.debug("Exit relay %s could not resolve IP address for "
                   "\"%s\" because: %s" % (exit, domain, err))
         return
     except socket.timeout as err:
@@ -86,11 +86,11 @@ def resolve(exit_desc, domain, whitelist):
         log.debug("EOF error: %s" % err)
         return
 
-    if ipv4 not in whitelist:
-        log.critical("Exit relay %s returned unexpected IPv4 address %s "
-                     "for domain %s" % (exit, ipv4, domain))
+    if ip not in whitelist:
+        log.critical("Exit relay %s returned unexpected IP address %s "
+                     "for domain %s" % (exit, ip, domain))
     else:
-        log.debug("IPv4 address of domain %s as expected for %s." %
+        log.debug("IP address of domain %s as expected for %s." %
                   (domain, exit))
 
 

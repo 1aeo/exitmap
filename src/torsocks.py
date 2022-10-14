@@ -130,6 +130,8 @@ class _Torsocket(socks.socksocket):
         elif resp[3:4] == chr(0x03).encode():
             resp = resp + socks._BaseSocket.recv(self, 1)
             ip = socks._BaseSocket.recv(self, ord(resp[4:5]))
+        elif resp[3:4] == chr(0x04).encode():
+            ip = socket.inet_ntop(socket.AF_INET6, socks._BaseSocket.recv(self, 16))
         else:
             socks._BaseSocket.close(self)
             raise error.SOCKSv5Error("SOCKS Server error.")
