@@ -92,7 +92,7 @@ class _Torsocket(socks.socksocket):
                 send_queue(args[0].getsockname())
                 orig_neg(*args, **kwargs)
             except Exception as e:
-                log.debug("Error in custom negotiation function: {}".format(e))
+                raise error.SOCKSv5Error("Error in custom negotiation function: {}".format(e))
         self._proxy_negotiators[2] = ourneg
 
     def negotiate(self):
