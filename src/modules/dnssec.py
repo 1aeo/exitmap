@@ -52,7 +52,7 @@ def test_dnssec(exit_fpr):
     # Resolve domain using Tor's SOCKS extension.
 
     try:
-        ipv4 = sock.resolve(BROKEN_DOMAIN)
+        ip = sock.resolve(BROKEN_DOMAIN)
     except error.SOCKSv5Error as err:
         log.debug("%s did not resolve broken domain because: %s.  Good." %
                   (exit_url, err))
@@ -64,7 +64,7 @@ def test_dnssec(exit_fpr):
         log.debug("Could not resolve domain because: %s" % err)
         return
 
-    log.critical("%s resolved domain to %s" % (exit_url, ipv4))
+    log.critical("%s resolved domain to %s" % (exit_url, ip))
 
 
 def probe(exit_desc, run_python_over_tor, run_cmd_over_tor, **kwargs):

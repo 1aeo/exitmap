@@ -49,9 +49,9 @@ def resolve(exit_desc, domain):
     # Resolve the domain using Tor's SOCKS extension.
 
     try:
-        ipv4 = sock.resolve(domain)
+        ip = sock.resolve(domain)
     except error.SOCKSv5Error as err:
-        log.error("Exit relay %s could not resolve IPv4 address for "
+        log.error("Exit relay %s could not resolve IP address for "
                   "\"%s\" because: %s" % (exit, domain, err))
         return
     except socket.timeout as err:
@@ -62,7 +62,7 @@ def resolve(exit_desc, domain):
         log.error("EOF error: %s" % err)
         return
 
-    log.debug("%s resolved domain %s to %s" % (exit, domain, ipv4))
+    log.debug("%s resolved domain %s to %s" % (exit, domain, ip))
 
 
 def probe(exit_desc, run_python_over_tor, run_cmd_over_tor, **kwargs):
