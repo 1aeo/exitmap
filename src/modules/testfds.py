@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 # Copyright 2014-2020 Philipp Winter <phw@nymity.ch>
 # Copyright 2021 The Tor Project, Inc.
@@ -31,7 +31,6 @@ import urllib.request
 from util import exiturl
 
 import stem.descriptor.server_descriptor as descriptor
-import socks
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ def fetch_page(exit_desc):
     data = None
     try:
         data = urllib.request.urlopen("https://people.torproject.org/~phw/check_file",
-                               timeout=10).read().decode("utf-8")
+                                      timeout=10).read().decode("utf-8")
     except Exception as err:
         log.warning("urllib.request.urlopen for %s says: %s." %
                     (exit_desc.fingerprint, err))
@@ -86,6 +85,7 @@ def main():
     fetch_page(desc)
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
