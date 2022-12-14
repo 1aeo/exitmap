@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 # Copyright 2016-2020 Philipp Winter <phw@nymity.ch>
 # Copyright 2021 The Tor Project, Inc.
