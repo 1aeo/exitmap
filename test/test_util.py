@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 # Copyright 2015-2020 Philipp Winter <phw@nymity.ch>
 # Copyright 2021 The Tor Project, Inc.
@@ -71,7 +71,6 @@ class TestUtil(unittest.TestCase):
         self.assertEqual(extract_pattern1, "0000")
         self.assertIsNone(util.extract_pattern("", "<https://atlas.torproj"
                                                "ect.org/#details>"))
-
 
     def test_new_request(self):
         result = util.new_request("https://atlas.torproject.org", "test")
