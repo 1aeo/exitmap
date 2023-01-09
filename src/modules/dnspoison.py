@@ -52,10 +52,23 @@ def setup():
     log.debug("Populating domain dictionary.")
 
     for domain in domains:
-        response = dns.resolver.query(domain)
+        """
+        Populate IPv4
+        """
+        response = dns.resolver.query(domain, 'A')
         for record in response:
-            log.debug("Domain %s maps to %s." % (domain, record.address))
+            log.debug("Domain %s maps in IPv4 to %s." % (domain, record.address))
             domains[domain].append(record.address)
+        """
+        Populate IPv6 if any result
+        """
+        try:
+            response6 = dns.resolver.query(domain, 'AAAA')
+            for record in response6:
+                log.debug("Domain %s maps in IPv6 to %s." % (domain, record.address))
+                domains[domain].append(record.address)
+        except:
+            log.warning("No IPv6 mapping")
 
     log.info("Domain whitelist: %s" % str(domains))
 
