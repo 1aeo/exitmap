@@ -28,20 +28,25 @@ src_path = os.path.abspath(os.path.join(current_path, "../src"))
 
 sys.path.insert(0, src_path)
 
-from exitmap import main
+from exitmap import main as exitmap_main
 from exitmap import parse_cmd_args
 
-args = parse_cmd_args()
-failed = 0
+def main():
+    args = parse_cmd_args()
+    failed = 0
 
-try:
+    try:
+        exitmap_main()
+        sys.exit(0)
+
+    except KeyboardInterrupt:
+        failed = 1
+
+    finally:
+        print("Removing tmp files...")
+        shutil.rmtree(args.tor_dir)
+        sys.exit(failed)
+
+if __name__ == "__main__":
     main()
-    sys.exit(0)
 
-except KeyboardInterrupt:
-    failed = 1
-
-finally:
-    print("Removing tmp files...")
-    shutil.rmtree(args.tor_dir)
-    sys.exit(failed)

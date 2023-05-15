@@ -25,11 +25,15 @@ import functools
 import threading
 import multiprocessing
 import logging
+import socket
 
 import stem
 from stem import StreamStatus
 from stem import CircStatus
 
+import torsocks
+
+import error
 import command
 import util
 
@@ -121,28 +125,47 @@ class Attacher(object):
             log.warning("Failed to attach stream because: %s" % err)
 
 
-def module_closure(queue, module, circ_id, *module_args, **module_kwargs):
+def module_call(queue, module, circ_id, socks_port,
+            exit_desc,
+            run_cmd_over_tor,
+            destinations):
     """
-    Return function that runs the module and then informs event handler.
+    Run the module and then inform the event handler.
+
+    The invoking process keeps track of which circuits finished.  Once we
+    are done, we send a signal over the queue to let the process know.
     """
-
-    def func():
+    def run_python_over_tor_wrapper(queue, circ_id, socks_port):
         """
-        Run the module and then inform the event handler.
-
-        The invoking process keeps track of which circuits finished.  Once we
-        are done, we send a signal over the queue to let the process know.
+        Returns a closure to route a Python function's network traffic over Tor.
         """
 
-        try:
-            module(*module_args, **module_kwargs)
+        def closure(func, *args):
+            """
+            Route the given Python function's network traffic over Tor.
+            We temporarily monkey-patch socket.socket using our torsocks
+            module, and reset it once the function returns.
+            """
+            try:
+                with torsocks.MonkeyPatchedSocket(queue, circ_id, socks_port):
+                    func(*args)
+            except (error.SOCKSv5Error, socket.error) as err:
+                log.info(err)
+                return
 
-            log.debug("Informing event handler that module finished.")
-            queue.put((circ_id, None))
-        except KeyboardInterrupt:
-            pass
+        return closure
 
-    return func
+    try:
+        module(
+            exit_desc=exit_desc,
+            run_python_over_tor=run_python_over_tor_wrapper(queue, circ_id, socks_port),
+            run_cmd_over_tor=run_cmd_over_tor,
+            destinations=destinations
+        )
+        log.debug("Informing event handler that module finished.")
+        queue.put((circ_id, None))
+    except KeyboardInterrupt:
+        pass
 
 
 class EventHandler(object):
@@ -276,15 +299,15 @@ class EventHandler(object):
             self.controller.close_circuit(circ_event.id)
             return
 
-        module = module_closure(self.queue, self.module.probe,
-                                circ_event.id, exit_desc,
-                                command.run_python_over_tor(self.queue,
-                                                            circ_event.id,
-                                                            self.socks_port),
-                                run_cmd_over_tor,
-                                destinations=self.exit_destinations[exit_fpr])
-
-        proc = multiprocessing.Process(target=module)
+        proc = multiprocessing.Process(target=module_call, args=(
+            self.queue,
+            self.module.probe,
+            circ_event.id,
+            self.socks_port,
+            exit_desc,
+            run_cmd_over_tor,
+            self.exit_destinations[exit_fpr]
+        ))
         proc.daemon = True
         proc.start()
 

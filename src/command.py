@@ -29,31 +29,8 @@ import pprint
 import logging
 
 import util
-import torsocks
-import error
 
 log = logging.getLogger(__name__)
-
-
-def run_python_over_tor(queue, circ_id, socks_port):
-    """
-    Returns a closure to route a Python function's network traffic over Tor.
-    """
-
-    def closure(func, *args):
-        """
-        Route the given Python function's network traffic over Tor.
-        We temporarily monkey-patch socket.socket using our torsocks
-        module, and reset it once the function returns.
-        """
-        try:
-            with torsocks.MonkeyPatchedSocket(queue, circ_id, socks_port):
-                func(*args)
-        except (error.SOCKSv5Error, socket.error) as err:
-            log.info(err)
-            return
-
-    return closure
 
 
 class Command(object):
