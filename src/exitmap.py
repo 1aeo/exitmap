@@ -233,8 +233,37 @@ def main():
 
     # Create and set the given directories.
 
-    if args.tor_dir and not os.path.exists(args.tor_dir):
-        os.makedirs(args.tor_dir)
+    if args.tor_dir:
+        # Set umask so that parents directories are also created with
+        # permissions only for the user, though they are unchanged if they
+        # already exists.
+        os.umask(0o077)
+        # First, create the directory(ies) if they don't exists
+        os.makedirs(args.tor_dir, mode=0o700, exist_ok=True)
+        # Then check that both the parent and the dir are owned only by the
+        # user and aren't symlinks.
+        parent = os.path.dirname(os.path.realpath(args.tor_dir))
+        if (
+            not os.stat(parent).st_uid == os.getuid() or
+            not oct(os.stat(parent).st_mode)[-3:] == "700" or
+            os.path.islink(parent)
+        ):
+            log.critical(
+                "Directory %s is not owned by the user or hasn't mask 700 "
+                "or it's a symlink.", parent
+            )
+            return 1
+        if os.path.exists(args.tor_dir):
+            if (
+                not os.stat(args.tor_dir).st_uid == os.getuid() or
+                not oct(os.stat(args.tor_dir).st_mode)[-3:] == "700" or
+                os.path.islink(args.tor_dir)
+            ):
+                log.critical(
+                    "Directory %s is not owned by the user or hasn't mask 700 "
+                    "or it's a symlink.", args.tor_dir
+                )
+                return 1
 
     logging.getLogger("stem").setLevel(logging.__dict__[args.verbosity.upper()])
     log_format = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
