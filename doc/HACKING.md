@@ -23,24 +23,34 @@ From an implementation point of view, there are two types of modules:
 
 The function signature of modules is:
 
-    def probe(exit_desc, run_python_over_tor, run_cmd_over_tor)
+    def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor)
 
 The arguments are:
 
 1. `exit_desc`: An object of type
     `stem.descriptor.server_descriptor.RelayDescriptor`.
 
-2. `run_python_over_tor`: Expects a function (as first argument) and its
+2. `target_host`: Expects a string object defined in the command line with -H argument, to be used as a target by the module instead of default value(s) that could be define initially in the module. It can be an IP or hostname depending of the use case. Take care of the DNS resolution if needed by the module.
+
+3. `target_port`: Expects an integrer defined in the command line with -p argument, to be used as a port target by the module instead of default value(s) that could be define initially in the module.
+
+4. `run_python_over_tor`: Expects a function (as first argument) and its
    arguments (as subsequent arguments).  The function's network interaction is
    then routed over Tor.
 
-3. `run_cmd_over_tor`: Expects a command (as first argument) and its parameters
+5. `run_cmd_over_tor`: Expects a command (as first argument) and its parameters
    (as subsequent arguments).  The command's network interaction is then routed
    over Tor using `torsocks`.
 
 Finally, you must define the global variable `destinations` in your module.  It
-determines the destinations---as tuples---your module will connect to.
+determines the default destinations---as tuples---your module will connect to.
 `Exitmap` must know this to select exit relays whose exit policy matches your
 module.  Here's an example:
 
     destinations = [("www.example.com", 80), ("smtp.example.com", 25)]
+
+If `target_host` and/or a  `target_port` is defined in the command line, values will be used to evaluate the `destinations`, unless the module is setup as: 
+
+    destinations = None
+
+In this case, all available relays will be selected without influence of the target host and port.

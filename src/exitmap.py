@@ -201,6 +201,12 @@ def parse_cmd_args():
                             "BadExit flag.  By default, only good exits are "
                             "scanned.")
 
+    parser.add_argument("-H", "--host", type=str, default=None,
+                        help="A host to be targeted by the chosen module.")
+
+    parser.add_argument("-p", "--port", type=int, default=None,
+                        help="A port to be targeted by the chosen module.")
+
     parser.add_argument("-V", "--version", action="version",
                         version="%(prog)s 2020.11.23")
 
@@ -312,7 +318,7 @@ def main():
     return 0
 
 
-def lookup_destinations(module):
+def lookup_destinations(args, module):
     """
     Determine the set of destinations that the module might like to scan.
     This removes redundancies and reduces all hostnames to IP addresses.
@@ -320,13 +326,26 @@ def lookup_destinations(module):
     log.debug("Selecting destinations depending on the module.")
     destinations = set()
     addrs = {}
-    if hasattr(module, 'destinations'):
+    if hasattr(module, 'destinations') and module.destinations is None:
+        log.info("Destination is built from the module default *None* attribute")
         raw_destinations = module.destinations
-        if raw_destinations is not None:
-            for (host, port) in raw_destinations:
-                if host not in addrs:
-                    addrs[host] = socket.gethostbyname(host)
-                destinations.add((addrs[host], port))
+        log.info("raw_destination= %s" % raw_destinations)
+
+    elif args.host is not None and args.port is not None:
+        log.info("Destination is built from the command line host attribute: %s" % args.host)
+        raw_destinations = [(args.host, args.port)]
+        log.info("raw_destination= %s" % raw_destinations)
+
+    elif hasattr(module, 'destinations'):
+        log.info("Destination is built from the module default attribute : %s" % module.destinations)
+        raw_destinations = module.destinations
+        log.info("raw_destination= %s" % raw_destinations)
+
+    if raw_destinations is not None:
+        for (host, port) in raw_destinations:
+            if host not in addrs:
+                addrs[host] = socket.gethostbyname(host)
+            destinations.add((addrs[host], port))
 
     return destinations
 
@@ -341,7 +360,7 @@ def select_exits(args, module):
     """
 
     before = datetime.datetime.now()
-    destinations = lookup_destinations(module)
+    destinations = lookup_destinations(args, module)
 
     if args.exit:
         # '-e' was used to specify a single exit relay.
@@ -379,6 +398,7 @@ def run_module(module_name, args, controller, socks_port, stats):
     """
 
     log.info("Running module '%s'." % module_name)
+    log.info("with host '%s'." % args.host)
     stats.modules_run += 1
 
     try:
@@ -398,6 +418,9 @@ def run_module(module_name, args, controller, socks_port, stats):
     exit_relays = list(exit_destinations.keys())
     random.shuffle(exit_relays)
 
+    target_host = args.host
+    target_port = args.port
+
     log.debug("Running actually the module.")
     count = len(exit_relays)
     stats.total_circuits += count
@@ -407,7 +430,9 @@ def run_module(module_name, args, controller, socks_port, stats):
                                        "but need at least one." % count)
 
     handler = EventHandler(controller, module, socks_port, stats,
-                           exit_destinations=exit_destinations)
+                           exit_destinations=exit_destinations,
+                           target_host=target_host,
+                           target_port=target_port)
 
     controller.add_event_listener(handler.new_event,
                                   EventType.CIRC, EventType.STREAM)

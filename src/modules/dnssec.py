@@ -40,7 +40,7 @@ destinations = None
 BROKEN_DOMAIN = "www.dnssec-failed.org"
 
 
-def test_dnssec(exit_fpr):
+def test_dnssec(exit_fpr, domain):
     """
     Test if broken DNSSEC domain can be resolved.
     """
@@ -52,7 +52,7 @@ def test_dnssec(exit_fpr):
     # Resolve domain using Tor's SOCKS extension.
 
     try:
-        ip = sock.resolve(BROKEN_DOMAIN)
+        ip = sock.resolve(domain)
     except error.SOCKSv5Error as err:
         log.debug("%s did not resolve broken domain because: %s.  Good." %
                   (exit_url, err))
@@ -67,12 +67,14 @@ def test_dnssec(exit_fpr):
     log.critical("%s resolved domain to %s" % (exit_url, ip))
 
 
-def probe(exit_desc, run_python_over_tor, run_cmd_over_tor, **kwargs):
+def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor, **kwargs):
     """
     Test if exit relay can resolve broken domain.
     """
-
-    run_python_over_tor(test_dnssec, exit_desc.fingerprint)
+    if target_host is None:
+        run_python_over_tor(test_dnssec, exit_desc.fingerprint, BROKEN_DOMAIN)
+    else:
+        run_python_over_tor(test_dnssec, exit_desc.fingerprint, target_host)
 
 
 if __name__ == "__main__":

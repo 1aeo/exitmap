@@ -73,7 +73,7 @@ def fetch_page(exit_desc):
         log.debug("Exit relay %s passed the check test." % url)
 
 
-def probe(exit_desc, run_python_over_tor, run_cmd_over_tor, **kwargs):
+def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor, **kwargs):
     """
     Probe the given exit relay and look for check.tp.o false negatives.
     """

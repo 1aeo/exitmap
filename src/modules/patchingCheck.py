@@ -203,7 +203,7 @@ def run_check(exit_desc):
             os.remove(tmp_file)
 
 
-def probe(exit_desc, run_python_over_tor, run_cmd_over_tor, **kwargs):
+def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor, **kwargs):
     """
     Probe the given exit relay and look for modified binaries.
     """

@@ -262,7 +262,7 @@ def choose_probe_order(dests):
     return rv
 
 
-def probe(exit_desc, run_python_over_tor, run_cmd_over_tor,
+def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor,
           destinations, **kwargs):
     """
     Probe the given exit relay.
