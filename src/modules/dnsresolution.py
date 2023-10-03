@@ -65,13 +65,15 @@ def resolve(exit_desc, domain):
     log.debug("%s resolved domain %s to %s" % (exit, domain, ip))
 
 
-def probe(exit_desc, run_python_over_tor, run_cmd_over_tor, **kwargs):
+def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor, **kwargs):
     """
     Probe the given exit relay and check if all domains resolve as expected.
     """
-
-    for domain in domains:
-        run_python_over_tor(resolve, exit_desc, domain)
+    if target_host is None:
+        for domain in domains:
+            run_python_over_tor(resolve, exit_desc, domain)
+    else:
+        run_python_over_tor(resolve, exit_desc, target_host)
 
 
 if __name__ == "__main__":

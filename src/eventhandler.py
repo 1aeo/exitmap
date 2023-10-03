@@ -128,7 +128,10 @@ class Attacher(object):
 def module_call(queue, module, circ_id, socks_port,
             exit_desc,
             run_cmd_over_tor,
-            destinations):
+            destinations,
+            target_host,
+            target_port
+            ):
     """
     Run the module and then inform the event handler.
 
@@ -160,7 +163,9 @@ def module_call(queue, module, circ_id, socks_port,
             exit_desc=exit_desc,
             run_python_over_tor=run_python_over_tor_wrapper(queue, circ_id, socks_port),
             run_cmd_over_tor=run_cmd_over_tor,
-            destinations=destinations
+            destinations=destinations,
+            target_host=target_host,
+            target_port=target_port
         )
         log.debug("Informing event handler that module finished.")
         queue.put((circ_id, None))
@@ -178,7 +183,7 @@ class EventHandler(object):
     new streams unattached.
     """
 
-    def __init__(self, controller, module, socks_port, stats, exit_destinations):
+    def __init__(self, controller, module, socks_port, stats, exit_destinations, target_host, target_port):
 
         self.stats = stats
         self.controller = controller
@@ -188,6 +193,8 @@ class EventHandler(object):
         self.queue = self.manager.Queue()
         self.socks_port = socks_port
         self.exit_destinations = exit_destinations
+        self.target_host = target_host
+        self.target_port = target_port
         self.check_finished_lock = threading.Lock()
         self.already_finished = False
 
@@ -306,7 +313,9 @@ class EventHandler(object):
             self.socks_port,
             exit_desc,
             run_cmd_over_tor,
-            self.exit_destinations[exit_fpr]
+            self.exit_destinations[exit_fpr],
+            self.target_host,
+            self.target_port
         ))
         proc.daemon = True
         proc.start()
