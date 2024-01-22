@@ -44,12 +44,16 @@ domains = {
 }
 
 
-def setup():
+def setup(target=None):
     """
     Populate the `domains' dictionary by asking our system DNS resolver.
     """
 
     log.debug("Populating domain dictionary.")
+
+    if target is not None:
+        domains.clear()
+        domains[target] = []
 
     for domain in domains:
         """
@@ -111,9 +115,11 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over
     """
     Probe the given exit relay and check if all domains resolve as expected.
     """
-
-    for domain in domains:
-        run_python_over_tor(resolve, exit_desc, domain, domains[domain])
+    if target_host is None:
+        for domain in domains:
+            run_python_over_tor(resolve, exit_desc, domain, domains[domain])
+    else:
+        run_python_over_tor(resolve, exit_desc, target_host, domains[target_host])
 
 
 if __name__ == "__main__":
