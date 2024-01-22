@@ -411,7 +411,10 @@ def run_module(module_name, args, controller, socks_port, stats):
 
     if hasattr(module, "setup"):
         log.debug("Calling module's setup() function.")
-        module.setup()
+        if args.host is None:
+            module.setup()
+        else:
+            module.setup(target=args.host)
 
     exit_destinations = select_exits(args, module)
 
