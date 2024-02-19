@@ -26,8 +26,6 @@ import sys
 import json
 import logging
 import urllib.request
-import socks
-import socket
 
 from util import exiturl
 
@@ -51,7 +49,7 @@ def fetch_page(exit_desc):
 
     try:
         data = urllib.request.urlopen("https://check.torproject.org/api/ip",
-                               timeout=10).read()
+                                      timeout=10).read()
     except Exception as err:
         log.debug("urllib.request.urlopen says: %s" % err)
         return
@@ -61,7 +59,7 @@ def fetch_page(exit_desc):
 
     try:
         check_answer = json.loads(data)
-    except ValueError as err:
+    except ValueError:
         log.warning("Couldn't parse JSON over relay %s: %s" % (url, data))
         return
 
@@ -73,7 +71,8 @@ def fetch_page(exit_desc):
         log.debug("Exit relay %s passed the check test." % url)
 
 
-def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor, **kwargs):
+def probe(exit_desc, target_host, target_port, run_python_over_tor,
+          run_cmd_over_tor, **kwargs):
     """
     Probe the given exit relay and look for check.tp.o false negatives.
     """
