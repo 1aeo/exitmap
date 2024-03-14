@@ -10,3 +10,8 @@ def data_path():
 @pytest.fixture()
 def cached_consensus_path(data_path):
     return os.path.join(data_path, "cached-consensus")
+
+
+@pytest.fixture()
+def cached_descriptors_path(data_path):
+    return os.path.join(data_path, "cached-descriptors")

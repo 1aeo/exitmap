@@ -23,6 +23,7 @@ import unittest
 import sys
 sys.path.insert(0, 'src/')
 import relayselector
+from stem import exit_policy
 
 
 class TestRelaySelector(unittest.TestCase):
@@ -41,6 +42,17 @@ class TestRelaySelector(unittest.TestCase):
                                     destinations=None)
         self.assertEqual(exits.exception.code, 1)
 
+
+def test_get_exit_policies(cached_descriptors_path):
+    exit_policies = relayselector.get_exit_policies(cached_descriptors_path)
+    assert isinstance(
+        exit_policies["9C67E543354ED18B7FF00E080AC086762035119C"].exit_policy,
+        exit_policy.ExitPolicy
+    )
+    assert not exit_policies.get(
+        "FAF0A8829E39063669FA609B904E0FB8D5E1F23F",
+        None
+    )
 
 if __name__ == '__main__':
     unittest.main()
