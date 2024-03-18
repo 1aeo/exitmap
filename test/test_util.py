@@ -89,5 +89,12 @@ class TestUtil(unittest.TestCase):
         self.assertEqual(ports["control"], 9000)
 
 
+def test_relay_in_consensus(cached_consensus_path):
+    fingerprint = "0011254CC8444369B20EF11156B8990438221A54"
+    assert util.relay_in_consensus(fingerprint, cached_consensus_path)
+    fingerprint = "A" * 40
+    assert not util.relay_in_consensus(fingerprint, cached_consensus_path)
+
+
 if __name__ == '__main__':
     unittest.main()
