@@ -54,5 +54,24 @@ def test_get_exit_policies(cached_descriptors_path):
         None
     )
 
+
+def test_get_cached_consensus(cached_consensus_path):
+    cc = relayselector.get_cached_consensus(cached_consensus_path)
+    assert isinstance(cc, dict)
+    assert 7587 == len(cc)
+
+
+def test_get_fingerprints(cached_consensus_path):
+    fps = relayselector.get_fingerprints(cached_consensus_path, exclude=[])
+    assert isinstance(fps, list)
+    assert 7587 == len(fps)
+
+
+def test_router_statuses_with_exit_flag(cached_consensus):
+    rs = relayselector.router_statuses_with_exit_flag(cached_consensus)
+    assert isinstance(rs, dict)
+    assert 2297 == len(rs)
+
+
 if __name__ == '__main__':
     unittest.main()
