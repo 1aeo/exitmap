@@ -19,13 +19,12 @@ before_script:
   - pip install virtualenv
   - virtualenv venv
   - source venv/bin/activate
-  - pip install -r requirements.txt
-  - pip install -r requirements-dev.txt
+  - pip install .[dev]
 
 test:
   image: "python:$VERSION"
   script:
-    - py.test --cov-report term-missing --cov=src test
+    - pytest test
   parallel:
     matrix:
       - VERSION: ['3.9', '3.10', '3.11', '3.12', '3.13']

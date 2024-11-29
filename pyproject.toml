@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exitmap"
+version = "0.1.0"
+description = "fast and modular Python-based scanner for [Tor](https://www.torproject.org) exit relays."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "dnspython",
+    "stem",
+    "pysocks",
+]
+license = {file = "COPYING"}
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Topic :: Software Development :: Build Tools",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GPL v3",    "Natural Language :: English",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.urls]
+Homepage = "https://gitlab.torproject.org/tpo/network-health/exitmap"
+Issues = "https://gitlab.torproject.org/tpo/network-health/exitmap/-/issues"
+
+[project.scripts]
+exitmap = "src.exitmap:main"
+
+[project.optional-dependencies]
+# flake8 includes pycodestyle (formerly pep8) and pyflakes
+dev = ["tox", "pytest", "pytest-cov", "flake8"]
+
+[tool.pytest.ini_options]
+log_cli = true
+log_cli_level = "DEBUG"
+addopts = "--cov=src --cov-report term-missing"
+
+[tool.coverage.run]
+omit = ["test/run_tests.py", "test/test_*", "src/modules/*", "src/__init__.py"]
