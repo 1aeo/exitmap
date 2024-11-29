@@ -61,10 +61,7 @@ except ImportError:
     # FIXME: Maybe use ctypes to get at clock_gettime(CLOCK_MONOTONIC)?
     from time import time as tick
 
-try:
-    import selectors
-except ImportError:
-    import selectors34 as selectors
+import selectors
 
 # Configuration parameters:
 # The set of ports that we consider connecting to.
