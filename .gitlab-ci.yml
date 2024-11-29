@@ -1,0 +1,31 @@
+# Python stable releases: https://www.python.org/downloads/
+# 3.13 EOL 2029-10, PEP 719
+# 3.12 EOL 2028-10, PEP 693
+# 3.11 EOL 2027-10, PEP 664
+# 3.10 EOL 2026-10, PEP 619
+# 3.9 EOL 2025-10, PEP 596
+
+# Change pip's cache directory to be inside the project directory since we can
+# only cache local items.
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+# https://pip.pypa.io/en/stable/topics/caching/
+cache:
+  paths:
+    - .cache/pip
+
+before_script:
+  - python --version ; pip --version  # For debugging
+  - pip install virtualenv
+  - virtualenv venv
+  - source venv/bin/activate
+  - pip install -r requirements.txt
+  - pip install -r requirements-dev.txt
+
+test:
+  image: "python:$VERSION"
+  script:
+    - py.test --cov-report term-missing --cov=src test
+  parallel:
+    matrix:
+      - VERSION: ['3.9', '3.10', '3.11', '3.12', '3.13']
