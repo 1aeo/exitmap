@@ -21,7 +21,6 @@ Provides and API to execute system commands over torsocks.
 """
 
 import os
-import socket
 import threading
 import subprocess
 import tempfile

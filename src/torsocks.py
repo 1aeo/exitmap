@@ -23,10 +23,8 @@ Provide a Tor-specific SOCKSv5 interface.
 import os
 import struct
 import socket
-import select
 import errno
 import logging
-import _socket
 import error
 import socks
 
@@ -135,7 +133,7 @@ class _Torsocket(socks.socksocket):
         else:
             socks._BaseSocket.close(self)
             raise error.SOCKSv5Error("SOCKS Server error.")
-        boundport = struct.unpack(">H", socks._BaseSocket.recv(self, 2))[0]
+        struct.unpack(">H", socks._BaseSocket.recv(self, 2))[0]
         socks._BaseSocket.close(self)
         return ip
 
