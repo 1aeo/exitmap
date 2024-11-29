@@ -38,7 +38,10 @@ Exitmap uses the library Stem to communicate with Tor.  There are
 The easiest might be to use pip in combination with the provided
 requirements.txt file:
 
-    $ pip install -r requirements.txt
+    $ pip install virtualenv
+    $ virtualenv .venv
+    $ . .venv/bin/activate
+    $ pip install .
 
 Running exitmap
 ---------------
@@ -46,29 +49,29 @@ Running exitmap
 The only argument exitmap requires is the name of a module.  For example, you
 can run exitmap with the checktest module by running:
 
-    $ ./bin/exitmap checktest
+    $ exitmap checktest
 
 The command line output will then show you how Tor bootstraps, the output of the
 checktest module, and a scan summary.  If you don't need three hops and prefer
 to use two hops with a static first hop, run:
 
-    $ ./bin/exitmap --first-hop 1234567890ABCDEF1234567890ABCDEF12345678 checktest
+    $ exitmap --first-hop 1234567890ABCDEF1234567890ABCDEF12345678 checktest
 
 To run the same test over German exit relays only, execute:
 
-    $ ./bin/exitmap --country DE --first-hop 1234567890ABCDEF1234567890ABCDEF12345678 checktest
+    $ exitmap --country DE --first-hop 1234567890ABCDEF1234567890ABCDEF12345678 checktest
 
 If you want to pause for five seconds in between circuit creations to reduce the
 load on the Tor network and the scanning destination, run:
 
-    $ ./bin/exitmap --build-delay 5 checktest
+    $ exitmap --build-delay 5 checktest
 
 Note that `1234567890ABCDEF1234567890ABCDEF12345678` is a pseudo fingerprint
 that you should replace with an exit relay that you control.
 
 To learn more about all of exitmap's options, run:
 
-    $ ./bin/exitmap --help
+    $ exitmap --help
 
 Exitmap comes with batteries included, providing the following modules:
 
@@ -113,5 +116,5 @@ Tests
 Before submitting pull requests, please make sure that all unit tests pass by
 running:
 
-    $ pip install -r requirements-dev.txt
-    $ py.test --cov-report term-missing --cov-config .coveragerc --cov=src test
+    $ pip install .[dev]
+    $ pytest
