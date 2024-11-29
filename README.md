@@ -117,4 +117,4 @@ Before submitting pull requests, please make sure that all unit tests pass by
 running:
 
     $ pip install .[dev]
-    $ pytest
+    $ tox

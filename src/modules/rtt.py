@@ -35,7 +35,6 @@ address per line.  (You _may_ use hostnames, but if you do, they will
 be resolved directly, not via Tor.)
 """
 
-import sys
 import os
 import logging
 import csv
@@ -43,17 +42,6 @@ import errno
 import random
 import socket
 import util
-
-# We don't _need_ the top-level exitmap module, but this is the most
-# reliable way to figure out whether we need to add the directory with
-# the utility modules that we _do_ need to sys.path.
-try:
-    import exitmap
-except ImportError:
-    current_path = os.path.dirname(__file__)
-    src_path = os.path.abspath(os.path.join(current_path, ".."))
-    sys.path.insert(0, src_path)
-    import exitmap
 
 try:
     from time import monotonic as tick

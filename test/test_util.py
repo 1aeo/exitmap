@@ -33,19 +33,19 @@ class TestUtil(unittest.TestCase):
     def test_get_relays_in_country(self):
         try:
             relays1 = util.get_relays_in_country("at")
-        except Exception as err:
+        except Exception:
             return
         self.assertTrue(len(relays1) > 0)
 
         try:
             relays2 = util.get_relays_in_country("AT")
-        except Exception as err:
+        except Exception:
             return
         self.assertTrue(len(relays1) == len(relays2))
 
         try:
             bogus = util.get_relays_in_country("foo")
-        except Exception as err:
+        except Exception:
             return
         self.assertEqual(bogus, [])
 
