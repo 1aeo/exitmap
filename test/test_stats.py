@@ -53,5 +53,20 @@ class TestStats(unittest.TestCase):
         self.assertEqual(self.stats.successful_circuits, 1)
 
 
+def test_stats_print_progress(caplog, stats_obj):
+    stats_obj.total_circuits = 1
+    stats_obj.finished_streams = 1
+    stats_obj.print_progress(1)
+    print(stats_obj.__dict__)
+    assert (
+        "Probed 0 out of 1 exit relays, so we are 0.00% done." in caplog.text
+    )
+
+
+def test_stats_str(stats_obj):
+    s = str(stats_obj)
+    assert " and 0/0 circuits failed (0.00%)." in s
+
+
 if __name__ == '__main__':
     unittest.main()
