@@ -20,7 +20,11 @@
 """ Unit tests for the torsocks module."""
 
 import unittest
+import socket
 import sys
+
+import pytest
+
 sys.path.insert(0, 'src/')
 import torsocks
 
@@ -30,7 +34,32 @@ class TestTorsocks(unittest.TestCase):
 
     def test_send_queue(self):
         self.assertRaises(AssertionError, torsocks.send_queue,
-                          ('127.0.0.1', 38662))
+                          ("127.0.0.1", 38662))
+
+
+def test__torsocket():
+    t = torsocks._Torsocket()
+    with pytest.raises(TypeError):
+        _ = t.resolve("localhost")
+
+
+def test_torsocket():
+    ts = torsocks.torsocket()
+    assert isinstance(ts, torsocks._Torsocket)
+
+
+def test_getaddrinfo():
+    args = ("check.torproject.org", 443)
+    addr = torsocks.getaddrinfo(*args)
+    assert [
+        (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            6,
+            "",
+            ("check.torproject.org", 443),
+        )
+    ] == addr
 
 
 if __name__ == '__main__':
