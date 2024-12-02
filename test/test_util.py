@@ -21,6 +21,7 @@
 Implements unit tests.
 """
 
+import os
 import unittest
 import sys
 sys.path.insert(0, 'src/')
@@ -94,6 +95,23 @@ def test_relay_in_consensus(cached_consensus_path):
     assert util.relay_in_consensus(fingerprint, cached_consensus_path)
     fingerprint = "A" * 40
     assert not util.relay_in_consensus(fingerprint, cached_consensus_path)
+
+
+def test_exiturl():
+    eu = util.exiturl("50485E03CA39D393BD54D315CEBA65E6DD0FDDB9")
+    assert (
+        "<https://metrics.torproject.org/rs.html#details/"
+        "50485E03CA39D393BD54D315CEBA65E6DD0FDDB9>"
+        == eu
+    )
+
+
+def test_dump_to_file(tmp_path):
+    blurb = b"foo"
+    exit_fpr = "50485E03CA39D393BD54D315CEBA65E6DD0FDDB9"
+    fn = util.dump_to_file(blurb, exit_fpr)
+    print(fn)
+    assert os.path.isfile(fn)
 
 
 if __name__ == '__main__':
