@@ -97,6 +97,17 @@ def get_exit_policies(cached_descriptors_path):
             if desc.exit_policy.is_exiting_allowed():
                 have_exit_policy[desc.fingerprint] = desc
 
+        log.debug("Exit check via cached-descriptors file: %i" ,
+                  len(have_exit_policy))
+        # We might have some missing descriptors in consensus-descriptors.new.
+        # Let's add those, too.
+        try:
+            for desc in stem.descriptor.parse_file(cached_descriptors_path +
+                                                   ".new", validate=False):
+                if desc.exit_policy.is_exiting_allowed():
+                    have_exit_policy[desc.fingerprint] = desc
+        except FileNotFoundError:
+            log.debug("There is no .new file to consider, moving on...")
         return have_exit_policy
 
     except IOError as err:
