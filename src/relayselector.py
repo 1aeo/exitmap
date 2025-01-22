@@ -97,7 +97,7 @@ def get_exit_policies(cached_descriptors_path):
             if desc.exit_policy.is_exiting_allowed():
                 have_exit_policy[desc.fingerprint] = desc
 
-        log.debug("Exit check via cached-descriptors file: %i" ,
+        log.debug("Exit check via cached-descriptors file: %i",
                   len(have_exit_policy))
         # We might have some missing descriptors in consensus-descriptors.new.
         # Let's add those, too.
