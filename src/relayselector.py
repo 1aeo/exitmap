@@ -190,6 +190,10 @@ def get_exits(data_dir,
     cached_descriptors_path = os.path.join(data_dir, "cached-descriptors")
 
     cached_consensus = get_cached_consensus(cached_consensus_path)
+    # It's sometimes useful to know which consensus we used for scanning.
+    # Log that info even though extracting it is a bit awkward.
+    log.info("The consensus is valid after: %s" %
+             next(iter(cached_consensus.values())).document.valid_after)
     have_exit_policy = get_exit_policies(cached_descriptors_path)
     log.debug("Number of relays with exit policy: %s", len(have_exit_policy))
     have_exit_flag = router_statuses_with_exit_flag(cached_consensus)
