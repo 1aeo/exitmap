@@ -408,13 +408,16 @@ def run_module(module_name, args, controller, socks_port, stats):
         return
 
     # Let module perform one-off setup tasks.
-
     if hasattr(module, "setup"):
+        # Let's pass the consensus to the module so it can make use of it, if
+        # needed, for further analysis or narrowing down of potential results.
+        cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
+        cached_consensus = relayselector.get_cached_consensus(cached_consensus_path)
         log.debug("Calling module's setup() function.")
         if args.host is None:
-            module.setup()
+            module.setup(consensus=cached_consensus)
         else:
-            module.setup(target=args.host)
+            module.setup(target=args.host, consensus=cached_consensus)
 
     exit_destinations = select_exits(args, module)
 
