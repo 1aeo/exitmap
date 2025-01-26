@@ -278,7 +278,7 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over
 destinations = None
 
 
-def setup():
+def setup(**kwargs):
     ds = set()
     with open("rtt-destinations.txt") as f:
         for line in f:

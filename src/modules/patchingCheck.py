@@ -72,7 +72,7 @@ test_agent = 'Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)'
 #######################
 
 
-def setup():
+def setup(**kwargs):
     """
     Perform one-off setup tasks, i.e., download reference files.
     """

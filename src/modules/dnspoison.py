@@ -44,7 +44,7 @@ domains = {
 }
 
 
-def setup(target=None):
+def setup(target=None, **kwargs):
     """
     Populate the `domains' dictionary by asking our system DNS resolver.
     """
