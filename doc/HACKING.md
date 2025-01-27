@@ -30,9 +30,9 @@ The arguments are:
 1. `exit_desc`: An object of type
     `stem.descriptor.server_descriptor.RelayDescriptor`.
 
-2. `target_host`: Expects a string object defined in the command line with -H argument, to be used as a target by the module instead of default value(s) that could be define initially in the module. It can be an IP or hostname depending of the use case. Take care of the DNS resolution if needed by the module.
+2. `target_host`: Expects a string object defined on the command line with -H argument, to be used as a target by the module instead of default value(s) that could be defined initially in the module. It can be an IP or hostname depending on the use case. Take care of the DNS resolution if needed by the module.
 
-3. `target_port`: Expects an integrer defined in the command line with -p argument, to be used as a port target by the module instead of default value(s) that could be define initially in the module.
+3. `target_port`: Expects an integer defined on the command line with -p argument, to be used as a port target by the module instead of default value(s) that could be defined initially in the module.
 
 4. `run_python_over_tor`: Expects a function (as first argument) and its
    arguments (as subsequent arguments).  The function's network interaction is
@@ -49,8 +49,8 @@ module.  Here's an example:
 
     destinations = [("www.example.com", 80), ("smtp.example.com", 25)]
 
-If `target_host` and/or a  `target_port` is defined in the command line, values will be used to evaluate the `destinations`, unless the module is setup as: 
+If `target_host` and/or a  `target_port` are defined in the command line, values will be used to evaluate the `destinations`, unless the module is setup as:
 
     destinations = None
 
-In this case, all available relays will be selected without influence of the target host and port.
+In that case, all available relays will be selected without influence of the target host and port.
