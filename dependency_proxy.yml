@@ -1,0 +1,60 @@
+# This is the templete from:
+# https://gitlab.torproject.org/tpo/tpa/ci-templates/-/blob/main/dependency_proxy.yml?ref_type=heads
+spec:
+  inputs:
+    namespace:
+---
+# the purpose of this template is to facilitate the use the dependency proxy,
+# preventing rate-limiting from dockerhub, while allowing unprivileged users
+# to still be able to run ci pipelines, bypassing the dependency proxy and
+# pulling directly from dockerhub as before
+#
+# to use it, prefix all dockerhub-sourced image urls with "${DOCKER_REGISTRY_URL}/"
+# and add this in your project's .gitlab-ci.yml at the top, replacing "tpo/core"
+# with your own project's *group* namespace
+#
+# include:
+#   - project: tpo/tpa/ci-templates
+#     file: [ dependency_proxy.yml ]
+#     inputs: { namespace: tpo/core }
+#
+variables:
+  DOCKER_REGISTRY_URL: docker.io
+
+# run a job before all others, in the .pre stage,
+# to check if the current user has the permission to use the dependency proxy
+# if so, it sets the DOCKER_REGISTRY_URL to the appropriate url,
+# otherwise, it will user "docker.io", which is the default url
+# seei docs at https://docs.gitlab.com/user/packages/dependency_proxy
+check_dependency_proxy_access:
+  image: containers.torproject.org/tpo/tpa/base-images/podman:stable
+  stage: .pre
+  inherit:
+    default: false
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - 'echo "$CI_DEPENDENCY_PROXY_PASSWORD" | podman login $CI_DEPENDENCY_PROXY_SERVER --username $CI_DEPENDENCY_PROXY_USER --password-stdin'
+    - |
+      if podman pull -q gitlab.torproject.org:443/$[[ inputs.namespace ]]/dependency_proxy/containers/alpine:latest; then
+        export DOCKER_REGISTRY_URL="${CI_DEPENDENCY_PROXY_SERVER}/$[[ inputs.namespace ]]/dependency_proxy/containers"
+        echo -e "\e[33mDependency Proxy for group '$[[ inputs.namespace ]]' is accessible, setting 'DOCKER_REGISTRY_URL'.\e[0m"
+        echo -e "\e[33mIf *all* users pushing to this project ($CI_PROJECT_PATH) have Guest-level permission (or higher) in group '$[[ inputs.namespace ]]':\e[0m"
+        echo -e "\e[33m=> Optimize this pipeline by adding a setting to always use the Dependency Proxy:\e[0m"
+        echo -e "\e[33m=> Create a 'DOCKER_REGISTRY_URL' CI/CD variable in this project and set its value to:\e[0m"
+        echo -e "\e[33m=> ${DOCKER_REGISTRY_URL}\e[0m"
+        echo "DOCKER_REGISTRY_URL=${DOCKER_REGISTRY_URL}" >> docker_registry.env
+      else
+        echo -e "\e[31mUnable to pull from dependency Proxy for group '$[[ inputs.namespace ]]'.\e[0m"
+        echo -e "\e[33mThe user triggering this pipeline may not have Guest-level permission in that group namespace.\e[0m"
+        echo -e "\e[33mIf 'StatusCode: 429' is shown, this means the proxy needed to pull from DockerHub and was blocked by rate-limiting.\e[0m"
+        echo -e "\e[33m(ignore the 'No files to upload' error below).\e[0m"
+        rm -f docker_registry.env
+      fi
+  artifacts:
+    reports:
+      dotenv: docker_registry.env
+  # don't add this job to the pipeline if the dependency proxy url
+  # is already provided via project ci/cd variables
+  rules:
+    - if: $DOCKER_REGISTRY_URL !~ /dependency_proxy/
