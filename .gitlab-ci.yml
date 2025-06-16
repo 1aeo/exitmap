@@ -5,6 +5,11 @@
 # 3.10 EOL 2026-10, PEP 619
 # 3.9 EOL 2025-10, PEP 596
 
+include:
+  - project: tpo/tpa/ci-templates
+    file: [ dependency_proxy.yml ]
+    inputs: { namespace: tpo/network-health }
+
 # Change pip's cache directory to be inside the project directory since we can
 # only cache local items.
 variables:
@@ -22,7 +27,7 @@ before_script:
   - pip install .[dev]
 
 test:
-  image: "python:$VERSION"
+  image: ${DOCKER_REGISTRY_URL}/library/python:$VERSION
   script:
     - tox
   parallel:

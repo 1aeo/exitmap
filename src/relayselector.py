@@ -249,11 +249,11 @@ def get_exits(data_dir,
         exit_candidates = [
             desc
             for desc in exit_candidates
-            if desc.fingerprint in have_exit_flag
+            if desc.fingerprint not in have_exit_flag
             and stem.Flag.BADEXIT in cached_consensus[desc.fingerprint].flags
         ]
         log.debug(
-            "Number of exit candidates with EXIT flag AND BADEXIT flag: %s",
+            "Number of exit candidates without EXIT flag AND BADEXIT flag: %s",
             len(exit_candidates),
         )
         if not exit_candidates:
