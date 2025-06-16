@@ -73,7 +73,6 @@ def send_queue(sock_name):
     Inform caller about our newly created socket.
     """
 
-    global queue, circ_id
     assert (queue is not None) and (circ_id is not None)
     queue.put([circ_id, sock_name])
 
@@ -187,7 +186,7 @@ class MonkeyPatchedSocket(object):
         self._orig_socket     = None
 
     def __enter__(self):
-        global queue, circ_id, proxy_addr, proxy_port, socket, torsocket
+        global queue, circ_id, proxy_addr, proxy_port
 
         # Make sure __exit__ can put everything back just as it was.
         self._orig_queue      = queue
@@ -207,7 +206,7 @@ class MonkeyPatchedSocket(object):
         return self
 
     def __exit__(self, *dontcare):
-        global queue, circ_id, proxy_addr, proxy_port, socket
+        global queue, circ_id, proxy_addr, proxy_port
 
         queue                 = self._orig_queue
         circ_id               = self._orig_circ_id
