@@ -294,6 +294,10 @@ class EventHandler(object):
 
         last_hop = circ_event.path[-1]
         exit_fpr = last_hop[0]
+        first_hop = circ_event.path[0]
+        first_hop_fpr = first_hop[0]
+        log.info("Circuit %s built: first_hop=%s exit=%s" % 
+                 (circ_event.id, first_hop_fpr, exit_fpr))
         log.debug("Circuit for exit relay \"%s\" is built.  "
                   "Now invoking probing module." % exit_fpr)
 

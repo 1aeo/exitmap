@@ -13,7 +13,7 @@ This report validates DNS resolution functionality through Tor exit relays opera
 | [prsv.ch](https://metrics.1aeo.com/prsv.ch/) | 368 | 178 | 9 | 5.1% | 26 (14.61%) |
 | [nothingtohide.nl](https://metrics.1aeo.com/nothingtohide.nl/) | 294 | 252 | 0 | 0% | 39 (15.48%) |
 | [applied-privacy.net](https://metrics.1aeo.com/applied-privacy.net/) | 105 | 104 | 0 | 0% | 10 (9.62%) |
-| [tor.r0cket.net](https://metrics.1aeo.com/tor.r0cket.net/) | 120 | 120 | 6 | 5.0% | 30 (25.00%) |
+| [tor.r0cket.net](https://metrics.1aeo.com/tor.r0cket.net/) | 120 | 120 | 4 | 3.3% | 10 (8.33%) |
 
 ---
 
@@ -105,26 +105,28 @@ No DNS resolution issues were detected for any applied-privacy.net exit relays.
 |--------|-------|
 | Total fingerprints retrieved | 120 |
 | Fingerprints in current Tor consensus | 120 |
-| Exit relays with DNS issues | 6 |
-| Issue rate | 5.0% |
-| Circuits that failed to build | 30 (25.00%) |
+| Exit relays with DNS issues | 4 |
+| Issue rate | 3.3% |
+| Circuits that failed to build | 10 (8.33%) |
 
 #### Failure Reasons
 | Count | Reason |
 |-------|--------|
-| 6 | SOCKS Server error 4 (Host unreachable - DNS resolution failed) |
-| 2 | Socket timeout |
+| 8 | SOCKS Server error 4 (Host unreachable - DNS resolution failed) |
 
-#### Exit Relays with DNS Resolution Issues (6)
+#### Exit Relays with DNS Resolution Issues (4)
 
-| # | Fingerprint | IP Address | Failure Reason | Link |
-|---|-------------|------------|----------------|------|
-| 1 | `287A1C40B818DF6C45E8496CDE5026F11563CF10` | 45.84.107.47 | SOCKS Server error 4 | [View](https://metrics.1aeo.com/relay/287A1C40B818DF6C45E8496CDE5026F11563CF10) |
-| 2 | `C9CC8B881E2D7E8C44B895CA841C194621907603` | 45.84.107.101 | Socket timeout | [View](https://metrics.1aeo.com/relay/C9CC8B881E2D7E8C44B895CA841C194621907603) |
-| 3 | `CC0EB5E62E75E138283C233DAEBAA3615E1DC894` | 45.84.107.47 | SOCKS Server error 4 | [View](https://metrics.1aeo.com/relay/CC0EB5E62E75E138283C233DAEBAA3615E1DC894) |
-| 4 | `CDA71E2FAEE3F0A33DA344E254AF5E30A8926F88` | 45.84.107.47 | SOCKS Server error 4 | [View](https://metrics.1aeo.com/relay/CDA71E2FAEE3F0A33DA344E254AF5E30A8926F88) |
-| 5 | `D80F923E3F04A69485446AA7F70D55FD745E9086` | 45.84.107.172 | SOCKS Server error 4 | [View](https://metrics.1aeo.com/relay/D80F923E3F04A69485446AA7F70D55FD745E9086) |
-| 6 | `ED2E34869CCCBCE9321DEBBB957507A85A155CEF` | 45.84.107.198 | SOCKS Server error 4 | [View](https://metrics.1aeo.com/relay/ED2E34869CCCBCE9321DEBBB957507A85A155CEF) |
+| # | Exit Fingerprint | Exit IP | Middle Relay Fingerprint | Middle Relay AS | Failure Reason | Link |
+|---|------------------|---------|--------------------------|-----------------|----------------|------|
+| 1 | `20A2D0A0C53B6A461C6D97889DAAC47894A78F64` | 45.84.107.97 | `8F4BF2EE1246D243B7EACC014D39BB3EB388E972` | AS210558 | SOCKS Server error 4 | [View](https://metrics.1aeo.com/relay/20A2D0A0C53B6A461C6D97889DAAC47894A78F64) |
+| 2 | `8F22F5F09E5249096B98EF389D9040FEF1D61F82` | 45.84.107.97 | `F6F2DBDEA4EE1C08C3F950743C86419F370EFDF6` | AS197540 | SOCKS Server error 4 | [View](https://metrics.1aeo.com/relay/8F22F5F09E5249096B98EF389D9040FEF1D61F82) |
+| 3 | `A145DF21981626EF868F9BE79946A68ED4CF4275` | 45.84.107.97 | `09CA1957EC0671044DAD2EEA282A348FFD7D271E` | AS53667 | SOCKS Server error 4 | [View](https://metrics.1aeo.com/relay/A145DF21981626EF868F9BE79946A68ED4CF4275) |
+| 4 | `C42FF9E0D0CE6B5D83E27C35026D14E402572AE6` | 45.84.107.97 | `0BF171D0984EEF35B9ED9D7801941C833DD3853B` | AS54290 | SOCKS Server error 4 | [View](https://metrics.1aeo.com/relay/C42FF9E0D0CE6B5D83E27C35026D14E402572AE6) |
+
+#### Analysis
+- All 4 failed relays are on the same IP address: **45.84.107.97**
+- Different middle relays were used (from different AS networks), ruling out middle relay as the cause
+- This confirms the DNS issue is specific to the exit relay/server, not the circuit path
 
 ---
 
