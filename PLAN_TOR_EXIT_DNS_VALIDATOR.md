@@ -2,177 +2,66 @@
 
 ## Executive Summary
 
-This plan outlines the architecture for a system that periodically connects to all Tor exit relays, runs unique DNS queries to confirm working DNS resolution, and reports broken DNS to operators. The system builds upon the existing `exitmap` framework and incorporates deployment patterns from the `aroivalidator-deploy` project.
+This plan outlines a system that periodically connects to all Tor exit relays, runs unique DNS queries to confirm working DNS resolution, and reports broken DNS to operators.
 
-**This plan incorporates best ideas from three approaches:**
-- **Claude (this plan)**: Comprehensive architecture and deployment patterns
-- **GPT5.2 (cursor/tor-exit-relay-dns-check-a8cc)**: Error taxonomy, sharding, alerting strategy
-- **Gemini 3 (cursor/tor-exit-relay-dns-check-6548)**: Working implementation, NXDOMAIN handling
+**Two Repositories:**
+1. **exitmap** (this repo) - Core scanning module implementation
+2. **exitmap-deploy** (new repo) - Deployment, scheduling, cloud publishing
 
----
-
-## 1. Current State Analysis
-
-### 1.1 Exitmap Codebase (This Repository)
-
-**Existing DNS Modules:**
-- `dnsresolution.py` - Basic DNS resolution test using Tor's SOCKS5 RESOLVE extension
-- `dnspoison.py` - DNS poisoning detection comparing results to expected IPs
-- `dnssec.py` - DNSSEC validation testing
-
-**Core Components:**
-- `exitmap.py` - Main entry point, bootstraps Tor, iterates over exits
-- `eventhandler.py` - Handles circuit/stream events, runs modules via multiprocessing
-- `torsocks.py` - SOCKS5 interface with DNS resolution support
-- `relayselector.py` - Filters exits by various criteria
-
-**Recent Experiments (cursor/exit-relay-dns-validation-0896 branch):**
-- DNS resolution validation report for specific operators
-- Found 5% failure rate on some operators (prsv.ch: 9 relays with DNS issues)
-- Identified patterns: multiple relays on same IP failing together
-
-### 1.2 Alternative Implementations Reviewed
-
-**GPT5.2 Branch (cursor/tor-exit-relay-dns-check-a8cc):**
-- Detailed strategic plan with error taxonomy
-- Sharding concept (`--shard N/M`) for distributed scanning
-- Alerting strategy: 2 consecutive failures before notification
-- Pages Function proxy for dynamic caching
-
-**Gemini 3 Branch (cursor/tor-exit-relay-dns-check-6548):**
-- Working `dnsunique.py` module implementation
-- Key insight: SOCKS error 4 (Host Unreachable) = NXDOMAIN = **DNS is working**
-- UUID-based unique query generation
-- Per-relay JSON output files with bash aggregation
-- Integration with existing exitmap `analysis_dir`
-
-### 1.3 AROIValidator Patterns (Reference)
-
-**Scheduling & Deployment:**
-```
-aroivalidator-deploy/
-├── scripts/
-│   ├── run-batch-validation.sh   # Hourly cron job
-│   ├── upload-do.sh              # Cloud storage upload
-│   └── install.sh                # Setup with cron
-├── config.env.example            # Configuration template
-└── public/                       # JSON results directory
-```
-
-**Key Patterns:**
-1. Atomic locking via `flock` to prevent concurrent runs
-2. Parallel uploads to multiple cloud providers
-3. JSON manifest (`files.json`) listing all results
-4. `latest.json` symlink to most recent results
-5. Hourly cron scheduling with cloud upload
+**Wildcard Domain:** `*.tor.exit.validator.1aeo.com` → `64.65.4.1` ✓ Verified working
 
 ---
 
-## 2. Proposed Architecture
+## DNS Test Modes: Wildcard vs NXDOMAIN
 
-### 2.1 System Overview
+### Comparison
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    DNS Validator System                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐  │
-│  │   Scheduler  │───▶│  DNS Prober  │───▶│  Result Publisher │  │
-│  │   (cron)     │    │  (exitmap)   │    │  (cloud storage)  │  │
-│  └──────────────┘    └──────────────┘    └──────────────────┘  │
-│         │                   │                     │              │
-│         ▼                   ▼                     ▼              │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐  │
-│  │  Lock File   │    │  Unique DNS  │    │   JSON Results   │  │
-│  │  (atomic)    │    │  Query Gen   │    │   + Dashboard    │  │
-│  └──────────────┘    └──────────────┘    └──────────────────┘  │
-│         │                                         │              │
-│         ▼                                         ▼              │
-│  ┌──────────────┐                        ┌──────────────────┐  │
-│  │   Sharding   │                        │     Alerting     │  │
-│  │  (optional)  │                        │  (2+ failures)   │  │
-│  └──────────────┘                        └──────────────────┘  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+| Aspect | Wildcard Mode (Recommended) | NXDOMAIN Mode |
+|--------|----------------------------|---------------|
+| **Domain** | `*.tor.exit.validator.1aeo.com` | `*.example.com` |
+| **Expected result** | Resolves to `64.65.4.1` | SOCKS error 4 (NXDOMAIN) |
+| **Validates** | DNS works AND returns correct IP | DNS responds (any response) |
+| **Infrastructure** | Requires your wildcard DNS | No setup needed |
+| **False positives** | Low - verifies exact IP | Higher - any response = success |
+| **Detects poisoning** | Yes - wrong IP detected | No - any IP accepted |
+| **Detects broken resolvers** | Yes | Yes |
+| **Complexity** | Slightly more code | Simpler |
 
-### 2.2 Key Design Decisions (Consolidated from All Approaches)
+### Why Wildcard Mode is Recommended
 
-| Decision | Default | Fallback | Rationale |
-|----------|---------|----------|-----------|
-| **DNS test mode** | Controlled wildcard domain | Expected NXDOMAIN (UUID) | Wildcard verifies correct IP; NXDOMAIN verifies "resolver responds" (GPT5.2) |
-| **Unique query format** | `{uuid}.{fp[:8]}.{domain}` | `{uuid}.example.com` | UUID per relay per run prevents caching (Gemini 3) |
-| **NXDOMAIN interpretation** | N/A (wildcard resolves) | **Success** | SOCKS error 4 = NXDOMAIN = DNS working (Gemini 3) |
-| **Error taxonomy** | `success`, `dns_fail`, `timeout` | `circuit_fail`, `exception` | Actionable categories (GPT5.2) |
-| **Output format** | Per-relay JSON → aggregated | Single JSONL file | Per-relay works with multiprocessing (Gemini 3) |
-| **Retry strategy** | 2 retries with 1s delay | 0 retries | Reduce flakiness (Gemini 3 updated) |
-| **Consecutive failure tracking** | Track in aggregation | State file | Alert after 2+ failures (Gemini 3 + GPT5.2) |
-| **Sharding** | `--shard N/M` | Single host | Fingerprint hash mod M (GPT5.2) |
-| **Cloud upload** | DO Spaces + R2 parallel | Local only | rclone with background jobs (Gemini 3) |
+1. **Stronger validation**: Verifies the resolver returns the *correct* IP, not just *any* response
+2. **Detects DNS poisoning**: If a relay's resolver returns wrong IP, we catch it
+3. **You control it**: Your infrastructure, your rules, no dependency on `example.com`
+4. **TTL control**: Can set low TTL (60s) to ensure fresh queries
 
-### 2.3 Component Breakdown
+### When NXDOMAIN Mode is Useful
 
-#### Component 1: DNS Health Module (`src/modules/dnshealth.py`)
+1. **Quick testing**: No DNS setup required
+2. **Fallback**: If wildcard domain is unreachable
+3. **Simpler logic**: Any resolver response = working DNS
 
-**Purpose:** Generate unique DNS queries per exit relay to detect broken DNS resolution.
+### Decision: **Wildcard Mode as Default**
 
-**Key Features (consolidated):**
-- **Unique queries**: `{uuid}.{fingerprint[:8]}.{base_domain}` (Gemini 3 pattern)
-- **NXDOMAIN = Success**: SOCKS error 4 means DNS resolver is working (Gemini 3 insight)
-- **Error classification**: Separate circuit failures from DNS failures (GPT5.2)
-- **Per-relay output**: Individual JSON files to analysis_dir (Gemini 3)
-- **Retry logic**: 1-2 retries for transient failures (GPT5.2)
-
-```python
-# Status taxonomy (from GPT5.2, refined):
-# - "success"      : Resolved to IP or NXDOMAIN (DNS working)
-# - "dns_fail"     : SOCKS error other than NXDOMAIN (DNS broken)
-# - "timeout"      : Resolution timed out
-# - "circuit_fail" : Circuit never built (not a DNS issue)
-```
-
-#### Component 2: Batch Runner (`scripts/run_dns_validation.sh`)
-
-**Purpose:** Orchestrate full network scan with proper locking and output handling.
-
-**Features (consolidated):**
-- Atomic lock file via `flock` (all approaches)
-- Embedded Python aggregation (Gemini 3)
-- Sharding support `--shard N/M` (GPT5.2)
-- Configurable via environment variables
-
-#### Component 3: Result Aggregator
-
-**Purpose:** Collect per-relay JSON files into unified report.
-
-**Features:**
-- Group failures by exit IP (common DNS server issues)
-- Calculate per-operator failure rates
-- Track consecutive failures for alerting (GPT5.2)
-- Generate `latest.json` + `files.json` manifest
-
-#### Component 4: Publisher (`scripts/publish-results.sh`)
-
-**Purpose:** Upload results to cloud storage and update manifest.
-
-**Features:**
-- Parallel upload to DO Spaces + R2 (aroivalidator pattern)
-- Pages Function proxy for dynamic caching (GPT5.2)
-- Historical data retention
+Since `*.tor.exit.validator.1aeo.com` is working and resolves to `64.65.4.1`, use wildcard mode as default with NXDOMAIN as fallback.
 
 ---
 
-## 3. Implementation Phases
+# Part 1: exitmap Repository (This Repo)
 
-### Phase 1: Core DNS Validation Module (Week 1-2)
+## Scope
 
-**New Files:**
+Add a new module `dnshealth.py` to the existing exitmap codebase that:
+- Generates unique DNS queries per relay
+- Validates DNS resolution through Tor circuits
+- Outputs structured JSON results
+
+## New Files
+
 ```
-src/modules/dnshealth.py          # Main validation module (consolidated name)
+src/modules/dnshealth.py          # Main DNS health validation module
 ```
 
-**`src/modules/dnshealth.py` Design (Best of All Approaches):**
+## Module Design: `src/modules/dnshealth.py`
 
 ```python
 #!/usr/bin/env python3
@@ -188,17 +77,15 @@ src/modules/dnshealth.py          # Main validation module (consolidated name)
 """
 Module to detect broken DNS resolution on Tor exit relays.
 
-Generates unique DNS queries per relay to avoid caching issues and
-confirm live DNS resolution capability.
+Generates unique DNS queries per relay and validates resolution.
 
-Key insight (from Gemini 3): SOCKS error 4 (Host Unreachable) when resolving
-a random UUID subdomain means NXDOMAIN - the DNS resolver IS working correctly!
+Modes:
+- Wildcard (default): Query unique subdomain, verify expected IP returned
+- NXDOMAIN (fallback): Query random UUID, treat NXDOMAIN as success
 
-Status taxonomy (from GPT5.2):
-- "success"      : Resolved to IP or NXDOMAIN (DNS working)
-- "dns_fail"     : SOCKS error indicating DNS failure
-- "timeout"      : Resolution timed out  
-- "circuit_fail" : Would be set by eventhandler if circuit never built
+Usage:
+    exitmap dnshealth                          # Wildcard mode (default)
+    exitmap dnshealth -H example.com           # NXDOMAIN mode (fallback)
 """
 import logging
 import socket
@@ -215,12 +102,16 @@ from util import exiturl
 
 log = logging.getLogger(__name__)
 
-# Configurable base domain
-# Option 1: Use example.com (random UUID will get NXDOMAIN = success)
-# Option 2: Use your own wildcard domain for IP verification
-DEFAULT_BASE_DOMAIN = "example.com"
+# Wildcard domain configuration
+WILDCARD_DOMAIN = "tor.exit.validator.1aeo.com"
+EXPECTED_IP = "64.65.4.1"
+
+# Fallback for NXDOMAIN mode
+NXDOMAIN_DOMAIN = "example.com"
+
+# Scan settings
 QUERY_TIMEOUT = 10  # seconds
-MAX_RETRIES = 1     # Retry once for transient failures (GPT5.2 suggestion)
+MAX_RETRIES = 2     # Total attempts per relay
 
 destinations = None  # Module uses DNS resolution, not TCP connections
 
@@ -232,7 +123,13 @@ def setup(consensus=None, target=None, **kwargs):
     """Initialize scan metadata."""
     global _run_id
     _run_id = time.strftime("%Y%m%d_%H%M%S")
-    log.info(f"DNS Health module initialized. Run ID: {_run_id}")
+    
+    if target:
+        log.info(f"DNS Health: NXDOMAIN mode (target={target})")
+    else:
+        log.info(f"DNS Health: Wildcard mode ({WILDCARD_DOMAIN} → {EXPECTED_IP})")
+    
+    log.info(f"Run ID: {_run_id}")
 
 
 def generate_unique_query(fingerprint: str, base_domain: str) -> str:
@@ -240,37 +137,33 @@ def generate_unique_query(fingerprint: str, base_domain: str) -> str:
     Generate a unique DNS query for this relay.
     
     Format: {uuid}.{fingerprint_prefix}.{base_domain}
-    
-    Using UUID ensures:
-    - No caching between runs or relays
-    - Unique even if same relay tested multiple times
     """
     unique_id = str(uuid.uuid4())
     fp_prefix = fingerprint[:8].lower()
     return f"{unique_id}.{fp_prefix}.{base_domain}"
 
 
-def resolve_with_retry(exit_desc, domain: str, retries: int = MAX_RETRIES) -> Dict[str, Any]:
+def resolve_with_retry(exit_desc, domain: str, expected_ip: str = None, 
+                       retries: int = MAX_RETRIES) -> Dict[str, Any]:
     """
-    Attempt to resolve domain through exit relay with retry logic.
+    Resolve domain through exit relay with retry logic.
     
-    Key insight from Gemini 3: SOCKS error 4 = NXDOMAIN = DNS IS WORKING!
-    This is because "Host Unreachable" for DNS resolution means the resolver
-    correctly identified that the domain doesn't exist.
-    
-    Updated: Now uses Gemini 3's cleaner retry structure with 1s delay between attempts.
+    Modes:
+    - If expected_ip is set: Wildcard mode, verify IP matches
+    - If expected_ip is None: NXDOMAIN mode, SOCKS error 4 = success
     """
     exit_fp = exit_desc.fingerprint
     exit_url = exiturl(exit_fp)
     
-    # Initialize result (will be updated on each attempt)
     result = {
         "exit_fingerprint": exit_fp,
         "exit_nickname": getattr(exit_desc, 'nickname', 'unknown'),
         "exit_address": getattr(exit_desc, 'address', 'unknown'),
         "query_domain": domain,
+        "expected_ip": expected_ip,
         "timestamp": time.time(),
         "run_id": _run_id,
+        "mode": "wildcard" if expected_ip else "nxdomain",
         "status": "unknown",
         "resolved_ip": None,
         "latency_ms": None,
@@ -287,29 +180,47 @@ def resolve_with_retry(exit_desc, domain: str, retries: int = MAX_RETRIES) -> Di
         
         try:
             ip = sock.resolve(domain)
-            # Successfully resolved to an IP
-            result["status"] = "success"
             result["resolved_ip"] = ip
             result["latency_ms"] = int((time.time() - start_time) * 1000)
-            log.info(f"✓ {exit_url} resolved {domain} to {ip}")
+            
+            # Wildcard mode: verify IP matches expected
+            if expected_ip:
+                if ip == expected_ip:
+                    result["status"] = "success"
+                    log.info(f"✓ {exit_url} resolved to {ip} (correct)")
+                else:
+                    result["status"] = "wrong_ip"
+                    result["error"] = f"Expected {expected_ip}, got {ip}"
+                    log.warning(f"✗ {exit_url} returned wrong IP: {ip} != {expected_ip}")
+            else:
+                # NXDOMAIN mode: any resolution is success
+                result["status"] = "success"
+                log.info(f"✓ {exit_url} resolved to {ip}")
+            
             return result
             
         except error.SOCKSv5Error as err:
             err_str = str(err)
+            result["latency_ms"] = int((time.time() - start_time) * 1000)
             
-            # KEY INSIGHT (Gemini 3): SOCKS error 4 = Host Unreachable = NXDOMAIN
-            # For a random UUID subdomain, NXDOMAIN means DNS IS WORKING!
+            # SOCKS error 4 = Host Unreachable = NXDOMAIN
             if "error 4" in err_str:
-                result["status"] = "success"
-                result["resolved_ip"] = "NXDOMAIN"
-                result["latency_ms"] = int((time.time() - start_time) * 1000)
-                log.info(f"✓ {exit_url} returned NXDOMAIN for {domain} (DNS working)")
+                if expected_ip:
+                    # Wildcard mode: NXDOMAIN is failure (should have resolved)
+                    result["status"] = "dns_fail"
+                    result["error"] = "NXDOMAIN (domain should resolve)"
+                    log.warning(f"✗ {exit_url} returned NXDOMAIN for wildcard domain")
+                else:
+                    # NXDOMAIN mode: NXDOMAIN is success (expected)
+                    result["status"] = "success"
+                    result["resolved_ip"] = "NXDOMAIN"
+                    log.info(f"✓ {exit_url} returned NXDOMAIN (DNS working)")
                 return result
             
-            # Other SOCKS errors indicate actual DNS failure
+            # Other SOCKS errors
             result["status"] = "error"
             result["error"] = err_str
-            log.warning(f"Attempt {attempt}/{retries}: {exit_url} DNS error: {err}")
+            log.warning(f"Attempt {attempt}/{retries}: {exit_url} SOCKS error: {err}")
             
         except socket.timeout:
             result["status"] = "timeout"
@@ -321,11 +232,11 @@ def resolve_with_retry(exit_desc, domain: str, retries: int = MAX_RETRIES) -> Di
             result["error"] = str(err)
             log.error(f"Attempt {attempt}/{retries}: {exit_url} exception: {err}")
         
-        # Wait before retry (Gemini 3: 1 second delay)
+        # Wait before retry
         if attempt < retries:
             time.sleep(1)
     
-    log.warning(f"✗ {exit_url} DNS FAILED after {result['attempt']} attempts: {result['error']}")
+    log.warning(f"✗ {exit_url} FAILED after {result['attempt']} attempts: {result['error']}")
     return result
 
 
@@ -333,14 +244,25 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
           run_cmd_over_tor, **kwargs):
     """
     Probe the given exit relay's DNS resolution capability.
+    
+    If target_host is provided (-H flag), use NXDOMAIN mode.
+    Otherwise, use wildcard mode with WILDCARD_DOMAIN.
     """
-    base_domain = target_host if target_host else DEFAULT_BASE_DOMAIN
+    if target_host:
+        # NXDOMAIN mode: user specified a domain
+        base_domain = target_host
+        expected_ip = None
+    else:
+        # Wildcard mode: use our controlled domain
+        base_domain = WILDCARD_DOMAIN
+        expected_ip = EXPECTED_IP
+    
     query_domain = generate_unique_query(exit_desc.fingerprint, base_domain)
     
-    def do_validation(exit_desc, query_domain):
-        result = resolve_with_retry(exit_desc, query_domain)
+    def do_validation(exit_desc, query_domain, expected_ip):
+        result = resolve_with_retry(exit_desc, query_domain, expected_ip)
         
-        # Write individual result to analysis_dir (Gemini 3 pattern)
+        # Write individual result to analysis_dir
         if util.analysis_dir:
             filename = os.path.join(
                 util.analysis_dir, 
@@ -352,97 +274,165 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
             except Exception as e:
                 log.error(f"Failed to write {filename}: {e}")
     
-    run_python_over_tor(do_validation, exit_desc, query_domain)
+    run_python_over_tor(do_validation, exit_desc, query_domain, expected_ip)
 
 
 def teardown():
-    """
-    Called after all probes complete.
-    Individual results are in analysis_dir; aggregation done by batch script.
-    """
+    """Called after all probes complete."""
     log.info(f"DNS Health scan complete. Run ID: {_run_id}")
-    log.info(f"Results written to: {util.analysis_dir}")
+    if util.analysis_dir:
+        log.info(f"Results written to: {util.analysis_dir}")
 
 
 if __name__ == "__main__":
     log.critical("Module can only be run via exitmap, not standalone.")
 ```
 
-**Key improvements from alternative approaches:**
+## Usage Examples
 
-| Feature | Source | Implementation |
-|---------|--------|----------------|
-| NXDOMAIN = Success | Gemini 3 | SOCKS error 4 interpreted as working DNS |
-| UUID uniqueness | Gemini 3 | `uuid.uuid4()` for guaranteed uniqueness |
-| Per-relay JSON | Gemini 3 | Individual files to `analysis_dir` |
-| Retry logic | GPT5.2 | `MAX_RETRIES = 1` for transient failures |
-| Status taxonomy | GPT5.2 | `success`, `dns_fail`, `timeout` categories |
-| Run ID tracking | GPT5.2 | Track which run each result belongs to |
+```bash
+# Wildcard mode (default) - recommended
+exitmap dnshealth --analysis-dir ./results
 
-### Phase 2: DNS Infrastructure Setup (Week 2-3)
+# NXDOMAIN mode (fallback)
+exitmap dnshealth -H example.com --analysis-dir ./results
 
-**Required DNS Setup:**
+# With first hop for faster scanning
+exitmap dnshealth --first-hop YOUR_RELAY_FPR --analysis-dir ./results
 
-You need a domain with a wildcard DNS record that resolves all subdomains. Two options:
-
-**Option A: Authoritative DNS Server (Recommended for accuracy)**
-```
-; Zone file for dns-check.torrelayvalidator.net
-$TTL 60
-@       IN  SOA   ns1.torrelayvalidator.net. admin.torrelayvalidator.net. (
-                  2024010901  ; Serial
-                  3600        ; Refresh
-                  600         ; Retry  
-                  604800      ; Expire
-                  60 )        ; Minimum TTL (1 minute)
-        IN  NS    ns1.torrelayvalidator.net.
-        IN  NS    ns2.torrelayvalidator.net.
-        IN  A     YOUR_SERVER_IP
-
-; Wildcard - all subdomains resolve to same IP
-*       IN  A     YOUR_SERVER_IP
+# Scan specific exit
+exitmap dnshealth -e EXIT_FINGERPRINT --analysis-dir ./results
 ```
 
-**Option B: Use External Service**
-- Cloudflare, Route53, or similar with wildcard DNS
-- Less control over TTLs but simpler setup
+## Output Format
 
-### Phase 3: Batch Runner & Scheduler (Week 3-4)
+Each relay produces a JSON file in `analysis_dir`:
 
-**`scripts/run_dns_validation.sh`:** (Consolidated from Gemini 3 + aroivalidator patterns)
+```json
+{
+  "exit_fingerprint": "ABC123...",
+  "exit_nickname": "MyRelay",
+  "exit_address": "192.0.2.1",
+  "query_domain": "uuid.abc123.tor.exit.validator.1aeo.com",
+  "expected_ip": "64.65.4.1",
+  "timestamp": 1704825600.123,
+  "run_id": "20250109_143000",
+  "mode": "wildcard",
+  "status": "success",
+  "resolved_ip": "64.65.4.1",
+  "latency_ms": 1523,
+  "error": null,
+  "attempt": 1
+}
+```
+
+## Status Values
+
+| Status | Meaning | Actionable? |
+|--------|---------|-------------|
+| `success` | DNS working correctly | No |
+| `wrong_ip` | Resolved to unexpected IP (possible poisoning) | Yes - investigate |
+| `dns_fail` | DNS resolution failed | Yes - relay has broken DNS |
+| `timeout` | Resolution timed out | Maybe - could be transient |
+| `error` | SOCKS/connection error | Maybe - could be circuit issue |
+| `exception` | Unexpected error | Yes - investigate |
+
+---
+
+# Part 2: exitmap-deploy Repository (New Repo)
+
+## Scope
+
+Separate repository for deployment automation:
+- Scheduled execution via cron
+- Result aggregation
+- Cloud storage uploads (DO Spaces, R2)
+- Cloudflare Pages/Workers for web dashboard
+
+## Repository Structure
+
+```
+exitmap-deploy/
+├── README.md
+├── config.env.example           # Configuration template
+├── scripts/
+│   ├── run_dns_validation.sh    # Main batch runner
+│   ├── aggregate_results.py     # JSON aggregation
+│   ├── upload_do.sh             # DigitalOcean Spaces upload
+│   ├── upload_r2.sh             # Cloudflare R2 upload
+│   └── install.sh               # Setup script
+├── configs/
+│   └── cron.d/
+│       └── exitmap-dns          # Cron job template
+├── functions/
+│   └── [[path]].js              # Cloudflare Pages Function (proxy)
+└── public/
+    └── index.html               # Dashboard (optional)
+```
+
+## Configuration: `config.env.example`
+
+```bash
+# exitmap-deploy Configuration
+
+# === Paths ===
+EXITMAP_DIR=$HOME/exitmap
+OUTPUT_DIR=$HOME/exitmap-deploy/public
+LOG_DIR=$HOME/exitmap-deploy/logs
+
+# === Scan Settings ===
+BUILD_DELAY=2                    # Seconds between circuit builds
+DELAY_NOISE=1                    # Random variance
+FIRST_HOP=                       # Your controlled relay (recommended)
+ALL_EXITS=true                   # Include BadExit relays
+
+# === Cloud Storage ===
+DO_ENABLED=false
+DO_BUCKET=exitmap-dns-results
+DO_SPACES_KEY=
+DO_SPACES_SECRET=
+DO_SPACES_REGION=nyc3
+
+R2_ENABLED=false
+R2_BUCKET=exitmap-dns-results
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+
+# === Cloudflare Pages ===
+CF_ACCOUNT_ID=
+CF_API_TOKEN=
+PAGES_PROJECT=exitmap-dns
+```
+
+## Batch Runner: `scripts/run_dns_validation.sh`
 
 ```bash
 #!/bin/bash
-# Tor Exit Relay DNS Health Validation - Batch Runner
-# Combines patterns from Gemini 3 implementation and aroivalidator-deploy
+# exitmap-deploy: DNS Health Validation Batch Runner
 set -euo pipefail
 
-# Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-ANALYSIS_DIR="${REPO_ROOT}/analysis_results/$(date +%Y-%m-%d_%H-%M-%S)"
-OUTPUT_DIR="${REPO_ROOT}/public"
-LOG_DIR="${REPO_ROOT}/logs"
-LOCK_FILE="/tmp/exitmap_dns_health.lock"
-LATEST_REPORT="${OUTPUT_DIR}/latest.json"
+DEPLOY_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Scan parameters (override via environment)
-: "${BUILD_DELAY:=2}"           # Seconds between circuit builds
-: "${DELAY_NOISE:=1}"           # Random delay variance
-: "${VERBOSITY:=info}"          # Log level
-: "${FIRST_HOP:=}"              # Optional: your controlled relay
-: "${SHARD:=}"                  # Optional: "N/M" for distributed scanning (GPT5.2)
-: "${ALL_EXITS:=true}"          # Test all exits including BadExit
-
-# Logging helper
-log() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"
+# Load configuration
+source "$DEPLOY_DIR/config.env" 2>/dev/null || {
+    echo "Error: config.env not found. Copy config.env.example first."
+    exit 1
 }
 
-# Atomic lock to prevent concurrent runs (all approaches agree)
+TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+ANALYSIS_DIR="${OUTPUT_DIR}/analysis_${TIMESTAMP}"
+REPORT_FILE="${OUTPUT_DIR}/dns_health_${TIMESTAMP}.json"
+LATEST_REPORT="${OUTPUT_DIR}/latest.json"
+LOCK_FILE="/tmp/exitmap_dns_health.lock"
+
+# Logging helper
+log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"; }
+
+# Atomic lock
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
-    log "Another instance is running. Exiting."
+    log "Another instance running. Exiting."
     exit 0
 fi
 echo $$ >&9
@@ -450,807 +440,338 @@ trap 'rm -f "$LOCK_FILE"' EXIT
 
 log "=== DNS Health Validation Starting ==="
 
-# Setup directories
-mkdir -p "$ANALYSIS_DIR" "$OUTPUT_DIR" "$LOG_DIR"
+mkdir -p "$ANALYSIS_DIR" "$LOG_DIR"
 
-# Setup environment (Gemini 3 pattern)
-cd "$REPO_ROOT"
-if [[ -d "venv" ]]; then
-    source venv/bin/activate
-elif [[ -d ".venv" ]]; then
-    source .venv/bin/activate
-else
-    log "Creating virtualenv..."
-    python3 -m venv venv
-    source venv/bin/activate
-    pip install -e .
-fi
+# Setup exitmap environment
+cd "$EXITMAP_DIR"
+[[ -d "venv" ]] && source venv/bin/activate
+[[ -d ".venv" ]] && source .venv/bin/activate
 
-# Build exitmap command
-EXITMAP_CMD="python3 -m exitmap"
-EXITMAP_CMD="$EXITMAP_CMD --build-delay $BUILD_DELAY"
-EXITMAP_CMD="$EXITMAP_CMD --delay-noise $DELAY_NOISE"
-EXITMAP_CMD="$EXITMAP_CMD --verbosity $VERBOSITY"
-EXITMAP_CMD="$EXITMAP_CMD --analysis-dir $ANALYSIS_DIR"
+# Build command
+CMD="python -m exitmap dnshealth"
+CMD="$CMD --build-delay ${BUILD_DELAY:-2}"
+CMD="$CMD --delay-noise ${DELAY_NOISE:-1}"
+CMD="$CMD --analysis-dir $ANALYSIS_DIR"
+[[ -n "${FIRST_HOP:-}" ]] && CMD="$CMD --first-hop $FIRST_HOP"
+[[ "${ALL_EXITS:-true}" == "true" ]] && CMD="$CMD --all-exits"
 
-[[ -n "$FIRST_HOP" ]] && EXITMAP_CMD="$EXITMAP_CMD --first-hop $FIRST_HOP"
-[[ "$ALL_EXITS" == "true" ]] && EXITMAP_CMD="$EXITMAP_CMD --all-exits"
-
-# Sharding support (GPT5.2 idea) - would need exitmap modification
-# [[ -n "$SHARD" ]] && EXITMAP_CMD="$EXITMAP_CMD --shard $SHARD"
-
-EXITMAP_CMD="$EXITMAP_CMD dnshealth"
-
-# Run the scan
-log "Running: $EXITMAP_CMD"
-if ! $EXITMAP_CMD > "$LOG_DIR/exitmap_$(date +%Y%m%d_%H%M%S).log" 2>&1; then
-    log "Exitmap execution had errors. Check logs for details."
-    # Continue - partial results may exist
-fi
-
-# Aggregate Results with Consecutive Failure Tracking (Gemini 3 updated pattern)
-log "Aggregating results..."
-REPORT_FILE="${OUTPUT_DIR}/dns_health_$(date +%Y%m%d_%H%M%S).json"
-
-python3 << AGGREGATE
-import json
-import glob
-import os
-from datetime import datetime
-
-analysis_dir = "$ANALYSIS_DIR"
-report_file = "$REPORT_FILE"
-latest_report = "$LATEST_REPORT"
-
-# Load previous state for consecutive failure tracking (Gemini 3 addition)
-previous_state = {}
-if os.path.exists(latest_report):
-    try:
-        with open(latest_report, 'r') as f:
-            prev_data = json.load(f)
-            for res in prev_data.get('results', []):
-                fp = res.get('exit_fingerprint')
-                if fp:
-                    previous_state[fp] = res
-        print(f"Loaded {len(previous_state)} previous results for tracking")
-    except Exception as e:
-        print(f"Warning: Could not read previous report: {e}")
-
-# Find all per-relay result files
-files = glob.glob(os.path.join(analysis_dir, '**', 'dnshealth_*.json'), recursive=True)
-
-results = []
-stats = {"success": 0, "error": 0, "timeout": 0, "exception": 0, "unknown": 0}
-
-for f in files:
-    try:
-        with open(f, 'r') as fd:
-            data = json.load(fd)
-            
-            # Track consecutive failures (Gemini 3 addition)
-            status = data.get('status', 'unknown')
-            fp = data.get('exit_fingerprint')
-            
-            if status == 'success':
-                data['consecutive_failures'] = 0
-                stats['success'] += 1
-            else:
-                # Check previous state for this relay
-                prev_failures = 0
-                if fp and fp in previous_state:
-                    prev_entry = previous_state[fp]
-                    if prev_entry.get('status') != 'success':
-                        prev_failures = prev_entry.get('consecutive_failures', 0)
-                
-                data['consecutive_failures'] = prev_failures + 1
-                stats[status] = stats.get(status, 0) + 1
-            
-            results.append(data)
-    except Exception as e:
-        print(f"Error reading {f}: {e}")
-
-total = len(results)
-success_rate = (stats["success"] / total * 100) if total > 0 else 0
-
-# Identify relays that need alerting (2+ consecutive failures)
-alert_relays = [r for r in results if r.get('consecutive_failures', 0) >= 2]
-new_alerts = [r for r in alert_relays 
-              if r.get('consecutive_failures') == 2]  # Just crossed threshold
-
-report = {
-    "metadata": {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "analysis_dir": analysis_dir,
-        "total_relays": total,
-        "success": stats["success"],
-        "error": stats["error"],
-        "timeout": stats["timeout"],
-        "success_rate_percent": round(success_rate, 2),
-        "alert_count": len(alert_relays),
-        "new_alert_count": len(new_alerts),
-    },
-    "results": results,
-    "failures": [r for r in results if r.get("status") != "success"],
-    "alerts": alert_relays,  # Relays with 2+ consecutive failures
-    "new_alerts": new_alerts,  # Relays that just crossed threshold
-    "failures_by_ip": {},
+# Run scan
+log "Running: $CMD"
+$CMD > "$LOG_DIR/exitmap_${TIMESTAMP}.log" 2>&1 || {
+    log "Exitmap had errors - check logs"
 }
 
-# Group failures by IP
-for r in report["failures"]:
-    ip = r.get("exit_address", "unknown")
-    if ip not in report["failures_by_ip"]:
-        report["failures_by_ip"][ip] = []
-    report["failures_by_ip"][ip].append(r["exit_fingerprint"])
-
-with open(report_file, 'w') as f:
-    json.dump(report, f, indent=2)
-
-print(f"Aggregated {total} results: {stats['success']} success, {stats['error']+stats['timeout']} failures")
-print(f"Alerts: {len(alert_relays)} total, {len(new_alerts)} new (2+ consecutive failures)")
-AGGREGATE
+# Aggregate results
+log "Aggregating results..."
+python3 "$SCRIPT_DIR/aggregate_results.py" \
+    --input "$ANALYSIS_DIR" \
+    --output "$REPORT_FILE" \
+    --previous "$LATEST_REPORT"
 
 # Update latest.json and manifest
 if [[ -f "$REPORT_FILE" ]]; then
     cp "$REPORT_FILE" "$LATEST_REPORT"
-    log "Report: $REPORT_FILE"
     
     # Update files.json manifest
     find "$OUTPUT_DIR" -maxdepth 1 -name "dns_health_*.json" -printf '%f\n' \
         | sort -r | jq -Rs 'split("\n") | map(select(length > 0))' \
-        > "$OUTPUT_DIR/files.json.tmp" \
-        && mv "$OUTPUT_DIR/files.json.tmp" "$OUTPUT_DIR/files.json"
+        > "$OUTPUT_DIR/files.json"
     
-    # Cloud uploads - parallel (Gemini 3 pattern)
-    if [[ "$DO_ENABLED" == "true" ]] || [[ "$R2_ENABLED" == "true" ]]; then
-        log "Uploading to cloud storage..."
-        RCLONE_CMD=$(command -v rclone 2>/dev/null || echo "")
-        
-        if [[ -n "$RCLONE_CMD" ]]; then
-            PIDS=()
-            
-            if [[ "$DO_ENABLED" == "true" ]]; then
-                $RCLONE_CMD copy "$REPORT_FILE" "do:${DO_BUCKET}/dns-reports/" &
-                PIDS+=($!)
-                $RCLONE_CMD copy "$LATEST_REPORT" "do:${DO_BUCKET}/" &
-                PIDS+=($!)
-            fi
-            
-            if [[ "$R2_ENABLED" == "true" ]]; then
-                $RCLONE_CMD copy "$REPORT_FILE" "r2:${R2_BUCKET}/dns-reports/" &
-                PIDS+=($!)
-                $RCLONE_CMD copy "$LATEST_REPORT" "r2:${R2_BUCKET}/" &
-                PIDS+=($!)
-            fi
-            
-            # Wait for all uploads
-            FAILED=0
-            for pid in "${PIDS[@]:-}"; do
-                wait "$pid" || ((FAILED++))
-            done
-            
-            if [[ $FAILED -gt 0 ]]; then
-                log "⚠ $FAILED upload(s) failed"
-            else
-                log "✓ Cloud upload complete"
-            fi
-        else
-            log "rclone not found - skipping cloud upload"
-        fi
-    fi
+    log "Report: $REPORT_FILE"
 fi
 
-log "=== DNS Health Validation Complete ==="
+# Cloud uploads (parallel)
+PIDS=()
+
+if [[ "${DO_ENABLED:-false}" == "true" ]]; then
+    log "Uploading to DO Spaces..."
+    "$SCRIPT_DIR/upload_do.sh" "$REPORT_FILE" "$LATEST_REPORT" &
+    PIDS+=($!)
+fi
+
+if [[ "${R2_ENABLED:-false}" == "true" ]]; then
+    log "Uploading to R2..."
+    "$SCRIPT_DIR/upload_r2.sh" "$REPORT_FILE" "$LATEST_REPORT" &
+    PIDS+=($!)
+fi
+
+# Wait for uploads
+for pid in "${PIDS[@]:-}"; do
+    wait "$pid" || log "Upload failed (PID $pid)"
+done
+
+log "=== Complete ==="
 ```
 
-**Sharding Support (GPT5.2 idea - future enhancement):**
-
-To add `--shard N/M` support, modify `relayselector.py`:
-
-```python
-def get_exits(..., shard=None):
-    """
-    shard: "N/M" string where N is this shard (0-indexed), M is total shards
-    """
-    # ... existing code ...
-    
-    if shard:
-        n, m = map(int, shard.split('/'))
-        exit_destinations = {
-            fp: dests for i, (fp, dests) in enumerate(exit_destinations.items())
-            if i % m == n
-        }
-    
-    return exit_destinations
-```
-
-**Cron Setup (`/etc/cron.d/tor-dns-health`):**
-
-```cron
-# Run DNS health validation every 6 hours
-# Offset by 15 minutes to spread load on Tor network
-15 */6 * * * torvalidator /home/torvalidator/exitmap/scripts/run_dns_validation.sh >> /home/torvalidator/exitmap/logs/cron.log 2>&1
-
-# Monthly: compress old data (aroivalidator pattern)
-0 3 1 * * torvalidator /home/torvalidator/exitmap/scripts/compress-old-data.sh >> /home/torvalidator/exitmap/logs/cron.log 2>&1
-```
-
-### Phase 4: Result Aggregation & Reporting (Week 4-5)
-
-**`src/dnsvalidator/aggregator.py`:** (Enhanced with GPT5.2 consecutive failure tracking)
+## Result Aggregator: `scripts/aggregate_results.py`
 
 ```python
 #!/usr/bin/env python3
-"""
-Aggregate DNS validation results into operator-level reports.
-
-Includes consecutive failure tracking for alerting (GPT5.2 suggestion):
-- Track failures across runs
-- Only alert after 2+ consecutive failures to avoid noise
-"""
+"""Aggregate per-relay DNS health results into a single report."""
+import argparse
 import json
-import logging
-from collections import defaultdict
-from typing import Dict, List, Any, Set
-from pathlib import Path
+import glob
+import os
 from datetime import datetime
+from collections import defaultdict
 
-log = logging.getLogger(__name__)
-
-# State file for tracking consecutive failures (GPT5.2 idea)
-FAILURE_STATE_FILE = "failure_state.json"
-
-
-def load_failure_state(state_dir: Path) -> Dict[str, int]:
-    """Load consecutive failure counts per relay."""
-    state_file = state_dir / FAILURE_STATE_FILE
-    if state_file.exists():
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input', required=True, help='Analysis directory')
+    parser.add_argument('--output', required=True, help='Output report file')
+    parser.add_argument('--previous', help='Previous report for tracking')
+    args = parser.parse_args()
+    
+    # Load previous state for consecutive failure tracking
+    previous_state = {}
+    if args.previous and os.path.exists(args.previous):
         try:
-            with open(state_file) as f:
-                return json.load(f)
+            with open(args.previous) as f:
+                prev_data = json.load(f)
+                for res in prev_data.get('results', []):
+                    fp = res.get('exit_fingerprint')
+                    if fp:
+                        previous_state[fp] = res
         except Exception as e:
-            log.warning(f"Failed to load failure state: {e}")
-    return {}
-
-
-def save_failure_state(state_dir: Path, state: Dict[str, int]):
-    """Save updated failure state."""
-    state_file = state_dir / FAILURE_STATE_FILE
-    try:
-        with open(state_file, 'w') as f:
-            json.dump(state, f, indent=2)
-    except Exception as e:
-        log.error(f"Failed to save failure state: {e}")
-
-
-def update_failure_tracking(
-    results: List[Dict], 
-    state_dir: Path,
-    alert_threshold: int = 2
-) -> Dict[str, Any]:
-    """
-    Update consecutive failure tracking and identify relays to alert on.
+            print(f"Warning: Could not load previous report: {e}")
     
-    GPT5.2 insight: Only alert after 2+ consecutive failures to reduce noise.
+    # Find all result files
+    files = glob.glob(os.path.join(args.input, 'dnshealth_*.json'))
     
-    Returns:
-        {
-            "new_alerts": [fingerprints that crossed threshold this run],
-            "ongoing_failures": [fingerprints with consecutive failures],
-            "recovered": [fingerprints that were failing but now passed],
-        }
-    """
-    # Load previous state
-    failure_counts = load_failure_state(state_dir)
-    
-    # Process current results
-    current_failures: Set[str] = set()
-    current_successes: Set[str] = set()
-    
-    for relay in results:
-        fp = relay.get("exit_fingerprint") or relay.get("fingerprint")
-        status = relay.get("status")
-        
-        if status == "success":
-            current_successes.add(fp)
-        else:
-            current_failures.add(fp)
-    
-    # Update counts and identify alerts
-    new_alerts = []
-    ongoing_failures = []
-    recovered = []
-    
-    # Handle failures
-    for fp in current_failures:
-        old_count = failure_counts.get(fp, 0)
-        new_count = old_count + 1
-        failure_counts[fp] = new_count
-        
-        if new_count >= alert_threshold:
-            if old_count < alert_threshold:
-                new_alerts.append(fp)  # Just crossed threshold
-            else:
-                ongoing_failures.append(fp)  # Already alerting
-    
-    # Handle recoveries
-    for fp in current_successes:
-        if fp in failure_counts:
-            if failure_counts[fp] >= alert_threshold:
-                recovered.append(fp)
-            del failure_counts[fp]
-    
-    # Save updated state
-    save_failure_state(state_dir, failure_counts)
-    
-    return {
-        "new_alerts": new_alerts,
-        "ongoing_failures": ongoing_failures,
-        "recovered": recovered,
-        "threshold": alert_threshold,
-    }
-
-
-def load_results(results_dir: Path, limit: int = 10) -> List[Dict]:
-    """Load recent validation result files."""
     results = []
-    files = sorted(results_dir.glob("dns_health_*.json"), reverse=True)[:limit]
+    stats = defaultdict(int)
+    
     for f in files:
         try:
-            with open(f) as fp:
-                results.append(json.load(fp))
+            with open(f) as fd:
+                data = json.load(fd)
+                
+                status = data.get('status', 'unknown')
+                stats[status] += 1
+                
+                # Track consecutive failures
+                fp = data.get('exit_fingerprint')
+                if status == 'success':
+                    data['consecutive_failures'] = 0
+                else:
+                    prev_failures = 0
+                    if fp in previous_state:
+                        prev = previous_state[fp]
+                        if prev.get('status') != 'success':
+                            prev_failures = prev.get('consecutive_failures', 0)
+                    data['consecutive_failures'] = prev_failures + 1
+                
+                results.append(data)
         except Exception as e:
-            log.warning(f"Failed to load {f}: {e}")
-    return results
+            print(f"Error reading {f}: {e}")
+    
+    total = len(results)
+    success_rate = (stats['success'] / total * 100) if total > 0 else 0
+    
+    # Group failures by IP
+    failures_by_ip = defaultdict(list)
+    for r in results:
+        if r.get('status') != 'success':
+            ip = r.get('exit_address', 'unknown')
+            failures_by_ip[ip].append(r['exit_fingerprint'])
+    
+    report = {
+        'metadata': {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'total_relays': total,
+            'success': stats['success'],
+            'wrong_ip': stats['wrong_ip'],
+            'dns_fail': stats['dns_fail'],
+            'timeout': stats['timeout'],
+            'error': stats['error'],
+            'success_rate_percent': round(success_rate, 2),
+        },
+        'results': results,
+        'failures': [r for r in results if r.get('status') != 'success'],
+        'failures_by_ip': dict(failures_by_ip),
+    }
+    
+    with open(args.output, 'w') as f:
+        json.dump(report, f, indent=2)
+    
+    print(f"Aggregated {total} results: {stats['success']} success, "
+          f"{total - stats['success']} failures ({success_rate:.1f}% success rate)")
 
-
-def extract_operator(contact: str) -> str:
-    """
-    Extract operator identifier from relay contact info.
-    
-    Looks for patterns like:
-    - email:admin@example.com
-    - url:https://example.com
-    """
-    if not contact:
-        return "unknown"
-    
-    import re
-    contact_lower = contact.lower()
-    
-    # Try to extract domain from email
-    if "@" in contact:
-        match = re.search(r'@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', contact)
-        if match:
-            return match.group(1)
-    
-    # Try to extract domain from URL
-    if "url:" in contact_lower:
-        match = re.search(r'url:https?://([a-zA-Z0-9.-]+)', contact_lower)
-        if match:
-            return match.group(1)
-    
-    return contact[:50] if len(contact) > 50 else contact
-
-
-def aggregate_by_ip(results: List[Dict]) -> Dict[str, Dict]:
-    """
-    Group failures by exit IP address.
-    
-    This helps identify:
-    - Multiple relays on same server with broken DNS
-    - Common DNS server issues
-    """
-    by_ip = defaultdict(lambda: {
-        "total_relays": 0,
-        "failed_relays": 0,
-        "fingerprints": [],
-        "failed_fingerprints": [],
-        "failure_types": defaultdict(int),
-    })
-    
-    for relay in results:
-        ip = relay.get("exit_address", "unknown")
-        status = relay.get("status", "unknown")
-        fp = relay.get("exit_fingerprint") or relay.get("fingerprint")
-        
-        by_ip[ip]["total_relays"] += 1
-        by_ip[ip]["fingerprints"].append(fp)
-        
-        if status != "success":
-            by_ip[ip]["failed_relays"] += 1
-            by_ip[ip]["failed_fingerprints"].append(fp)
-            by_ip[ip]["failure_types"][status] += 1
-    
-    # Calculate rates and convert for JSON
-    for ip_data in by_ip.values():
-        ip_data["failure_rate"] = (
-            ip_data["failed_relays"] / ip_data["total_relays"] * 100
-            if ip_data["total_relays"] > 0 else 0
-        )
-        ip_data["failure_types"] = dict(ip_data["failure_types"])
-    
-    return dict(by_ip)
-
-
-def generate_operator_report(
-    latest_results: Dict,
-    alert_info: Dict[str, Any],
-    by_ip: Dict[str, Dict]
-) -> str:
-    """
-    Generate markdown report for operators.
-    """
-    meta = latest_results.get("metadata", {})
-    
-    lines = [
-        "# Tor Exit Relay DNS Health Report",
-        "",
-        f"**Generated:** {datetime.now().isoformat()}",
-        "",
-        "## Summary",
-        "",
-        f"- **Total Relays Tested:** {meta.get('total_relays', 'N/A')}",
-        f"- **Success:** {meta.get('success', 'N/A')}",
-        f"- **DNS Failures:** {meta.get('dns_fail', 'N/A')}",
-        f"- **Timeouts:** {meta.get('timeout', 'N/A')}",
-        f"- **Success Rate:** {meta.get('success_rate_percent', 'N/A')}%",
-        "",
-    ]
-    
-    # Alert section (GPT5.2 consecutive failure tracking)
-    if alert_info.get("new_alerts"):
-        lines.extend([
-            "## 🚨 New Alerts (2+ consecutive failures)",
-            "",
-            "The following relays have failed DNS resolution in 2+ consecutive scans:",
-            "",
-        ])
-        for fp in alert_info["new_alerts"][:20]:
-            lines.append(f"- [{fp[:16]}...](https://metrics.torproject.org/rs.html#details/{fp})")
-        lines.append("")
-    
-    if alert_info.get("recovered"):
-        lines.extend([
-            "## ✅ Recovered",
-            "",
-            "The following relays have recovered from previous failures:",
-            "",
-        ])
-        for fp in alert_info["recovered"][:20]:
-            lines.append(f"- [{fp[:16]}...](https://metrics.torproject.org/rs.html#details/{fp})")
-        lines.append("")
-    
-    # Failures by IP
-    lines.extend([
-        "## Failures by IP Address",
-        "",
-        "| IP Address | Total | Failed | Rate | Failure Types |",
-        "|------------|-------|--------|------|---------------|",
-    ])
-    
-    sorted_ips = sorted(
-        by_ip.items(),
-        key=lambda x: x[1]["failed_relays"],
-        reverse=True
-    )
-    
-    for ip, data in sorted_ips:
-        if data["failed_relays"] > 0:
-            types = ", ".join(f"{k}:{v}" for k, v in data["failure_types"].items())
-            lines.append(
-                f"| {ip} | {data['total_relays']} | "
-                f"{data['failed_relays']} | {data['failure_rate']:.1f}% | {types} |"
-            )
-    
-    lines.extend([
-        "",
-        "---",
-        "",
-        "*Report generated by Tor Exit DNS Health Validator*",
-    ])
-    
-    return "\n".join(lines)
+if __name__ == '__main__':
+    main()
 ```
 
-### Phase 5: Cloud Publishing (Week 5-6)
+## Cron Schedule: `configs/cron.d/exitmap-dns`
 
-**`scripts/publish-results.sh`:**
+```cron
+# Run DNS health validation every 6 hours
+15 */6 * * * exitmap /home/exitmap/exitmap-deploy/scripts/run_dns_validation.sh >> /home/exitmap/exitmap-deploy/logs/cron.log 2>&1
+```
 
-```bash
-#!/bin/bash
-# Publish DNS validation results to cloud storage
-set -euo pipefail
+## Cloudflare Pages Function: `functions/[[path]].js`
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/config.env" 2>/dev/null || true
-
-OUTPUT_DIR="${OUTPUT_DIR:-$HOME/exitmap/results}"
-
-: "${DO_ENABLED:=false}"
-: "${R2_ENABLED:=false}"
-: "${RCLONE_PATH:=$(command -v rclone 2>/dev/null || echo "")}"
-
-if [[ -z "$RCLONE_PATH" ]] || [[ ! -x "$RCLONE_PATH" ]]; then
-    echo "rclone not found - skipping cloud upload"
-    exit 0
-fi
-
-echo "Publishing results from $OUTPUT_DIR"
-
-PIDS=()
-
-# DigitalOcean Spaces
-if [[ "$DO_ENABLED" == "true" ]]; then
-    (
-        echo "Uploading to DO Spaces..."
-        $RCLONE_PATH sync "$OUTPUT_DIR" "do:${DO_BUCKET}/dns-validation" \
-            --transfers 32 \
-            --checkers 64 \
-            --include "*.json" \
-            --s3-acl public-read
-        echo "✓ DO Spaces upload complete"
-    ) &
-    PIDS+=($!)
-fi
-
-# Cloudflare R2
-if [[ "$R2_ENABLED" == "true" ]]; then
-    (
-        echo "Uploading to R2..."
-        $RCLONE_PATH sync "$OUTPUT_DIR" "r2:${R2_BUCKET}/dns-validation" \
-            --transfers 64 \
-            --checkers 128 \
-            --include "*.json"
-        echo "✓ R2 upload complete"
-    ) &
-    PIDS+=($!)
-fi
-
-# Wait for all uploads
-FAILED=0
-for pid in "${PIDS[@]:-}"; do
-    wait "$pid" || ((FAILED++))
-done
-
-if [[ $FAILED -gt 0 ]]; then
-    echo "⚠ $FAILED upload(s) failed"
-    exit 1
-fi
-
-echo "✓ All uploads complete"
+```javascript
+// Proxy JSON files from R2/DO Spaces with proper caching
+export async function onRequest(context) {
+  const { request, env } = context;
+  const url = new URL(request.url);
+  const path = url.pathname;
+  
+  // Determine cache TTL based on file type
+  let cacheTTL;
+  if (path === '/latest.json' || path === '/files.json') {
+    cacheTTL = 60;  // 1 minute for frequently updated files
+  } else if (path.match(/dns_health_.*\.json$/)) {
+    cacheTTL = 31536000;  // 1 year for immutable historical files
+  } else {
+    return new Response('Not found', { status: 404 });
+  }
+  
+  // Fetch from R2
+  const object = await env.R2_BUCKET.get(path.slice(1));
+  if (!object) {
+    return new Response('Not found', { status: 404 });
+  }
+  
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': `public, max-age=${cacheTTL}`,
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
 ```
 
 ---
 
-## 4. Configuration
+## Implementation Timeline
 
-**`config.env.example`:**
+### Phase 1: exitmap Module (Week 1)
+- [ ] Create `src/modules/dnshealth.py`
+- [ ] Test with single relay
+- [ ] Test full scan
+- [ ] Verify JSON output format
 
-```bash
-# Tor Exit Relay DNS Validator Configuration
+### Phase 2: exitmap-deploy Setup (Week 2)
+- [ ] Create new repository
+- [ ] Implement `run_dns_validation.sh`
+- [ ] Implement `aggregate_results.py`
+- [ ] Test local execution
 
-# === Scan Settings ===
-BUILD_DELAY=2                    # Seconds between circuit builds
-DELAY_NOISE=1                    # Random variance added to delay
-FIRST_HOP=                       # Your controlled relay (recommended)
-VERBOSITY=info                   # debug, info, warning, error
+### Phase 3: Cloud Integration (Week 3)
+- [ ] Configure DO Spaces
+- [ ] Configure R2
+- [ ] Implement upload scripts
+- [ ] Set up Cloudflare Pages
 
-# === DNS Infrastructure ===
-DNS_CHECK_DOMAIN=dns-check.yourdomain.com
-
-# === Output ===
-OUTPUT_DIR=$HOME/exitmap/results
-LOG_DIR=$HOME/exitmap/logs
-
-# === Cloud Storage (Optional) ===
-DO_ENABLED=false
-DO_BUCKET=your-bucket
-DO_SPACES_KEY=
-DO_SPACES_SECRET=
-DO_SPACES_REGION=nyc3
-
-R2_ENABLED=false
-R2_BUCKET=your-bucket
-R2_ACCESS_KEY_ID=
-R2_SECRET_ACCESS_KEY=
-
-# === Scheduling ===
-SCAN_INTERVAL_HOURS=6            # How often to run full scan
-```
+### Phase 4: Production (Week 4)
+- [ ] Deploy to production server
+- [ ] Configure cron
+- [ ] Monitor first runs
+- [ ] Verify data in cloud storage
 
 ---
 
-## 5. Deployment Steps
+## Quick Start
 
-### 5.1 Initial Setup
-
+### exitmap (this repo)
 ```bash
-# 1. Clone/update repository
-cd ~/exitmap
+# Install
+pip install -e .
 
-# 2. Create Python environment
-python3 -m venv venv
-source venv/bin/activate
-pip install -e .[dev]
+# Test the module
+exitmap dnshealth -e SOME_EXIT_FPR --analysis-dir ./test_results
 
-# 3. Configure
+# Full scan
+exitmap dnshealth --analysis-dir ./results --build-delay 2
+```
+
+### exitmap-deploy (new repo)
+```bash
+# Clone and configure
+git clone https://github.com/1aeo/exitmap-deploy
+cd exitmap-deploy
 cp config.env.example config.env
-nano config.env  # Edit settings
+nano config.env
 
-# 4. Set up DNS infrastructure (see Phase 2)
-# Create wildcard DNS record for your domain
+# Install dependencies
+./scripts/install.sh
 
-# 5. Test the module
-python -m exitmap --exit YOUR_TEST_RELAY dnsvalidator
+# Manual run
+./scripts/run_dns_validation.sh
 
-# 6. Install cron job
-sudo cp etc/cron.d/tor-dns-validator /etc/cron.d/
-```
-
-### 5.2 Operational Commands
-
-```bash
-# Manual scan
-./bin/run-dns-validation.sh
-
-# View latest results
-cat results/latest.json | jq '.metadata'
-
-# Generate operator report
-python -m dnsvalidator.aggregator results/ > report.md
-
-# Publish to cloud
-./scripts/publish-results.sh
-
-# View logs
-tail -f logs/dns-validation.log
+# View results
+cat public/latest.json | jq '.metadata'
 ```
 
 ---
 
-## 6. Success Metrics
+## Future Work: Alerting System
 
-1. **Coverage**: Scan all ~1,500+ exit relays within scan window
-2. **Accuracy**: < 1% false positives (verified against control relays)
-3. **Timeliness**: Results available within 2 hours of scan start
-4. **Reliability**: 99% scan completion rate
-5. **Actionability**: Reports clearly identify operators with issues
+> **Note:** Alerting is planned for a future phase after the core system is stable.
 
----
+### Planned Features
 
-## 7. Future Enhancements
+1. **Consecutive Failure Tracking**
+   - Track failures across runs per relay
+   - Alert threshold: 2+ consecutive failures
+   - Track recoveries
 
-### 7.1 Immediate Follow-ups
-- [ ] Integrate with Tor Metrics for relay contact info lookup
-- [ ] Add email notifications for new failures
-- [ ] Create operator-facing dashboard
+2. **Alert Channels**
+   - Email notifications
+   - Webhook integration
+   - Tor Metrics integration
 
-### 7.2 Advanced Features
-- [ ] DNS response time tracking (latency monitoring)
-- [ ] DNSSEC validation status per relay
-- [ ] Historical trend analysis
-- [ ] Integration with Tor bad-relay reporting
+3. **Operator Notifications**
+   - Group failures by operator/contact info
+   - Generate operator-specific reports
+   - Opt-in notification system
 
-### 7.3 Scale Considerations
-- [ ] Distributed scanning (multiple vantage points)
-- [ ] Incremental scanning (only re-test failures)
-- [ ] Rate limiting per operator network
+### Implementation Sketch
 
----
+```python
+# Future: src/dnsvalidator/alerting.py
 
-## 8. File Structure
+def check_alerts(current_results, previous_results, threshold=2):
+    """
+    Identify relays that need alerting.
+    
+    Returns:
+        new_alerts: Relays that just crossed threshold
+        ongoing: Relays with ongoing failures
+        recovered: Relays that recovered
+    """
+    # ... implementation ...
+    pass
 
-After implementation, the repository will have:
-
-```
-exitmap/
-├── bin/
-│   └── exitmap                      # Existing entry point
-├── src/
-│   ├── modules/
-│   │   ├── dnsresolution.py         # Existing (basic)
-│   │   ├── dnspoison.py             # Existing
-│   │   ├── dnssec.py                # Existing
-│   │   └── dnshealth.py             # NEW: Main DNS health module
-│   └── dnsvalidator/                # NEW: Support package
-│       ├── __init__.py
-│       └── aggregator.py            # Report generation + alerting
-├── scripts/
-│   ├── run_dns_validation.sh        # NEW: Batch runner
-│   ├── publish-results.sh           # NEW: Cloud upload
-│   ├── compress-old-data.sh         # NEW: Data retention
-│   └── install.sh                   # NEW: Setup script
-├── configs/
-│   └── cron.d/
-│       └── tor-dns-health           # NEW: Cron job template
-├── config.env.example               # NEW: Configuration template
-├── analysis_results/                # NEW: Per-run analysis (timestamped)
-│   └── YYYY-MM-DD_HH-MM-SS/
-│       └── dnshealth_*.json         # Per-relay results
-├── public/                          # NEW: Published output
-│   ├── dns_health_*.json            # Aggregated reports
-│   ├── latest.json                  # Symlink to latest
-│   ├── files.json                   # Manifest
-│   └── failure_state.json           # Consecutive failure tracking
-└── logs/                            # NEW: Log directory
-    ├── exitmap_*.log                # Per-run logs
-    └── cron.log                     # Cron output
+def send_alerts(alerts, channel='email'):
+    """Send alerts via configured channel."""
+    pass
 ```
 
 ---
 
-## 9. Timeline Summary
-
-| Week | Phase | Deliverables |
-|------|-------|--------------|
-| 1-2 | Core Module | `dnsvalidator.py`, basic scanning |
-| 2-3 | DNS Setup | Wildcard DNS, query generation |
-| 3-4 | Automation | Batch runner, cron scheduling |
-| 4-5 | Reporting | Aggregation, operator reports |
-| 5-6 | Publishing | Cloud upload, dashboard |
-
----
-
-## 10. Consolidated Ideas from All Approaches
-
-This plan incorporates the best ideas from three different approaches:
-
-### Attribution Table
-
-| Feature | Source | Why It's Good |
-|---------|--------|---------------|
-| **NXDOMAIN = Success** | Gemini 3 | Brilliant insight: SOCKS error 4 means DNS resolver correctly returned "no such domain" |
-| **UUID uniqueness** | Gemini 3 | Simple, guaranteed unique, no timestamp collision issues |
-| **Per-relay JSON files** | Gemini 3 | Works with exitmap's existing `analysis_dir`, easy to aggregate |
-| **Embedded Python aggregation** | Gemini 3 | Avoids external dependencies, clean bash integration |
-| **`resolve_with_retry()`** | Gemini 3 (updated) | Clean retry loop with 1s delay, configurable attempts |
-| **`consecutive_failures` field** | Gemini 3 (updated) | Track across runs for alerting, stored in each result |
-| **Previous state loading** | Gemini 3 (updated) | Load last report to calculate consecutive failures |
-| **Parallel cloud upload** | Gemini 3 (updated) | Background rclone jobs for DO + R2 simultaneously |
-| **Design decisions table** | GPT5.2 (updated) | Clear defaults/fallbacks matrix for all decisions |
-| **Two DNS modes** | GPT5.2 (updated) | Wildcard (verify IP) vs NXDOMAIN (verify resolver responds) |
-| **Error taxonomy** | GPT5.2 | `success`, `error`, `timeout`, `exception` - actionable categories |
-| **Sharding concept** | GPT5.2 | `--shard N/M` for distributed scanning across hosts |
-| **2+ consecutive alerts** | GPT5.2 | Alert threshold to reduce noise |
-| **Pages Function proxy** | GPT5.2 | Dynamic cache headers for CDN (future enhancement) |
-| **Atomic locking** | All + aroivalidator | `flock` prevents concurrent runs |
-| **Manifest files** | aroivalidator-deploy | `latest.json`, `files.json` for API |
-
-### Branch References
-
-```
-# Alternative implementations reviewed:
-origin/cursor/tor-exit-relay-dns-check-a8cc  # GPT5.2 - Strategic plan
-origin/cursor/tor-exit-relay-dns-check-6548  # Gemini 3 - Working implementation
-origin/cursor/exit-relay-dns-validation-0896 # Previous experiment
-```
-
-### Key Technical Decisions
-
-1. **Why NXDOMAIN = Success?**
-   - When we query `{uuid}.example.com`, we expect NXDOMAIN
-   - SOCKS error 4 ("Host Unreachable") during DNS resolve = resolver responded correctly
-   - If DNS was broken, we'd get timeout or different SOCKS error
-
-2. **Why per-relay files instead of global results list?**
-   - Exitmap runs modules in separate processes (multiprocessing)
-   - Global state doesn't persist across processes
-   - File-based output is process-safe and matches exitmap's design
-
-3. **Why 2+ consecutive failures for alerts?**
-   - Transient failures are common (network issues, Tor path problems)
-   - Alerting on single failures creates noise
-   - 2+ consecutive failures indicates persistent issue worth investigating
-
----
-
-## 11. References
+## References
 
 - [Exitmap Source](https://gitlab.torproject.org/tpo/network-health/exitmap)
-- [AROI Validator](https://github.com/1aeo/aroivalidator)
-- [AROI Validator Deploy](https://github.com/1aeo/aroivalidator-deploy)
-- [Tor Onionoo API](https://metrics.torproject.org/onionoo.html)
-- [GPT5.2 Plan Branch](https://github.com/1aeo/exitmap/tree/cursor/tor-exit-relay-dns-check-a8cc)
-- [Gemini 3 Implementation Branch](https://github.com/1aeo/exitmap/tree/cursor/tor-exit-relay-dns-check-6548)
-- [Previous DNS Validation Experiment](https://github.com/1aeo/exitmap/tree/cursor/exit-relay-dns-validation-0896)
+- [AROI Validator](https://github.com/1aeo/aroivalidator) - Reference for validation patterns
+- [AROI Validator Deploy](https://github.com/1aeo/aroivalidator-deploy) - Reference for deployment patterns
+- [GPT5.2 Plan](https://github.com/1aeo/exitmap/tree/cursor/tor-exit-relay-dns-check-a8cc)
+- [Gemini 3 Implementation](https://github.com/1aeo/exitmap/tree/cursor/tor-exit-relay-dns-check-6548)
+
+---
+
+## Attribution
+
+| Feature | Source |
+|---------|--------|
+| NXDOMAIN = Success insight | Gemini 3 |
+| UUID uniqueness | Gemini 3 |
+| Per-relay JSON files | Gemini 3 |
+| Retry with delay | Gemini 3 |
+| Consecutive failure tracking | Gemini 3 + GPT5.2 |
+| Error taxonomy | GPT5.2 |
+| Two DNS modes (wildcard/NXDOMAIN) | GPT5.2 |
+| Sharding concept | GPT5.2 |
+| Deployment patterns | aroivalidator-deploy |
