@@ -99,15 +99,17 @@ aroivalidator-deploy/
 
 ### 2.2 Key Design Decisions (Consolidated from All Approaches)
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Unique query generation | UUID + fingerprint prefix | Simple, guaranteed unique (Gemini 3) |
-| NXDOMAIN interpretation | **Success** (DNS works!) | SOCKS error 4 = resolver responded correctly (Gemini 3) |
-| Error taxonomy | `success`, `dns_fail`, `timeout`, `circuit_fail` | Actionable categories (GPT5.2) |
-| Output format | Per-relay JSON files → aggregated report | Works with exitmap's analysis_dir (Gemini 3) |
-| Retry strategy | 1-2 retries for DNS failures only | Reduce flakiness without hiding real issues (GPT5.2) |
-| Sharding | `--shard N/M` (optional) | Scale to multiple hosts (GPT5.2) |
-| Alerting threshold | 2 consecutive run failures | Avoid alert fatigue (GPT5.2) |
+| Decision | Default | Fallback | Rationale |
+|----------|---------|----------|-----------|
+| **DNS test mode** | Controlled wildcard domain | Expected NXDOMAIN (UUID) | Wildcard verifies correct IP; NXDOMAIN verifies "resolver responds" (GPT5.2) |
+| **Unique query format** | `{uuid}.{fp[:8]}.{domain}` | `{uuid}.example.com` | UUID per relay per run prevents caching (Gemini 3) |
+| **NXDOMAIN interpretation** | N/A (wildcard resolves) | **Success** | SOCKS error 4 = NXDOMAIN = DNS working (Gemini 3) |
+| **Error taxonomy** | `success`, `dns_fail`, `timeout` | `circuit_fail`, `exception` | Actionable categories (GPT5.2) |
+| **Output format** | Per-relay JSON → aggregated | Single JSONL file | Per-relay works with multiprocessing (Gemini 3) |
+| **Retry strategy** | 2 retries with 1s delay | 0 retries | Reduce flakiness (Gemini 3 updated) |
+| **Consecutive failure tracking** | Track in aggregation | State file | Alert after 2+ failures (Gemini 3 + GPT5.2) |
+| **Sharding** | `--shard N/M` | Single host | Fingerprint hash mod M (GPT5.2) |
+| **Cloud upload** | DO Spaces + R2 parallel | Local only | rclone with background jobs (Gemini 3) |
 
 ### 2.3 Component Breakdown
 
@@ -248,17 +250,20 @@ def generate_unique_query(fingerprint: str, base_domain: str) -> str:
     return f"{unique_id}.{fp_prefix}.{base_domain}"
 
 
-def resolve_with_retry(exit_desc, domain: str, max_retries: int = MAX_RETRIES) -> Dict[str, Any]:
+def resolve_with_retry(exit_desc, domain: str, retries: int = MAX_RETRIES) -> Dict[str, Any]:
     """
     Attempt to resolve domain through exit relay with retry logic.
     
     Key insight from Gemini 3: SOCKS error 4 = NXDOMAIN = DNS IS WORKING!
     This is because "Host Unreachable" for DNS resolution means the resolver
     correctly identified that the domain doesn't exist.
+    
+    Updated: Now uses Gemini 3's cleaner retry structure with 1s delay between attempts.
     """
     exit_fp = exit_desc.fingerprint
     exit_url = exiturl(exit_fp)
     
+    # Initialize result (will be updated on each attempt)
     result = {
         "exit_fingerprint": exit_fp,
         "exit_nickname": getattr(exit_desc, 'nickname', 'unknown'),
@@ -270,13 +275,11 @@ def resolve_with_retry(exit_desc, domain: str, max_retries: int = MAX_RETRIES) -
         "resolved_ip": None,
         "latency_ms": None,
         "error": None,
-        "attempts": 0,
+        "attempt": 0,
     }
     
-    last_error = None
-    
-    for attempt in range(max_retries + 1):
-        result["attempts"] = attempt + 1
+    for attempt in range(1, retries + 1):
+        result["attempt"] = attempt
         sock = torsocks.torsocket()
         sock.settimeout(QUERY_TIMEOUT)
         
@@ -296,7 +299,7 @@ def resolve_with_retry(exit_desc, domain: str, max_retries: int = MAX_RETRIES) -
             
             # KEY INSIGHT (Gemini 3): SOCKS error 4 = Host Unreachable = NXDOMAIN
             # For a random UUID subdomain, NXDOMAIN means DNS IS WORKING!
-            if "error 4" in err_str.lower() or "host unreachable" in err_str.lower():
+            if "error 4" in err_str:
                 result["status"] = "success"
                 result["resolved_ip"] = "NXDOMAIN"
                 result["latency_ms"] = int((time.time() - start_time) * 1000)
@@ -304,34 +307,25 @@ def resolve_with_retry(exit_desc, domain: str, max_retries: int = MAX_RETRIES) -
                 return result
             
             # Other SOCKS errors indicate actual DNS failure
-            last_error = f"SOCKS error: {err}"
-            log.debug(f"Attempt {attempt+1}: {exit_url} DNS error: {err}")
+            result["status"] = "error"
+            result["error"] = err_str
+            log.warning(f"Attempt {attempt}/{retries}: {exit_url} DNS error: {err}")
             
         except socket.timeout:
-            last_error = f"Timeout after {QUERY_TIMEOUT}s"
-            log.debug(f"Attempt {attempt+1}: {exit_url} timed out")
-            
-        except EOFError as err:
-            last_error = f"Connection closed: {err}"
-            log.debug(f"Attempt {attempt+1}: {exit_url} EOF error")
+            result["status"] = "timeout"
+            result["error"] = f"Timeout after {QUERY_TIMEOUT}s"
+            log.warning(f"Attempt {attempt}/{retries}: {exit_url} timed out")
             
         except Exception as err:
-            last_error = f"Unexpected error: {err}"
-            log.debug(f"Attempt {attempt+1}: {exit_url} exception: {err}")
+            result["status"] = "exception"
+            result["error"] = str(err)
+            log.error(f"Attempt {attempt}/{retries}: {exit_url} exception: {err}")
         
-        # Small delay before retry
-        if attempt < max_retries:
-            time.sleep(0.5)
+        # Wait before retry (Gemini 3: 1 second delay)
+        if attempt < retries:
+            time.sleep(1)
     
-    # All retries exhausted - determine failure type
-    result["error"] = last_error
-    
-    if "timeout" in last_error.lower():
-        result["status"] = "timeout"
-    else:
-        result["status"] = "dns_fail"
-    
-    log.warning(f"✗ {exit_url} DNS FAILED after {result['attempts']} attempts: {last_error}")
+    log.warning(f"✗ {exit_url} DNS FAILED after {result['attempt']} attempts: {result['error']}")
     return result
 
 
@@ -494,7 +488,7 @@ if ! $EXITMAP_CMD > "$LOG_DIR/exitmap_$(date +%Y%m%d_%H%M%S).log" 2>&1; then
     # Continue - partial results may exist
 fi
 
-# Aggregate Results (Gemini 3 embedded Python pattern)
+# Aggregate Results with Consecutive Failure Tracking (Gemini 3 updated pattern)
 log "Aggregating results..."
 REPORT_FILE="${OUTPUT_DIR}/dns_health_$(date +%Y%m%d_%H%M%S).json"
 
@@ -506,25 +500,62 @@ from datetime import datetime
 
 analysis_dir = "$ANALYSIS_DIR"
 report_file = "$REPORT_FILE"
+latest_report = "$LATEST_REPORT"
+
+# Load previous state for consecutive failure tracking (Gemini 3 addition)
+previous_state = {}
+if os.path.exists(latest_report):
+    try:
+        with open(latest_report, 'r') as f:
+            prev_data = json.load(f)
+            for res in prev_data.get('results', []):
+                fp = res.get('exit_fingerprint')
+                if fp:
+                    previous_state[fp] = res
+        print(f"Loaded {len(previous_state)} previous results for tracking")
+    except Exception as e:
+        print(f"Warning: Could not read previous report: {e}")
 
 # Find all per-relay result files
 files = glob.glob(os.path.join(analysis_dir, '**', 'dnshealth_*.json'), recursive=True)
 
 results = []
-stats = {"success": 0, "dns_fail": 0, "timeout": 0, "circuit_fail": 0, "unknown": 0}
+stats = {"success": 0, "error": 0, "timeout": 0, "exception": 0, "unknown": 0}
 
 for f in files:
     try:
         with open(f, 'r') as fd:
             data = json.load(fd)
-            results.append(data)
+            
+            # Track consecutive failures (Gemini 3 addition)
             status = data.get('status', 'unknown')
-            stats[status] = stats.get(status, 0) + 1
+            fp = data.get('exit_fingerprint')
+            
+            if status == 'success':
+                data['consecutive_failures'] = 0
+                stats['success'] += 1
+            else:
+                # Check previous state for this relay
+                prev_failures = 0
+                if fp and fp in previous_state:
+                    prev_entry = previous_state[fp]
+                    if prev_entry.get('status') != 'success':
+                        prev_failures = prev_entry.get('consecutive_failures', 0)
+                
+                data['consecutive_failures'] = prev_failures + 1
+                stats[status] = stats.get(status, 0) + 1
+            
+            results.append(data)
     except Exception as e:
         print(f"Error reading {f}: {e}")
 
 total = len(results)
 success_rate = (stats["success"] / total * 100) if total > 0 else 0
+
+# Identify relays that need alerting (2+ consecutive failures)
+alert_relays = [r for r in results if r.get('consecutive_failures', 0) >= 2]
+new_alerts = [r for r in alert_relays 
+              if r.get('consecutive_failures') == 2]  # Just crossed threshold
 
 report = {
     "metadata": {
@@ -532,17 +563,20 @@ report = {
         "analysis_dir": analysis_dir,
         "total_relays": total,
         "success": stats["success"],
-        "dns_fail": stats["dns_fail"],
+        "error": stats["error"],
         "timeout": stats["timeout"],
-        "circuit_fail": stats["circuit_fail"],
         "success_rate_percent": round(success_rate, 2),
+        "alert_count": len(alert_relays),
+        "new_alert_count": len(new_alerts),
     },
     "results": results,
     "failures": [r for r in results if r.get("status") != "success"],
-    "failures_by_ip": {},  # Group by exit IP for operator diagnosis
+    "alerts": alert_relays,  # Relays with 2+ consecutive failures
+    "new_alerts": new_alerts,  # Relays that just crossed threshold
+    "failures_by_ip": {},
 }
 
-# Group failures by IP (helps identify common DNS server issues)
+# Group failures by IP
 for r in report["failures"]:
     ip = r.get("exit_address", "unknown")
     if ip not in report["failures_by_ip"]:
@@ -552,7 +586,8 @@ for r in report["failures"]:
 with open(report_file, 'w') as f:
     json.dump(report, f, indent=2)
 
-print(f"Aggregated {total} results: {stats['success']} success, {stats['dns_fail']} dns_fail, {stats['timeout']} timeout")
+print(f"Aggregated {total} results: {stats['success']} success, {stats['error']+stats['timeout']} failures")
+print(f"Alerts: {len(alert_relays)} total, {len(new_alerts)} new (2+ consecutive failures)")
 AGGREGATE
 
 # Update latest.json and manifest
@@ -565,12 +600,47 @@ if [[ -f "$REPORT_FILE" ]]; then
         | sort -r | jq -Rs 'split("\n") | map(select(length > 0))' \
         > "$OUTPUT_DIR/files.json.tmp" \
         && mv "$OUTPUT_DIR/files.json.tmp" "$OUTPUT_DIR/files.json"
+    
+    # Cloud uploads - parallel (Gemini 3 pattern)
+    if [[ "$DO_ENABLED" == "true" ]] || [[ "$R2_ENABLED" == "true" ]]; then
+        log "Uploading to cloud storage..."
+        RCLONE_CMD=$(command -v rclone 2>/dev/null || echo "")
+        
+        if [[ -n "$RCLONE_CMD" ]]; then
+            PIDS=()
+            
+            if [[ "$DO_ENABLED" == "true" ]]; then
+                $RCLONE_CMD copy "$REPORT_FILE" "do:${DO_BUCKET}/dns-reports/" &
+                PIDS+=($!)
+                $RCLONE_CMD copy "$LATEST_REPORT" "do:${DO_BUCKET}/" &
+                PIDS+=($!)
+            fi
+            
+            if [[ "$R2_ENABLED" == "true" ]]; then
+                $RCLONE_CMD copy "$REPORT_FILE" "r2:${R2_BUCKET}/dns-reports/" &
+                PIDS+=($!)
+                $RCLONE_CMD copy "$LATEST_REPORT" "r2:${R2_BUCKET}/" &
+                PIDS+=($!)
+            fi
+            
+            # Wait for all uploads
+            FAILED=0
+            for pid in "${PIDS[@]:-}"; do
+                wait "$pid" || ((FAILED++))
+            done
+            
+            if [[ $FAILED -gt 0 ]]; then
+                log "⚠ $FAILED upload(s) failed"
+            else
+                log "✓ Cloud upload complete"
+            fi
+        else
+            log "rclone not found - skipping cloud upload"
+        fi
+    fi
 fi
 
 log "=== DNS Health Validation Complete ==="
-
-# Optional: Trigger publish script
-# [[ -x "$SCRIPT_DIR/publish-results.sh" ]] && "$SCRIPT_DIR/publish-results.sh"
 ```
 
 **Sharding Support (GPT5.2 idea - future enhancement):**
@@ -1134,13 +1204,17 @@ This plan incorporates the best ideas from three different approaches:
 | **UUID uniqueness** | Gemini 3 | Simple, guaranteed unique, no timestamp collision issues |
 | **Per-relay JSON files** | Gemini 3 | Works with exitmap's existing `analysis_dir`, easy to aggregate |
 | **Embedded Python aggregation** | Gemini 3 | Avoids external dependencies, clean bash integration |
-| **Error taxonomy** | GPT5.2 | `success`, `dns_fail`, `timeout`, `circuit_fail` - actionable categories |
-| **Consecutive failure tracking** | GPT5.2 | Alert after 2+ failures to reduce noise, track recovery |
+| **`resolve_with_retry()`** | Gemini 3 (updated) | Clean retry loop with 1s delay, configurable attempts |
+| **`consecutive_failures` field** | Gemini 3 (updated) | Track across runs for alerting, stored in each result |
+| **Previous state loading** | Gemini 3 (updated) | Load last report to calculate consecutive failures |
+| **Parallel cloud upload** | Gemini 3 (updated) | Background rclone jobs for DO + R2 simultaneously |
+| **Design decisions table** | GPT5.2 (updated) | Clear defaults/fallbacks matrix for all decisions |
+| **Two DNS modes** | GPT5.2 (updated) | Wildcard (verify IP) vs NXDOMAIN (verify resolver responds) |
+| **Error taxonomy** | GPT5.2 | `success`, `error`, `timeout`, `exception` - actionable categories |
 | **Sharding concept** | GPT5.2 | `--shard N/M` for distributed scanning across hosts |
-| **Retry logic** | GPT5.2 | 1-2 retries for transient failures |
+| **2+ consecutive alerts** | GPT5.2 | Alert threshold to reduce noise |
 | **Pages Function proxy** | GPT5.2 | Dynamic cache headers for CDN (future enhancement) |
 | **Atomic locking** | All + aroivalidator | `flock` prevents concurrent runs |
-| **Cloud upload pattern** | aroivalidator-deploy | Parallel upload to DO Spaces + R2 |
 | **Manifest files** | aroivalidator-deploy | `latest.json`, `files.json` for API |
 
 ### Branch References
