@@ -46,6 +46,33 @@ Since `*.tor.exit.validator.1aeo.com` is working and resolves to `64.65.4.1`, us
 
 ---
 
+## Unique Query Format (from GPT5.2)
+
+### Why Uniqueness Matters
+
+Each DNS query must be unique per relay per run to:
+1. **Avoid cache artifacts**: Prevent resolver caching from masking failures
+2. **Make failures unambiguous**: Know exactly which relay failed
+3. **Enable log correlation**: Match authoritative DNS logs to specific tests
+
+### Format Options
+
+| Format | Example | Pros | Cons |
+|--------|---------|------|------|
+| **UUID + Fingerprint prefix** (recommended) | `a1b2c3d4-e5f6-7890-abcd-ef1234567890.abc12345.tor.exit.validator.1aeo.com` | Unique, traceable | Longer |
+| **Hash-based** | `h7x9k2m4.dnscheck.example.com` | Shorter | Less traceable |
+| **Timestamp + FP** | `20250114_143000.abc12345.dnscheck.example.com` | Time-traceable | Collision possible |
+
+### Recommended Format
+
+```
+{uuid}.{fingerprint_prefix_8}.{base_domain}
+```
+
+Example: `f47ac10b-58cc-4372-a567-0e02b2c3d479.abc12345.tor.exit.validator.1aeo.com`
+
+---
+
 # Part 1: exitmap Repository (This Repo)
 
 ## Scope
@@ -54,12 +81,49 @@ Add a new module `dnshealth.py` to the existing exitmap codebase that:
 - Generates unique DNS queries per relay
 - Validates DNS resolution through Tor circuits
 - Outputs structured JSON results
+- Supports sharding for distributed scanning
 
 ## New Files
 
 ```
 src/modules/dnshealth.py          # Main DNS health validation module
 ```
+
+## Scaling & Performance Controls
+
+### Sharding for Distributed Scanning
+
+For large-scale scanning across multiple hosts, use deterministic sharding:
+
+```bash
+# Host 1: Scan first third of exits
+exitmap dnshealth --shard 0/3 --analysis-dir ./results
+
+# Host 2: Scan second third
+exitmap dnshealth --shard 1/3 --analysis-dir ./results
+
+# Host 3: Scan final third
+exitmap dnshealth --shard 2/3 --analysis-dir ./results
+```
+
+**Implementation**: Hash fingerprint mod M, include only exits where `hash(fingerprint) % M == N`
+
+### Rate Limiting Recommendations
+
+| Setting | Default | Conservative | Aggressive |
+|---------|---------|--------------|------------|
+| `--build-delay` | 2s | 3s | 1s |
+| `--delay-noise` | 1s | 2s | 0.5s |
+| `QUERY_TIMEOUT` | 10s | 15s | 5s |
+| `MAX_RETRIES` | 2 | 3 | 1 |
+
+**Recommended for production**: Use conservative settings to avoid overloading the Tor network.
+
+### Timeouts
+
+- **Per-resolve timeout**: 10 seconds (configurable via `QUERY_TIMEOUT`)
+- **Per-circuit module runtime**: Bounded by exitmap's circuit timeout
+- **Full scan estimate**: ~2-4 hours for all exits with conservative delays
 
 ## Module Design: `src/modules/dnshealth.py`
 
@@ -117,19 +181,25 @@ destinations = None  # Module uses DNS resolution, not TCP connections
 
 # Run metadata
 _run_id = None
+_shard = "0/1"  # Default: no sharding
+_first_hop = None  # Track first hop for debugging
 
 
 def setup(consensus=None, target=None, **kwargs):
     """Initialize scan metadata."""
-    global _run_id
+    global _run_id, _shard, _first_hop
     _run_id = time.strftime("%Y%m%d_%H%M%S")
+    
+    # Extract shard info if provided (future: from command line)
+    _shard = kwargs.get('shard', '0/1')
+    _first_hop = kwargs.get('first_hop', None)
     
     if target:
         log.info(f"DNS Health: NXDOMAIN mode (target={target})")
     else:
         log.info(f"DNS Health: Wildcard mode ({WILDCARD_DOMAIN} → {EXPECTED_IP})")
     
-    log.info(f"Run ID: {_run_id}")
+    log.info(f"Run ID: {_run_id}, Shard: {_shard}")
 
 
 def generate_unique_query(fingerprint: str, base_domain: str) -> str:
@@ -159,15 +229,18 @@ def resolve_with_retry(exit_desc, domain: str, expected_ip: str = None,
         "exit_fingerprint": exit_fp,
         "exit_nickname": getattr(exit_desc, 'nickname', 'unknown'),
         "exit_address": getattr(exit_desc, 'address', 'unknown'),
+        "first_hop_fingerprint": _first_hop,  # Track entry guard for debugging
         "query_domain": domain,
         "expected_ip": expected_ip,
         "timestamp": time.time(),
         "run_id": _run_id,
+        "shard": _shard,
         "mode": "wildcard" if expected_ip else "nxdomain",
         "status": "unknown",
         "resolved_ip": None,
         "latency_ms": None,
         "error": None,
+        "error_code": None,  # Normalized error code for programmatic use
         "attempt": 0,
     }
     
@@ -209,6 +282,7 @@ def resolve_with_retry(exit_desc, domain: str, expected_ip: str = None,
                     # Wildcard mode: NXDOMAIN is failure (should have resolved)
                     result["status"] = "dns_fail"
                     result["error"] = "NXDOMAIN (domain should resolve)"
+                    result["error_code"] = "NXDOMAIN"
                     log.warning(f"✗ {exit_url} returned NXDOMAIN for wildcard domain")
                 else:
                     # NXDOMAIN mode: NXDOMAIN is success (expected)
@@ -216,6 +290,22 @@ def resolve_with_retry(exit_desc, domain: str, expected_ip: str = None,
                     result["resolved_ip"] = "NXDOMAIN"
                     log.info(f"✓ {exit_url} returned NXDOMAIN (DNS working)")
                 return result
+            
+            # Classify SOCKS errors (from GPT5.2 error taxonomy)
+            if "error 1" in err_str:
+                result["error_code"] = "SOCKS_GENERAL_FAILURE"
+            elif "error 2" in err_str:
+                result["error_code"] = "SOCKS_NOT_ALLOWED"
+            elif "error 3" in err_str:
+                result["error_code"] = "SOCKS_NETWORK_UNREACHABLE"
+            elif "error 5" in err_str:
+                result["error_code"] = "SOCKS_CONNECTION_REFUSED"
+            elif "error 6" in err_str:
+                result["error_code"] = "SOCKS_TTL_EXPIRED"
+            elif "error 7" in err_str:
+                result["error_code"] = "SOCKS_COMMAND_NOT_SUPPORTED"
+            else:
+                result["error_code"] = "SOCKS_UNKNOWN"
             
             # Other SOCKS errors
             result["status"] = "error"
@@ -225,11 +315,13 @@ def resolve_with_retry(exit_desc, domain: str, expected_ip: str = None,
         except socket.timeout:
             result["status"] = "timeout"
             result["error"] = f"Timeout after {QUERY_TIMEOUT}s"
+            result["error_code"] = "TIMEOUT"
             log.warning(f"Attempt {attempt}/{retries}: {exit_url} timed out")
             
         except Exception as err:
             result["status"] = "exception"
             result["error"] = str(err)
+            result["error_code"] = "EXCEPTION"
             log.error(f"Attempt {attempt}/{retries}: {exit_url} exception: {err}")
         
         # Wait before retry
@@ -313,29 +405,63 @@ Each relay produces a JSON file in `analysis_dir`:
   "exit_fingerprint": "ABC123...",
   "exit_nickname": "MyRelay",
   "exit_address": "192.0.2.1",
+  "first_hop_fingerprint": "DEF456...",
   "query_domain": "uuid.abc123.tor.exit.validator.1aeo.com",
   "expected_ip": "64.65.4.1",
   "timestamp": 1704825600.123,
   "run_id": "20250109_143000",
+  "shard": "0/1",
   "mode": "wildcard",
   "status": "success",
   "resolved_ip": "64.65.4.1",
   "latency_ms": 1523,
   "error": null,
+  "error_code": null,
   "attempt": 1
 }
 ```
 
+### Field Descriptions (from GPT5.2)
+
+| Field | Description |
+|-------|-------------|
+| `exit_fingerprint` | 40-char hex fingerprint of exit relay |
+| `exit_nickname` | Human-readable relay name |
+| `exit_address` | IPv4/IPv6 address of exit |
+| `first_hop_fingerprint` | Entry guard fingerprint (useful for debugging) |
+| `query_domain` | Unique DNS name tested |
+| `expected_ip` | Expected resolution (wildcard mode only) |
+| `timestamp` | Unix timestamp of test |
+| `run_id` | Batch identifier (YYYYMMDD_HHMMSS) |
+| `shard` | Shard identifier (N/M format) |
+| `mode` | `wildcard` or `nxdomain` |
+| `status` | See Status Values table |
+| `resolved_ip` | Actual IP returned (or "NXDOMAIN") |
+| `latency_ms` | Resolution time in milliseconds |
+| `error` | Human-readable error message |
+| `error_code` | Normalized error code for programmatic use |
+| `attempt` | Which retry attempt succeeded/failed |
+
 ## Status Values
 
-| Status | Meaning | Actionable? |
-|--------|---------|-------------|
-| `success` | DNS working correctly | No |
-| `wrong_ip` | Resolved to unexpected IP (possible poisoning) | Yes - investigate |
-| `dns_fail` | DNS resolution failed | Yes - relay has broken DNS |
-| `timeout` | Resolution timed out | Maybe - could be transient |
-| `error` | SOCKS/connection error | Maybe - could be circuit issue |
-| `exception` | Unexpected error | Yes - investigate |
+| Status | Meaning | Actionable? | Category |
+|--------|---------|-------------|----------|
+| `success` | DNS working correctly | No | ✅ Pass |
+| `wrong_ip` | Resolved to unexpected IP (possible poisoning) | Yes - investigate | ❌ DNS Issue |
+| `dns_fail` | DNS resolution failed (NXDOMAIN for wildcard) | Yes - relay has broken DNS | ❌ DNS Issue |
+| `timeout` | Resolution timed out | Maybe - could be transient | ⚠️ Transient |
+| `circuit_fail` | Circuit build failed before DNS test | No - not a DNS issue | ⚠️ Network |
+| `error` | SOCKS/connection error on built circuit | Maybe - could be circuit issue | ⚠️ Transient |
+| `exception` | Unexpected error | Yes - investigate | ❌ Bug |
+
+### Error Classification (from GPT5.2)
+
+**Key insight**: Separate circuit build failures from DNS resolution failures.
+
+- **Circuit failures** (path/network issues): Don't count against DNS health
+- **DNS failures** (on a successfully built circuit): Count against relay's DNS
+
+This prevents false positives where a relay has working DNS but circuit builds fail due to network conditions.
 
 ---
 
@@ -645,10 +771,42 @@ export async function onRequest(context) {
 
 ---
 
+## Network Sensitivity & Constraints (from GPT5.2)
+
+### Important Considerations
+
+1. **Tor Network Impact**: Scanning all exits is network-sensitive
+   - Use conservative `--build-delay` values (2-3 seconds)
+   - Consider sharding across multiple hosts for large scans
+   - Avoid running during known high-traffic periods
+
+2. **Controlled DNS Zone**: Prefer wildcard mode
+   - Provides stronger validation (correct IP vs any response)
+   - Enables log correlation on authoritative DNS
+   - Full control over TTL and infrastructure
+
+3. **Artifact Immutability**: Keep results cache-friendly
+   - Timestamped files (e.g., `dns_health_20250114_143000.json`) are immutable
+   - `latest.json` has short TTL (1 minute)
+   - `files.json` manifest is short-lived
+
+4. **Concurrency**: Prevent overlapping runs
+   - Use `flock` lockfile pattern
+   - Cron/systemd timer should respect lock
+
+---
+
 ## Implementation Timeline
+
+### Phase 0: Planning (Complete) ✅
+- [x] Design DNS test modes
+- [x] Define output format
+- [x] Plan sharding strategy
+- [x] Document error taxonomy
 
 ### Phase 1: exitmap Module (Week 1)
 - [ ] Create `src/modules/dnshealth.py`
+- [ ] Implement sharding support
 - [ ] Test with single relay
 - [ ] Test full scan
 - [ ] Verify JSON output format
@@ -671,6 +829,12 @@ export async function onRequest(context) {
 - [ ] Monitor first runs
 - [ ] Verify data in cloud storage
 
+### Phase 5: Scaling (Future)
+- [ ] Multi-host sharded scanning
+- [ ] Alerting system
+- [ ] Dashboard with trends
+- [ ] Operator notifications
+
 ---
 
 ## Quick Start
@@ -680,11 +844,22 @@ export async function onRequest(context) {
 # Install
 pip install -e .
 
-# Test the module
+# Test the module with a single exit
 exitmap dnshealth -e SOME_EXIT_FPR --analysis-dir ./test_results
 
-# Full scan
+# Full scan (single host)
 exitmap dnshealth --analysis-dir ./results --build-delay 2
+
+# Distributed scan across 3 hosts
+# Host 1:
+exitmap dnshealth --shard 0/3 --analysis-dir ./results --build-delay 2
+# Host 2:
+exitmap dnshealth --shard 1/3 --analysis-dir ./results --build-delay 2
+# Host 3:
+exitmap dnshealth --shard 2/3 --analysis-dir ./results --build-delay 2
+
+# NXDOMAIN mode (fallback, no controlled domain needed)
+exitmap dnshealth -H example.com --analysis-dir ./results
 ```
 
 ### exitmap-deploy (new repo)
@@ -771,7 +946,12 @@ def send_alerts(alerts, channel='email'):
 | Per-relay JSON files | Gemini 3 |
 | Retry with delay | Gemini 3 |
 | Consecutive failure tracking | Gemini 3 + GPT5.2 |
-| Error taxonomy | GPT5.2 |
+| Error taxonomy & error_code | GPT5.2 |
 | Two DNS modes (wildcard/NXDOMAIN) | GPT5.2 |
-| Sharding concept | GPT5.2 |
+| Sharding concept (`--shard N/M`) | GPT5.2 |
+| First hop tracking | GPT5.2 |
+| Rate limiting recommendations | GPT5.2 |
+| Network sensitivity guidance | GPT5.2 |
+| Circuit vs DNS failure separation | GPT5.2 |
+| Unique query format options | GPT5.2 |
 | Deployment patterns | aroivalidator-deploy |
