@@ -40,6 +40,16 @@ This plan outlines a system that periodically connects to all Tor exit relays, r
 2. **Fallback**: If wildcard domain is unreachable
 3. **Simpler logic**: Any resolver response = working DNS
 
+### Fallback: Multiple Stable Domains (from GPT5.2)
+
+If you cannot operate any DNS zone, a less reliable but workable fallback:
+
+- Resolve multiple stable domains (e.g., `google.com`, `cloudflare.com`, `amazon.com`)
+- Classify "broken DNS" only if **multiple** domains fail
+- Treat results as "suspected broken DNS" (higher uncertainty)
+
+**Caveat**: Caching and upstream variance make this harder to interpret reliably.
+
 ### Decision: **Wildcard Mode as Default**
 
 Since `*.tor.exit.validator.1aeo.com` is working and resolves to `64.65.4.1`, use wildcard mode as default with NXDOMAIN as fallback.
@@ -75,6 +85,22 @@ Example: `f47ac10b-58cc-4372-a567-0e02b2c3d479.abc12345.tor.exit.validator.1aeo.
 
 # Part 1: exitmap Repository (This Repo)
 
+## What Already Exists (from GPT5.2)
+
+The exitmap codebase already has DNS-related modules that partially address this problem:
+
+### `src/modules/dnsresolution.py`
+- Uses Tor SOCKS `RESOLVE` via `torsocks.torsocket().resolve(domain)`
+- Checks "can resolve at all", but does not ensure uniqueness per relay/run
+- Logs errors, but does not emit structured result artifacts
+
+### `src/modules/dnspoison.py`
+- Compares `RESOLVE` results to a whitelist computed via system DNS
+- More about detecting poisoning/mismatch than "DNS is broken"
+- Relies on static domain list unless overridden
+
+**Why we need `dnshealth.py`**: Neither existing module provides unique-per-relay queries, structured JSON output, or consecutive failure tracking needed for systematic DNS health monitoring.
+
 ## Scope
 
 Add a new module `dnshealth.py` to the existing exitmap codebase that:
@@ -88,6 +114,17 @@ Add a new module `dnshealth.py` to the existing exitmap codebase that:
 ```
 src/modules/dnshealth.py          # Main DNS health validation module
 ```
+
+## Results Storage Options (from GPT5.2)
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| **Per-relay JSON files** (recommended) | Write `dnshealth_<fingerprint>.json` per exit | Simple, easy aggregation | Many small files |
+| **JSONL append** | Append JSON lines to single file | Single file, process-safe with locking | Requires file locking |
+| **Results queue** | IPC queue from module to main process | Cleanest long-term | More complex |
+| **Manager list/dict** | Shared memory structure | Simple for small runs | Memory-heavy on large runs |
+
+**Recommendation**: Start with per-relay JSON files (simplest), aggregate in batch runner.
 
 ## Scaling & Performance Controls
 
@@ -484,17 +521,32 @@ exitmap-deploy/
 ├── scripts/
 │   ├── run_dns_validation.sh    # Main batch runner
 │   ├── aggregate_results.py     # JSON aggregation
+│   ├── generate_report.py       # Generate human-readable report.md
 │   ├── upload_do.sh             # DigitalOcean Spaces upload
 │   ├── upload_r2.sh             # Cloudflare R2 upload
 │   └── install.sh               # Setup script
 ├── configs/
 │   └── cron.d/
-│       └── exitmap-dns          # Cron job template
+│       ├── exitmap-dns          # Cron job template (6-hourly)
+│       └── exitmap-retention    # Monthly retention/cleanup
 ├── functions/
 │   └── [[path]].js              # Cloudflare Pages Function (proxy)
 └── public/
     └── index.html               # Dashboard (optional)
 ```
+
+## Output Artifacts (from GPT5.2)
+
+Each run produces:
+
+| File | Description | Cache TTL |
+|------|-------------|-----------|
+| `dns_health_YYYYMMDD_HHMMSS.json` | Full results (immutable) | 1 year |
+| `summary_YYYYMMDD_HHMMSS.json` | Metadata + stats only | 1 year |
+| `report_YYYYMMDD_HHMMSS.md` | Human-readable report | 1 year |
+| `latest.json` | Copy of latest full JSON | 1 minute |
+| `latest_summary.json` | Copy of latest summary | 1 minute |
+| `files.json` | Manifest of all run files | 1 minute |
 
 ## Configuration: `config.env.example`
 
@@ -568,10 +620,18 @@ log "=== DNS Health Validation Starting ==="
 
 mkdir -p "$ANALYSIS_DIR" "$LOG_DIR"
 
-# Setup exitmap environment
+# Setup exitmap environment (auto-create venv if needed - from Gemini 3)
 cd "$EXITMAP_DIR"
-[[ -d "venv" ]] && source venv/bin/activate
-[[ -d ".venv" ]] && source .venv/bin/activate
+if [[ -d "venv" ]]; then
+    source venv/bin/activate
+elif [[ -d ".venv" ]]; then
+    source .venv/bin/activate
+else
+    log "Creating virtualenv..."
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+fi
 
 # Build command
 CMD="python -m exitmap dnshealth"
@@ -727,11 +787,90 @@ if __name__ == '__main__':
     main()
 ```
 
+## Report Generator: `scripts/generate_report.py` (from GPT5.2)
+
+```python
+#!/usr/bin/env python3
+"""Generate human-readable Markdown report from JSON results."""
+import argparse
+import json
+from datetime import datetime
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input', required=True, help='JSON report file')
+    parser.add_argument('--output', required=True, help='Output Markdown file')
+    args = parser.parse_args()
+    
+    with open(args.input) as f:
+        data = json.load(f)
+    
+    meta = data.get('metadata', {})
+    failures = data.get('failures', [])
+    
+    report = f"""# DNS Health Report
+
+**Generated**: {meta.get('timestamp', 'Unknown')}
+
+## Summary
+
+| Metric | Value |
+|--------|-------|
+| Total Relays | {meta.get('total_relays', 0)} |
+| Success | {meta.get('success', 0)} |
+| DNS Failures | {meta.get('dns_fail', 0)} |
+| Wrong IP | {meta.get('wrong_ip', 0)} |
+| Timeouts | {meta.get('timeout', 0)} |
+| Errors | {meta.get('error', 0)} |
+| **Success Rate** | **{meta.get('success_rate_percent', 0):.1f}%** |
+
+## Failing Relays ({len(failures)})
+
+| Fingerprint | Nickname | Exit IP | Status | Consecutive Failures |
+|-------------|----------|---------|--------|---------------------|
+"""
+    
+    for f in sorted(failures, key=lambda x: x.get('consecutive_failures', 0), reverse=True):
+        report += f"| `{f.get('exit_fingerprint', '')[:16]}...` | {f.get('exit_nickname', 'unknown')} | {f.get('exit_address', 'unknown')} | {f.get('status', 'unknown')} | {f.get('consecutive_failures', 0)} |\n"
+    
+    with open(args.output, 'w') as f:
+        f.write(report)
+    
+    print(f"Report written to {args.output}")
+
+if __name__ == '__main__':
+    main()
+```
+
 ## Cron Schedule: `configs/cron.d/exitmap-dns`
 
 ```cron
 # Run DNS health validation every 6 hours
 15 */6 * * * exitmap /home/exitmap/exitmap-deploy/scripts/run_dns_validation.sh >> /home/exitmap/exitmap-deploy/logs/cron.log 2>&1
+```
+
+## Monthly Retention: `configs/cron.d/exitmap-retention` (from GPT5.2)
+
+```cron
+# Monthly: compress old results, delete very old data
+0 3 1 * * exitmap /home/exitmap/exitmap-deploy/scripts/retention.sh >> /home/exitmap/exitmap-deploy/logs/retention.log 2>&1
+```
+
+### `scripts/retention.sh` (example)
+
+```bash
+#!/bin/bash
+# Compress results older than 30 days, delete older than 1 year
+OUTPUT_DIR="${OUTPUT_DIR:-$HOME/exitmap-deploy/public}"
+
+# Compress JSON files older than 30 days
+find "$OUTPUT_DIR" -name "dns_health_*.json" -mtime +30 -exec gzip {} \;
+
+# Delete compressed files older than 365 days
+find "$OUTPUT_DIR" -name "dns_health_*.json.gz" -mtime +365 -delete
+
+# Keep only last 100 entries in files.json
+# (handled by aggregate script)
 ```
 
 ## Cloudflare Pages Function: `functions/[[path]].js`
@@ -882,6 +1021,39 @@ cat public/latest.json | jq '.metadata'
 
 ---
 
+## Future Work: Dashboard UI (from GPT5.2)
+
+A minimal frontend page (`public/index.html`) can show:
+
+1. **Overall failure rate** (current run)
+2. **List of failing exits** with:
+   - Fingerprint (linked to Tor Metrics)
+   - Exit IP address
+   - Last-seen timestamp
+   - Failure type
+   - Consecutive failure count
+3. **Grouping options**:
+   - By exit IP (detect shared infrastructure issues)
+   - By ASN (detect ISP-level DNS problems)
+   - By operator label (if available from contact info)
+4. **Trend over time** (rolling window chart)
+5. **Historical data** (select previous runs from `files.json`)
+
+### Dashboard Data Sources
+
+```javascript
+// Fetch latest results
+const latest = await fetch('/latest.json').then(r => r.json());
+
+// Fetch list of historical runs
+const files = await fetch('/files.json').then(r => r.json());
+
+// Fetch specific historical run
+const historical = await fetch(`/${files[5]}`).then(r => r.json());
+```
+
+---
+
 ## Future Work: Alerting System
 
 > **Note:** Alerting is planned for a future phase after the core system is stable.
@@ -903,10 +1075,21 @@ cat public/latest.json | jq '.metadata'
    - Generate operator-specific reports
    - Opt-in notification system
 
+### Alert Payload (from GPT5.2)
+
+Each alert should include:
+- `fingerprint`: Relay fingerprint
+- `exit_ip`: Exit relay IP address
+- `failure_type`: Status code (dns_fail, wrong_ip, timeout)
+- `first_seen`: When failures started
+- `last_seen`: Most recent failure
+- `consecutive_count`: Number of consecutive failures
+- `tor_metrics_url`: Link to relay on Tor Metrics
+
 ### Implementation Sketch
 
 ```python
-# Future: src/dnsvalidator/alerting.py
+# Future: scripts/check_alerts.py
 
 def check_alerts(current_results, previous_results, threshold=2):
     """
@@ -917,11 +1100,28 @@ def check_alerts(current_results, previous_results, threshold=2):
         ongoing: Relays with ongoing failures
         recovered: Relays that recovered
     """
-    # ... implementation ...
-    pass
+    new_alerts = []
+    ongoing = []
+    recovered = []
+    
+    for result in current_results:
+        fp = result['exit_fingerprint']
+        consecutive = result.get('consecutive_failures', 0)
+        prev = previous_results.get(fp, {})
+        prev_consecutive = prev.get('consecutive_failures', 0)
+        
+        if consecutive >= threshold and prev_consecutive < threshold:
+            new_alerts.append(result)  # Just crossed threshold
+        elif consecutive >= threshold:
+            ongoing.append(result)  # Still failing
+        elif prev_consecutive >= threshold and consecutive == 0:
+            recovered.append(result)  # Just recovered
+    
+    return new_alerts, ongoing, recovered
 
 def send_alerts(alerts, channel='email'):
     """Send alerts via configured channel."""
+    # Email, webhook, or Tor Metrics integration
     pass
 ```
 
@@ -945,6 +1145,7 @@ def send_alerts(alerts, channel='email'):
 | UUID uniqueness | Gemini 3 |
 | Per-relay JSON files | Gemini 3 |
 | Retry with delay | Gemini 3 |
+| Auto-create virtualenv | Gemini 3 |
 | Consecutive failure tracking | Gemini 3 + GPT5.2 |
 | Error taxonomy & error_code | GPT5.2 |
 | Two DNS modes (wildcard/NXDOMAIN) | GPT5.2 |
@@ -954,4 +1155,12 @@ def send_alerts(alerts, channel='email'):
 | Network sensitivity guidance | GPT5.2 |
 | Circuit vs DNS failure separation | GPT5.2 |
 | Unique query format options | GPT5.2 |
+| Results storage options | GPT5.2 |
+| Existing modules analysis | GPT5.2 |
+| Multiple stable domains fallback | GPT5.2 |
+| Summary file concept | GPT5.2 |
+| Report.md generation | GPT5.2 |
+| Monthly retention cron | GPT5.2 |
+| Dashboard UI features | GPT5.2 |
+| Alert payload details | GPT5.2 |
 | Deployment patterns | aroivalidator-deploy |
