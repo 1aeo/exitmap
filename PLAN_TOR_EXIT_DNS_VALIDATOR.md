@@ -431,22 +431,355 @@ def teardown():
 
 ## Scaling & Performance Controls
 
-### Sharding for Distributed Scanning
+### Single-Host Architecture
 
-For large-scale scanning across multiple hosts, use deterministic sharding:
+Exitmap's concurrency model for a single host:
 
-```bash
-# Host 1: Scan first third of exits
-exitmap dnshealth --shard 0/3 --analysis-dir ./results
-
-# Host 2: Scan second third
-exitmap dnshealth --shard 1/3 --analysis-dir ./results
-
-# Host 3: Scan final third
-exitmap dnshealth --shard 2/3 --analysis-dir ./results
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ exitmap main process                                                        │
+│ ├── Tor controller connection                                               │
+│ ├── EventHandler (listens for circuit events)                               │
+│ └── For each exit relay:                                                    │
+│     ├── Build circuit (sequential, with --build-delay between)              │
+│     └── On BUILT → spawn subprocess for probe()                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                               │
+        ┌──────────────────────┼──────────────────────┐
+        ▼                      ▼                      ▼
+┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│ Subprocess 1 │      │ Subprocess 2 │      │ Subprocess N │
+│ probe(exit1) │      │ probe(exit2) │      │ probe(exitN) │
+│ └─► JSON     │      │ └─► JSON     │      │ └─► JSON     │
+└──────────────┘      └──────────────┘      └──────────────┘
+        │                      │                      │
+        └──────────────────────┼──────────────────────┘
+                               ▼
+                    ┌─────────────────────┐
+                    │ teardown()          │
+                    │ Merge all JSON →    │
+                    │ dnshealth_*.json    │
+                    └─────────────────────┘
 ```
 
-**Implementation**: Hash fingerprint mod M, include only exits where `hash(fingerprint) % M == N`
+**Key insight**: Circuits are built sequentially (rate-limited by `--build-delay`), but probes run concurrently as circuits complete. With 3000 exits at 2s delay:
+- Circuit building: ~100 minutes (sequential)
+- Peak concurrent probes: Depends on probe duration vs build rate
+
+### Resource Management for 3000 Relays
+
+#### Memory Estimation
+
+```
+Per-probe subprocess:     ~5-10 MB
+Peak concurrent probes:   ~50-100 (depends on timing)
+Estimated peak memory:    500 MB - 1 GB
+
+With --build-delay=2s and probe duration ~5-15s:
+- New circuit every 2s
+- Each probe takes 5-15s
+- At steady state: ~5-10 concurrent probes typical
+- Worst case (many timeouts): ~50+ concurrent probes
+```
+
+#### Controlling Concurrency
+
+Exitmap doesn't have a `--max-concurrent` flag, but you can control concurrency through:
+
+1. **Build delay** (primary control):
+   ```bash
+   # Slower circuit building = fewer concurrent probes
+   exitmap dnshealth --build-delay 3 --analysis-dir ./results
+   ```
+
+2. **Sequential sharding** (memory-safe approach):
+   ```bash
+   # Run shards one at a time to limit peak memory
+   for shard in 0 1 2; do
+       exitmap dnshealth --shard $shard/3 --analysis-dir ./results/shard_$shard
+   done
+   # Then merge results
+   ```
+
+3. **System limits** (emergency fallback):
+   ```bash
+   # Limit total memory for exitmap process tree
+   systemd-run --user --scope -p MemoryMax=2G \
+       exitmap dnshealth --analysis-dir ./results
+   ```
+
+### Sharding for Single-Host Scanning
+
+Sharding on a single host serves two purposes:
+1. **Memory management**: Run smaller batches sequentially
+2. **Resumability**: If a scan fails, resume from last shard
+
+#### CLI Integration
+
+Add `--shard` argument to `src/exitmap.py`:
+
+```python
+# In parse_cmd_args(), add:
+parser.add_argument("--shard", type=str, default=None, metavar="N/M",
+                    help="Process shard N of M total (e.g., 0/3, 1/3, 2/3). "
+                         "Useful for memory management or resumable scans.")
+```
+
+Modify `src/relayselector.py` to filter by shard:
+
+```python
+# In get_exits() after collecting exit list:
+def get_exits(controller, args, ...):
+    # ... existing code to build exits list ...
+    
+    # Apply sharding filter
+    if args.shard:
+        exits = filter_by_shard(exits, args.shard)
+    
+    return exits
+
+
+def filter_by_shard(exits, shard_spec):
+    """
+    Filter exits by deterministic shard assignment.
+    
+    Args:
+        exits: List of relay descriptors
+        shard_spec: String "N/M" where N is shard index (0-based), M is total shards
+    
+    Returns:
+        Filtered list containing only exits belonging to this shard
+    """
+    import hashlib
+    
+    try:
+        n, m = map(int, shard_spec.split('/'))
+        if m <= 0 or n < 0 or n >= m:
+            log.warning(f"Invalid shard spec '{shard_spec}', using all exits")
+            return exits
+    except (ValueError, AttributeError):
+        log.warning(f"Invalid shard spec '{shard_spec}', using all exits")
+        return exits
+    
+    def shard_for_relay(fingerprint):
+        fp_hash = int(hashlib.sha256(fingerprint.encode()).hexdigest(), 16)
+        return fp_hash % m
+    
+    filtered = [e for e in exits if shard_for_relay(e.fingerprint) == n]
+    log.info(f"Shard {n}/{m}: {len(filtered)}/{len(exits)} exits selected")
+    return filtered
+```
+
+#### Result Aggregation (Single Host)
+
+When running shards sequentially on one host, merge results after all shards complete:
+
+```python
+#!/usr/bin/env python3
+"""
+scripts/merge_shard_results.py - Merge sequential shard results on single host.
+"""
+import argparse
+import json
+import glob
+import os
+from collections import defaultdict
+from datetime import datetime
+
+
+def merge_shard_results(results_dir: str, output_file: str):
+    """
+    Merge results from sequential shard runs into single report.
+    
+    Expects structure:
+        results_dir/
+        ├── shard_0/dnshealth_*.json
+        ├── shard_1/dnshealth_*.json
+        └── shard_2/dnshealth_*.json
+    
+    Or flat structure with multiple dnshealth_*.json files.
+    """
+    all_results = []
+    seen_fps = set()
+    shard_count = 0
+    
+    # Find all result files
+    patterns = [
+        os.path.join(results_dir, "shard_*", "dnshealth_*.json"),
+        os.path.join(results_dir, "dnshealth_*.json"),
+    ]
+    
+    result_files = []
+    for pattern in patterns:
+        result_files.extend(glob.glob(pattern))
+    
+    if not result_files:
+        print(f"No result files found in {results_dir}")
+        return
+    
+    # Merge results, deduplicating by fingerprint
+    for filepath in sorted(result_files):
+        shard_count += 1
+        with open(filepath) as f:
+            data = json.load(f)
+        
+        for result in data.get('results', []):
+            fp = result.get('fingerprint')
+            if fp and fp not in seen_fps:
+                all_results.append(result)
+                seen_fps.add(fp)
+    
+    # Calculate merged statistics
+    total = len(all_results)
+    passed = sum(1 for r in all_results if r.get('ok'))
+    
+    by_fail_type = defaultdict(int)
+    for r in all_results:
+        if not r.get('ok'):
+            by_fail_type[r.get('fail_type', 'unknown')] += 1
+    
+    merged_report = {
+        'metadata': {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'total': total,
+            'passed': passed,
+            'failed': total - passed,
+            'by_fail_type': dict(by_fail_type),
+            'pass_rate_percent': round(passed / total * 100, 2) if total else 0,
+            'shards_merged': shard_count,
+            'source_files': len(result_files),
+        },
+        'results': all_results,
+    }
+    
+    with open(output_file, 'w') as f:
+        json.dump(merged_report, f, indent=2)
+    
+    print(f"Merged {shard_count} shards: {total} relays, {passed} passed ({merged_report['metadata']['pass_rate_percent']}%)")
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Merge shard results')
+    parser.add_argument('--results-dir', '-d', default='./results',
+                        help='Directory containing shard results')
+    parser.add_argument('--output', '-o', default='./results/merged_dnshealth.json',
+                        help='Output file for merged results')
+    args = parser.parse_args()
+    
+    merge_shard_results(args.results_dir, args.output)
+```
+
+### Orchestration: Full Scan Script
+
+Single script to run a complete scan with memory-safe sequential sharding:
+
+```bash
+#!/bin/bash
+# scripts/run_full_scan.sh - Memory-safe full scan using sequential shards
+set -euo pipefail
+
+# Configuration
+SHARD_COUNT=${SHARD_COUNT:-3}           # Number of shards (3 = ~1000 relays each)
+BUILD_DELAY=${BUILD_DELAY:-2}           # Seconds between circuits
+RESULTS_DIR=${RESULTS_DIR:-./results}
+EXITMAP_DIR=${EXITMAP_DIR:-$HOME/exitmap}
+
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+RUN_DIR="$RESULTS_DIR/run_$TIMESTAMP"
+
+log() { echo "[$(date +'%H:%M:%S')] $1"; }
+
+# Setup
+mkdir -p "$RUN_DIR"
+cd "$EXITMAP_DIR"
+source venv/bin/activate
+
+log "Starting full scan with $SHARD_COUNT shards"
+log "Results directory: $RUN_DIR"
+
+# Run each shard sequentially
+FAILED_SHARDS=()
+for ((shard=0; shard<SHARD_COUNT; shard++)); do
+    SHARD_DIR="$RUN_DIR/shard_$shard"
+    mkdir -p "$SHARD_DIR"
+    
+    log "━━━ Shard $shard/$SHARD_COUNT ━━━"
+    
+    if exitmap dnshealth \
+        --shard "$shard/$SHARD_COUNT" \
+        --build-delay "$BUILD_DELAY" \
+        --analysis-dir "$SHARD_DIR" \
+        2>&1 | tee "$SHARD_DIR/scan.log"; then
+        log "✓ Shard $shard complete"
+    else
+        log "✗ Shard $shard failed (continuing with next)"
+        FAILED_SHARDS+=("$shard")
+    fi
+    
+    # Brief pause between shards to let resources settle
+    sleep 5
+done
+
+# Merge results
+log "━━━ Merging results ━━━"
+python3 scripts/merge_shard_results.py \
+    --results-dir "$RUN_DIR" \
+    --output "$RUN_DIR/dnshealth_merged.json"
+
+# Copy to latest
+cp "$RUN_DIR/dnshealth_merged.json" "$RESULTS_DIR/latest.json"
+
+# Summary
+TOTAL=$(jq '.metadata.total' "$RUN_DIR/dnshealth_merged.json")
+PASSED=$(jq '.metadata.passed' "$RUN_DIR/dnshealth_merged.json")
+RATE=$(jq '.metadata.pass_rate_percent' "$RUN_DIR/dnshealth_merged.json")
+
+log "━━━ Scan Complete ━━━"
+log "Total: $TOTAL relays"
+log "Passed: $PASSED ($RATE%)"
+log "Results: $RUN_DIR/dnshealth_merged.json"
+
+if [ ${#FAILED_SHARDS[@]} -gt 0 ]; then
+    log "⚠ Failed shards: ${FAILED_SHARDS[*]}"
+    log "  Retry with: exitmap dnshealth --shard N/$SHARD_COUNT --analysis-dir $RUN_DIR/shard_N"
+    exit 1
+fi
+```
+
+### Resource Monitoring During Scan
+
+Monitor resource usage during a scan:
+
+```bash
+#!/bin/bash
+# scripts/monitor_scan.sh - Monitor exitmap resource usage
+# Run in separate terminal: ./monitor_scan.sh
+
+while true; do
+    # Count exitmap processes
+    PROCS=$(pgrep -c -f "exitmap|dnshealth" 2>/dev/null || echo 0)
+    
+    # Memory usage of exitmap process tree
+    MEM=$(ps -eo pid,ppid,rss,comm | grep -E "exitmap|python.*dnshealth" | \
+          awk '{sum+=$3} END {printf "%.0f", sum/1024}')
+    
+    # System memory
+    FREE=$(free -m | awk '/^Mem:/ {print $7}')
+    
+    echo "[$(date +'%H:%M:%S')] Procs: $PROCS | Mem: ${MEM:-0}MB | Free: ${FREE}MB"
+    sleep 5
+done
+```
+
+### Recommended Settings by Host Capacity
+
+| Host RAM | Shard Count | Build Delay | Est. Time | Peak Memory |
+|----------|-------------|-------------|-----------|-------------|
+| 2 GB     | 6           | 3s          | ~4 hours  | ~500 MB     |
+| 4 GB     | 3           | 2s          | ~3 hours  | ~1 GB       |
+| 8 GB+    | 1 (no shard)| 2s          | ~2 hours  | ~2 GB       |
+
+**Formula**: `shards = ceil(3000 / (available_ram_mb / 10))`
 
 ### Rate Limiting Recommendations
 
@@ -502,7 +835,9 @@ import time
 import json
 import os
 import glob
-from typing import Dict, Any
+import hashlib
+import re
+from typing import Dict, Any, Optional
 from collections import defaultdict
 from datetime import datetime
 
@@ -512,6 +847,12 @@ import util
 from util import exiturl
 
 log = logging.getLogger(__name__)
+
+__all__ = [
+    'setup', 'probe', 'teardown', 'destinations',
+    'generate_unique_query', 'resolve_with_retry', 'should_include_relay',
+    'WILDCARD_DOMAIN', 'EXPECTED_IP', 'QUERY_TIMEOUT',
+]
 
 # Wildcard domain configuration
 WILDCARD_DOMAIN = "tor.exit.validator.1aeo.com"
@@ -532,8 +873,46 @@ destinations = None  # Module uses DNS resolution, not TCP connections
 _run_id = None
 _run_start_time = None  # For computing offset_ms
 
+# SOCKS error parsing regex (more robust than string splitting)
+SOCKS_ERROR_PATTERN = re.compile(r'error\s+(\d+)', re.IGNORECASE)
 
-def setup(consensus=None, target=None, **kwargs):
+
+def should_include_relay(fingerprint: str, shard: Optional[str]) -> bool:
+    """
+    Deterministic sharding for distributed scanning.
+    
+    Args:
+        fingerprint: 40-char hex relay fingerprint
+        shard: Shard specification as "N/M" (e.g., "0/3" for first of 3 shards)
+               None or empty string means include all relays
+    
+    Returns:
+        True if this relay belongs to the specified shard
+    
+    Example:
+        # Sequential sharding on single host (memory-safe):
+        # Run 1: should_include_relay(fp, "0/3")  # First 1/3 of relays
+        # Run 2: should_include_relay(fp, "1/3")  # Second 1/3
+        # Run 3: should_include_relay(fp, "2/3")  # Final 1/3
+    """
+    if not shard:
+        return True
+    
+    try:
+        n, m = map(int, shard.split('/'))
+        if m <= 0 or n < 0 or n >= m:
+            log.warning(f"Invalid shard spec '{shard}', including all relays")
+            return True
+    except (ValueError, AttributeError):
+        log.warning(f"Invalid shard spec '{shard}', including all relays")
+        return True
+    
+    # Deterministic hash-based assignment
+    fp_hash = int(hashlib.sha256(fingerprint.encode()).hexdigest(), 16)
+    return (fp_hash % m) == n
+
+
+def setup(consensus: Optional[Any] = None, target: Optional[str] = None, **kwargs) -> None:
     """Initialize scan metadata."""
     global _run_id, _run_start_time
     _run_start_time = time.time()
@@ -563,8 +942,8 @@ def generate_unique_query(fingerprint: str, base_domain: str, attempt: int = 1) 
     return f"{_run_id}.{attempt}.{offset_ms}.{fingerprint}.{base_domain}"
 
 
-def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None, 
-                       first_hop: str = None) -> Dict[str, Any]:
+def resolve_with_retry(exit_desc, base_domain: str, expected_ip: Optional[str] = None, 
+                       first_hop: Optional[str] = None) -> Dict[str, Any]:
     """
     Resolve domain through exit relay with smart retry logic.
     
@@ -636,13 +1015,11 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
             err_str = str(err)
             result["latency_ms"] = int((time.time() - start_time) * 1000)
             
-            # Parse SOCKS error number
-            socks_err = None
-            if "error " in err_str:
-                try:
-                    socks_err = int(err_str.split("error ")[-1].split()[0])
-                except (ValueError, IndexError):
-                    pass
+            # Parse SOCKS error number using regex (more robust than string splitting)
+            socks_err: Optional[int] = None
+            match = SOCKS_ERROR_PATTERN.search(err_str)
+            if match:
+                socks_err = int(match.group(1))
             
             # SOCKS 4 = NXDOMAIN
             if socks_err == 4:
@@ -727,8 +1104,9 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
     return result
 
 
-def probe(exit_desc, target_host, target_port, run_python_over_tor, 
-          run_cmd_over_tor, first_hop=None, **kwargs):
+def probe(exit_desc, target_host: Optional[str], target_port: Optional[int], 
+          run_python_over_tor, run_cmd_over_tor, 
+          first_hop: Optional[str] = None, **kwargs) -> None:
     """
     Probe the given exit relay's DNS resolution capability.
     
@@ -765,7 +1143,7 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
     run_python_over_tor(do_validation, exit_desc, base_domain, expected_ip, first_hop)
 
 
-def teardown():
+def teardown() -> None:
     """
     Called after all probes complete.
     Merges per-relay result files into single JSON report.
@@ -1238,6 +1616,239 @@ class TestTeardown:
             assert report["metadata"]["passed"] == 2
             assert report["metadata"]["failed"] == 1
             assert len(report["results"]) == 3
+
+
+class TestSharding:
+    """Test deterministic sharding for distributed scanning."""
+    
+    def test_shard_deterministic(self):
+        """Same fingerprint always maps to same shard."""
+        from dnshealth import should_include_relay
+        
+        fp = "ABCD1234EFGH5678IJKL9012MNOP3456QRST7890"
+        
+        # Run multiple times - should be consistent
+        results = [should_include_relay(fp, "0/3") for _ in range(10)]
+        assert all(r == results[0] for r in results)
+    
+    def test_shard_coverage(self):
+        """All fingerprints belong to exactly one shard."""
+        from dnshealth import should_include_relay
+        
+        # Generate test fingerprints
+        fps = [f"{i:040x}" for i in range(100)]
+        
+        for fp in fps:
+            shards_containing = sum(
+                1 for n in range(3) if should_include_relay(fp, f"{n}/3")
+            )
+            assert shards_containing == 1, f"{fp} in {shards_containing} shards"
+    
+    def test_shard_distribution(self):
+        """Shards are roughly evenly distributed."""
+        from dnshealth import should_include_relay
+        
+        fps = [f"{i:040x}" for i in range(300)]
+        
+        counts = [0, 0, 0]
+        for fp in fps:
+            for n in range(3):
+                if should_include_relay(fp, f"{n}/3"):
+                    counts[n] += 1
+        
+        # Each shard should have roughly 100 (allow 20% variance)
+        for count in counts:
+            assert 80 <= count <= 120, f"Uneven distribution: {counts}"
+    
+    def test_no_shard_includes_all(self):
+        """When shard is None, all relays included."""
+        from dnshealth import should_include_relay
+        
+        fps = [f"{i:040x}" for i in range(100)]
+        
+        for fp in fps:
+            assert should_include_relay(fp, None) == True
+
+
+class TestEdgeCases:
+    """Test edge cases and error handling."""
+    
+    def test_empty_fingerprint(self):
+        """Handle empty fingerprint gracefully."""
+        from dnshealth import generate_unique_query, setup
+        setup()
+        
+        # Should not crash, though this is invalid input
+        query = generate_unique_query("", "example.com", 1)
+        assert "example.com" in query
+    
+    def test_malformed_fingerprint(self):
+        """Handle non-hex fingerprint."""
+        from dnshealth import generate_unique_query, setup
+        setup()
+        
+        # Module should handle this (it's just a string)
+        query = generate_unique_query("not-a-valid-fingerprint!", "example.com", 1)
+        assert "example.com" in query
+    
+    @patch('dnshealth.torsocks')
+    def test_missing_exit_desc_attrs(self, mock_torsocks):
+        """Handle exit_desc missing optional attributes."""
+        from dnshealth import resolve_with_retry, setup
+        
+        setup()
+        mock_sock = MagicMock()
+        mock_sock.resolve.return_value = "64.65.4.1"
+        mock_torsocks.torsocket.return_value = mock_sock
+        
+        # Minimal exit_desc with only fingerprint
+        exit_desc = Mock(spec=['fingerprint'])
+        exit_desc.fingerprint = "A" * 40
+        
+        result = resolve_with_retry(exit_desc, "example.com", "64.65.4.1")
+        
+        assert result["ok"] == True
+        assert result["nickname"] == "unknown"
+        assert result["address"] == "unknown"
+    
+    def test_teardown_no_results(self):
+        """Teardown handles empty results directory."""
+        from dnshealth import teardown, setup
+        import dnshealth
+        
+        setup()
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(dnshealth, 'util') as mock_util:
+                mock_util.analysis_dir = tmpdir
+                dnshealth._run_id = "20250114120000"
+                # Should not crash with no result files
+                teardown()
+    
+    def test_teardown_malformed_json(self):
+        """Teardown handles corrupted result files."""
+        from dnshealth import teardown, setup
+        import dnshealth
+        
+        setup()
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a corrupted JSON file
+            with open(os.path.join(tmpdir, "result_BADFILE.json"), "w") as f:
+                f.write("{invalid json")
+            
+            # Create a valid file too
+            with open(os.path.join(tmpdir, "result_GOODFILE.json"), "w") as f:
+                json.dump({"fingerprint": "G" * 40, "ok": True}, f)
+            
+            with patch.object(dnshealth, 'util') as mock_util:
+                mock_util.analysis_dir = tmpdir
+                dnshealth._run_id = "20250114120000"
+                # Should not crash, should skip bad file
+                teardown()
+            
+            # Should have created report with 1 result
+            report_path = os.path.join(tmpdir, f"dnshealth_{dnshealth._run_id}.json")
+            with open(report_path) as f:
+                report = json.load(f)
+            assert report["metadata"]["total"] == 1
+
+
+class TestDNSLabelLength:
+    """Test DNS query length constraints."""
+    
+    def test_query_under_253_chars(self):
+        """Generated queries stay under DNS 253 char limit."""
+        from dnshealth import generate_unique_query, setup
+        setup()
+        
+        # Test with longest possible fingerprint (40 hex chars)
+        fp = "F" * 40
+        base_domain = "tor.exit.validator.1aeo.com"
+        
+        for attempt in range(1, 10):
+            query = generate_unique_query(fp, base_domain, attempt)
+            assert len(query) <= 253, f"Query too long: {len(query)} chars"
+    
+    def test_label_under_63_chars(self):
+        """Each DNS label stays under 63 char limit."""
+        from dnshealth import generate_unique_query, setup
+        setup()
+        
+        fp = "F" * 40
+        query = generate_unique_query(fp, "tor.exit.validator.1aeo.com", 1)
+        
+        labels = query.split(".")
+        for label in labels:
+            assert len(label) <= 63, f"Label too long: {label} ({len(label)} chars)"
+    
+    def test_longest_possible_query(self):
+        """Extreme case: long run, high attempt, long offset."""
+        from dnshealth import generate_unique_query, setup
+        import dnshealth
+        
+        # Simulate a very long scan (offset would be large)
+        dnshealth._run_start_time = 0  # Epoch
+        dnshealth._run_id = "20250114143052"
+        
+        import time
+        # Current time gives max realistic offset
+        fp = "F" * 40
+        query = generate_unique_query(fp, "tor.exit.validator.1aeo.com", 99)
+        
+        # Even with large offset_ms, should be under limit
+        assert len(query) <= 253
+
+
+class TestConcurrency:
+    """Test thread/process safety scenarios."""
+    
+    def test_result_files_unique_per_fingerprint(self):
+        """Each fingerprint gets unique result file (no collisions)."""
+        from dnshealth import probe, setup
+        import dnshealth
+        
+        setup()
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(dnshealth, 'util') as mock_util:
+                mock_util.analysis_dir = tmpdir
+                
+                # Simulate two different relays
+                fps = ["A" * 40, "B" * 40]
+                
+                for fp in fps:
+                    filepath = os.path.join(tmpdir, f"result_{fp}.json")
+                    with open(filepath, 'w') as f:
+                        json.dump({"fingerprint": fp}, f)
+                
+                # Should have 2 distinct files
+                files = os.listdir(tmpdir)
+                assert len(files) == 2
+                assert "result_" + "A" * 40 + ".json" in files
+                assert "result_" + "B" * 40 + ".json" in files
+    
+    def test_teardown_idempotent(self):
+        """Multiple teardown calls don't crash."""
+        from dnshealth import teardown, setup
+        import dnshealth
+        
+        setup()
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create one result file
+            with open(os.path.join(tmpdir, "result_TEST.json"), "w") as f:
+                json.dump({"fingerprint": "T" * 40, "ok": True}, f)
+            
+            with patch.object(dnshealth, 'util') as mock_util:
+                mock_util.analysis_dir = tmpdir
+                dnshealth._run_id = "20250114120000"
+                
+                # First teardown
+                teardown()
+                
+                # Second teardown (no files left) - should not crash
+                teardown()
 ```
 
 ### Running Tests
@@ -1251,6 +1862,84 @@ pytest test/test_dnshealth.py --cov=src/modules/dnshealth --cov-report=term-miss
 
 # Quick smoke test
 pytest test/test_dnshealth.py::TestGenerateUniqueQuery -v
+```
+
+## CI Configuration: `.gitlab-ci.yml`
+
+The exitmap project is hosted on GitLab (torproject.org). Add CI configuration to run tests automatically on merge requests.
+
+```yaml
+# .gitlab-ci.yml - Add to repository root
+
+stages:
+  - lint
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip/
+
+# Lint stage - fast feedback
+lint:
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - pip install flake8
+    - flake8 src/modules/dnshealth.py --max-line-length=100
+  rules:
+    - changes:
+        - src/modules/dnshealth.py
+        - test/test_dnshealth.py
+
+# Unit tests
+test:dnshealth:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - pip install .[dev]
+    - pytest test/test_dnshealth.py -v --cov=src/modules/dnshealth --cov-report=term-missing
+  coverage: '/TOTAL.*\s+(\d+%)/'
+  rules:
+    - changes:
+        - src/modules/dnshealth.py
+        - test/test_dnshealth.py
+
+# Full test suite (runs on main branch)
+test:all:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - pip install .[dev]
+    - pytest test/ -v --cov=src --cov-report=term-missing
+  coverage: '/TOTAL.*\s+(\d+%)/'
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+```
+
+### CI Pipeline Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Merge Request                            │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ LINT STAGE                                                      │
+│ ├── flake8 src/modules/dnshealth.py                             │
+│ └── Fast fail on style issues                                   │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ TEST STAGE                                                      │
+│ ├── pytest test/test_dnshealth.py                               │
+│ ├── Coverage report                                             │
+│ └── Pass/fail on test results                                   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -1801,80 +2490,861 @@ export async function onRequest(context) {
 - [x] Plan sharding strategy
 - [x] Document error taxonomy
 
+---
+
 ### Phase 1: exitmap Module (Week 1)
-- [ ] Create `src/modules/dnshealth.py`
-- [ ] Implement sharding support
-- [ ] Test with single relay
-- [ ] Test full scan
-- [ ] Verify JSON output format
 
-### Phase 2: exitmap-deploy Setup (Week 2)
-- [ ] Create new repository
-- [ ] Implement `run_dns_validation.sh`
-- [ ] Implement `aggregate_results.py`
-- [ ] Test local execution
+#### 1.1 Create Core Module File
+- [ ] Create `src/modules/dnshealth.py` with module skeleton
+- [ ] Add license header (Apache 2.0)
+- [ ] Add imports and `__all__` exports
+- [ ] Define module constants:
+  - `WILDCARD_DOMAIN = "tor.exit.validator.1aeo.com"`
+  - `EXPECTED_IP = "64.65.4.1"`
+  - `QUERY_TIMEOUT = 10`
+  - `CIRCUIT_RETRIES = 2`
+  - `TIMEOUT_RETRIES = 1`
+- [ ] Set `destinations = None` (DNS resolution, not TCP)
 
-### Phase 3: Cloud Integration (Week 3)
-- [ ] Configure DO Spaces
-- [ ] Configure R2
-- [ ] Implement upload scripts
-- [ ] Set up Cloudflare Pages
+#### 1.2 Implement Core Functions
+- [ ] `setup(consensus, target, **kwargs)` - Initialize `_run_id`, `_run_start_time`
+- [ ] `generate_unique_query(fingerprint, base_domain, attempt)` - Create unique DNS query
+- [ ] `resolve_with_retry(exit_desc, base_domain, expected_ip, first_hop)` - Main resolution logic
+  - [ ] SOCKS error parsing with regex `SOCKS_ERROR_PATTERN`
+  - [ ] Retry logic: 0 for DNS errors, 1 for timeouts, 2 for circuit errors
+  - [ ] Result dict with all required fields
+- [ ] `probe(exit_desc, target_host, target_port, ...)` - Module entry point
+- [ ] `teardown()` - Merge per-relay JSON files into final report
 
-### Phase 4: Production (Week 4)
-- [ ] Deploy to production server
-- [ ] Configure cron
-- [ ] Monitor first runs
-- [ ] Verify data in cloud storage
+#### 1.3 Implement Sharding & Resource Management
 
-### Phase 5: Scaling (Future)
-- [ ] Multi-host sharded scanning
-- [ ] Alerting system
-- [ ] Dashboard with trends
-- [ ] Operator notifications
+**CLI Integration:**
+- [ ] Add `--shard` argument to `src/exitmap.py`:
+  ```python
+  # In parse_cmd_args():
+  parser.add_argument("--shard", type=str, default=None, metavar="N/M",
+                      help="Process shard N of M total (e.g., 0/3). "
+                           "Useful for memory management on single host.")
+  ```
+- [ ] Add `filter_by_shard()` function to `src/relayselector.py`:
+  ```python
+  def filter_by_shard(exits, shard_spec):
+      """Deterministic shard assignment using SHA256 hash."""
+      import hashlib
+      n, m = map(int, shard_spec.split('/'))
+      def shard_for_relay(fp):
+          return int(hashlib.sha256(fp.encode()).hexdigest(), 16) % m
+      return [e for e in exits if shard_for_relay(e.fingerprint) == n]
+  ```
+- [ ] Integrate filter in `get_exits()`: `if args.shard: exits = filter_by_shard(exits, args.shard)`
+- [ ] Log shard info: `log.info(f"Shard {n}/{m}: {len(filtered)}/{len(exits)} exits")`
+
+**Module-side sharding:**
+- [ ] Add `should_include_relay(fingerprint, shard)` to `dnshealth.py` (for reference/testing)
+- [ ] Include shard info in result metadata (optional)
+
+**Verify sharding works:**
+- [ ] `exitmap dnshealth --shard 0/3 -l | wc -l` → ~1000 relays
+- [ ] `exitmap dnshealth --shard 1/3 -l | wc -l` → ~1000 relays (different set)
+- [ ] Verify no overlap: shards 0+1+2 should equal total exits
+
+#### 1.4 Create Unit Tests
+- [ ] Create `test/test_dnshealth.py`
+- [ ] `TestGenerateUniqueQuery` - Format, uniqueness, retry differentiation
+- [ ] `TestRetryStrategy` - DNS/circuit/timeout retry counts
+- [ ] `TestOutputFormat` - Success/failure field validation
+- [ ] `TestNXDOMAINMode` - SOCKS error 4 = success when expected_ip=None
+- [ ] `TestTeardown` - Merge logic, stats calculation
+- [ ] `TestSharding` - Deterministic, coverage, distribution tests
+- [ ] `TestEdgeCases` - Empty FP, malformed JSON, missing attrs
+- [ ] `TestDNSLabelLength` - Under 253 chars, labels under 63 chars
+- [ ] `TestConcurrency` - Unique files per FP, idempotent teardown
+
+#### 1.5 Manual Testing
+- [ ] Verify wildcard DNS resolves: `dig +short test.tor.exit.validator.1aeo.com`
+- [ ] Test single relay: `exitmap dnshealth -e <FP> --analysis-dir ./test`
+- [ ] Test NXDOMAIN mode: `exitmap dnshealth -e <FP> -H example.com --analysis-dir ./test`
+- [ ] Test sharding: `exitmap dnshealth --shard 0/2 -l | wc -l` (should be ~50%)
+- [ ] Verify JSON output structure matches spec
+- [ ] Run full scan on small subset: `exitmap dnshealth -E 10relays.txt --analysis-dir ./test`
+
+#### 1.6 CI Configuration
+- [ ] Create `.gitlab-ci.yml` with lint and test stages
+- [ ] Verify CI passes on MR
+- [ ] Add coverage badge to README (optional)
+
+**Phase 1 Exit Criteria:**
+- [ ] All unit tests pass (`pytest test/test_dnshealth.py -v`)
+- [ ] Coverage >= 80%
+- [ ] Single relay scan produces valid JSON
+- [ ] Sharding reduces relay count correctly
 
 ---
 
-## Quick Start
+### Phase 2: exitmap-deploy Setup (Week 2)
 
-### exitmap (this repo)
+#### 2.1 Create Repository Structure
+- [ ] Create `exitmap-deploy` repository
+- [ ] Create directory structure:
+  ```
+  exitmap-deploy/
+  ├── README.md
+  ├── config.env.example
+  ├── scripts/
+  │   ├── run_dns_validation.sh
+  │   ├── postprocess_results.py
+  │   ├── generate_report.py
+  │   ├── merge_shards.py        # NEW: For multi-host aggregation
+  │   ├── retention.sh
+  │   ├── upload_do.sh
+  │   ├── upload_r2.sh
+  │   └── install.sh
+  ├── configs/
+  │   └── cron.d/
+  │       ├── exitmap-dns
+  │       └── exitmap-retention
+  ├── functions/
+  │   └── [[path]].js
+  └── public/
+      └── index.html
+  ```
+- [ ] Create `.gitignore` (logs, results, .env)
+
+#### 2.2 Configuration
+- [ ] Create `config.env.example` with all settings:
+  - `EXITMAP_DIR` - Path to exitmap repo
+  - `OUTPUT_DIR` - Where results are stored
+  - `LOG_DIR` - Where logs go
+  - `BUILD_DELAY` - Seconds between circuits (default: 2)
+  - `DELAY_NOISE` - Random variance (default: 1)
+  - `FIRST_HOP` - Optional controlled relay FP
+  - `ALL_EXITS` - Include BadExit (default: true)
+  - `SHARD` - Optional shard spec for distributed scanning
+  - Cloud storage settings (DO, R2)
+- [ ] Create `scripts/install.sh`:
+  - Check Python version
+  - Create virtualenv if needed
+  - Install exitmap dependencies
+  - Validate config
+
+#### 2.3 Batch Runner Script
+- [ ] Create `scripts/run_dns_validation.sh`:
+  - [ ] Load config.env
+  - [ ] Implement flock-based locking (prevent concurrent runs)
+  - [ ] Create timestamped analysis directory
+  - [ ] Activate virtualenv
+  - [ ] Build and execute exitmap command
+  - [ ] Call postprocess_results.py
+  - [ ] Copy to latest.json
+  - [ ] Update files.json manifest
+  - [ ] Trigger cloud uploads (parallel)
+  - [ ] Log success/failure
+
+#### 2.4 Post-Processing Scripts
+- [ ] Create `scripts/postprocess_results.py`:
+  - [ ] Load current run JSON
+  - [ ] Load previous run (if exists) for consecutive failure tracking
+  - [ ] Add `consecutive_failures` field to each result
+  - [ ] Group failures by IP (detect shared infrastructure issues)
+  - [ ] Write updated JSON
+
+- [ ] Create `scripts/generate_report.py`:
+  - [ ] Load JSON results
+  - [ ] Generate Markdown report with summary table
+  - [ ] List failing relays sorted by fail_type
+  - [ ] Include Tor Metrics links
+
+- [ ] Create `scripts/merge_shards.py` (for distributed scanning):
+  ```python
+  #!/usr/bin/env python3
+  """Merge results from multiple shards into single report."""
+  import argparse
+  import json
+  import glob
+  from collections import defaultdict
+  
+  def merge_shards(shard_dirs, output_file):
+      all_results = []
+      seen_fps = set()
+      
+      for shard_dir in shard_dirs:
+          for f in glob.glob(f"{shard_dir}/dnshealth_*.json"):
+              with open(f) as fp:
+                  data = json.load(fp)
+                  for r in data.get('results', []):
+                      if r['fingerprint'] not in seen_fps:
+                          all_results.append(r)
+                          seen_fps.add(r['fingerprint'])
+      
+      # Recalculate metadata
+      total = len(all_results)
+      passed = sum(1 for r in all_results if r.get('ok'))
+      by_fail_type = defaultdict(int)
+      for r in all_results:
+          if not r.get('ok'):
+              by_fail_type[r.get('fail_type', 'unknown')] += 1
+      
+      merged = {
+          'metadata': {
+              'total': total,
+              'passed': passed,
+              'failed': total - passed,
+              'by_fail_type': dict(by_fail_type),
+              'pass_rate_percent': round(passed / total * 100, 2) if total else 0,
+              'shards_merged': len(shard_dirs),
+          },
+          'results': all_results,
+      }
+      
+      with open(output_file, 'w') as f:
+          json.dump(merged, f, indent=2)
+      
+      print(f"Merged {len(shard_dirs)} shards: {passed}/{total} passed")
+  ```
+
+#### 2.5 Retention Script
+- [ ] Create `scripts/retention.sh`:
+  - Compress JSON files older than 30 days
+  - Delete compressed files older than 365 days
+  - Trim files.json to last 100 entries
+
+#### 2.6 Local Testing
+- [ ] Run `./scripts/install.sh` - verify setup
+- [ ] Run `./scripts/run_dns_validation.sh` manually
+- [ ] Verify `public/latest.json` created
+- [ ] Verify `public/files.json` updated
+- [ ] Test postprocess adds consecutive_failures
+- [ ] Test generate_report.py produces valid Markdown
+
+#### 2.7 Single-Host Orchestration Scripts
+- [ ] Create `scripts/run_full_scan.sh`:
+  - [ ] Accept `SHARD_COUNT` env var (default: 3)
+  - [ ] Accept `BUILD_DELAY` env var (default: 2)
+  - [ ] Create timestamped run directory
+  - [ ] Loop through shards sequentially:
+    ```bash
+    for ((shard=0; shard<SHARD_COUNT; shard++)); do
+        exitmap dnshealth --shard "$shard/$SHARD_COUNT" \
+            --build-delay "$BUILD_DELAY" \
+            --analysis-dir "$RUN_DIR/shard_$shard"
+    done
+    ```
+  - [ ] Track failed shards for retry
+  - [ ] Call merge script after all shards complete
+  - [ ] Copy merged result to `latest.json`
+  - [ ] Print summary with pass rate
+
+- [ ] Create `scripts/merge_shard_results.py`:
+  - [ ] Accept `--results-dir` (directory with shard subdirs)
+  - [ ] Accept `--output` (merged output file)
+  - [ ] Glob pattern: `shard_*/dnshealth_*.json`
+  - [ ] Deduplicate by fingerprint
+  - [ ] Recalculate merged statistics
+  - [ ] Include `shards_merged` in metadata
+
+- [ ] Create `scripts/retry_failed_shard.sh`:
+  - [ ] Accept shard number and run directory
+  - [ ] Re-run single shard
+  - [ ] Re-merge results
+
+#### 2.8 Resource Monitoring
+- [ ] Create `scripts/monitor_scan.sh`:
+  - [ ] Count exitmap/python processes
+  - [ ] Track memory usage of process tree
+  - [ ] Display system free memory
+  - [ ] Loop every 5 seconds with timestamps
+  - [ ] Usage: Run in separate terminal during scan
+
+- [ ] Document recommended settings by host capacity:
+  | Host RAM | Shard Count | Build Delay | Est. Time |
+  |----------|-------------|-------------|-----------|
+  | 2 GB     | 6           | 3s          | ~4 hours  |
+  | 4 GB     | 3           | 2s          | ~3 hours  |
+  | 8 GB+    | 1           | 2s          | ~2 hours  |
+
+- [ ] Add memory limit option to run script (optional):
+  ```bash
+  # Using systemd-run for memory limits
+  systemd-run --user --scope -p MemoryMax=2G ./scripts/run_full_scan.sh
+  ```
+
+#### 2.9 Orchestration Testing
+- [ ] Test sequential shard run:
+  ```bash
+  SHARD_COUNT=3 ./scripts/run_full_scan.sh
+  ```
+- [ ] Verify each shard processes ~1/3 of relays
+- [ ] Verify merge produces complete results
+- [ ] Test retry of single failed shard
+- [ ] Monitor memory usage during run (should stay under 1GB)
+- [ ] Verify total scan time is reasonable (~2-4 hours)
+
+**Phase 2 Exit Criteria:**
+- [ ] Manual run completes successfully
+- [ ] Output files match expected format
+- [ ] Locking prevents concurrent runs
+- [ ] Logs capture all steps
+- [ ] Sequential shard orchestration works
+- [ ] Result merging produces valid JSON
+- [ ] Memory stays within acceptable limits
+
+---
+
+### Phase 3: Cloud Integration (Week 3)
+
+#### 3.1 DigitalOcean Spaces Setup
+- [ ] Create DO Spaces bucket `exitmap-dns-results`
+- [ ] Create Spaces access key (read/write)
+- [ ] Set bucket policy (public read, authenticated write)
+- [ ] Configure CORS for web access:
+  ```json
+  {
+    "CORSRules": [{
+      "AllowedOrigins": ["*"],
+      "AllowedMethods": ["GET"],
+      "AllowedHeaders": ["*"],
+      "MaxAgeSeconds": 3600
+    }]
+  }
+  ```
+- [ ] Create `scripts/upload_do.sh`:
+  ```bash
+  #!/bin/bash
+  # Upload files to DO Spaces using s3cmd or aws-cli
+  source "$(dirname "$0")/../config.env"
+  
+  for file in "$@"; do
+      filename=$(basename "$file")
+      
+      # Set cache headers based on file type
+      if [[ "$filename" == "latest.json" ]] || [[ "$filename" == "files.json" ]]; then
+          cache="max-age=60"
+      else
+          cache="max-age=31536000"
+      fi
+      
+      s3cmd put "$file" \
+          "s3://${DO_BUCKET}/$filename" \
+          --acl-public \
+          --add-header="Cache-Control:$cache" \
+          --add-header="Content-Type:application/json"
+  done
+  ```
+- [ ] Test upload: `./scripts/upload_do.sh public/latest.json`
+- [ ] Verify file accessible via Spaces URL
+
+#### 3.2 Cloudflare R2 Setup
+- [ ] Create R2 bucket `exitmap-dns-results`
+- [ ] Create R2 API token with read/write
+- [ ] Configure custom domain (optional)
+- [ ] Create `scripts/upload_r2.sh`:
+  ```bash
+  #!/bin/bash
+  # Upload files to Cloudflare R2 using wrangler or aws-cli (S3-compatible)
+  source "$(dirname "$0")/../config.env"
+  
+  export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+  export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+  export AWS_ENDPOINT_URL="https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com"
+  
+  for file in "$@"; do
+      filename=$(basename "$file")
+      aws s3 cp "$file" "s3://${R2_BUCKET}/$filename" \
+          --content-type "application/json"
+  done
+  ```
+- [ ] Test upload and verify accessibility
+
+#### 3.3 Cloudflare Pages Setup (Optional Dashboard)
+- [ ] Create Pages project `exitmap-dns`
+- [ ] Connect to exitmap-deploy repo (or manual deploy)
+- [ ] Configure build settings:
+  - Build command: (none, static files)
+  - Output directory: `public/`
+- [ ] Create `functions/[[path]].js` for R2 proxy:
+  - Route `/latest.json` → R2 bucket
+  - Set appropriate Cache-Control headers
+  - Handle 404s gracefully
+- [ ] Configure R2 bucket binding in Pages settings
+- [ ] Deploy and test: `https://exitmap-dns.pages.dev/latest.json`
+
+#### 3.4 Test Cloud Pipeline
+- [ ] Run full batch with cloud uploads enabled:
+  ```bash
+  DO_ENABLED=true R2_ENABLED=true ./scripts/run_dns_validation.sh
+  ```
+- [ ] Verify files appear in DO Spaces
+- [ ] Verify files appear in R2
+- [ ] Test public URLs work
+- [ ] Test cache headers are correct
+
+**Phase 3 Exit Criteria:**
+- [ ] Files upload to DO Spaces successfully
+- [ ] Files upload to R2 successfully
+- [ ] Public URLs are accessible
+- [ ] Cache headers are correct (1 min for latest, 1 year for historical)
+
+---
+
+### Phase 4: Production Deployment (Week 4)
+
+#### 4.1 Server Setup
+- [ ] Provision server (or use existing)
+- [ ] Install dependencies:
+  ```bash
+  sudo apt update
+  sudo apt install python3 python3-venv tor s3cmd jq
+  ```
+- [ ] Create dedicated user (optional): `sudo useradd -m exitmap`
+- [ ] Clone repositories:
+  ```bash
+  git clone https://gitlab.torproject.org/tpo/network-health/exitmap.git ~/exitmap
+  git clone https://github.com/1aeo/exitmap-deploy.git ~/exitmap-deploy
+  ```
+- [ ] Set up exitmap:
+  ```bash
+  cd ~/exitmap
+  python3 -m venv venv
+  source venv/bin/activate
+  pip install -e .
+  ```
+
+#### 4.2 Configuration
+- [ ] Create `~/exitmap-deploy/config.env` from template
+- [ ] Set all required paths:
+  - `EXITMAP_DIR=$HOME/exitmap`
+  - `OUTPUT_DIR=$HOME/exitmap-deploy/public`
+  - `LOG_DIR=$HOME/exitmap-deploy/logs`
+- [ ] Configure cloud credentials (DO and/or R2)
+- [ ] Set `FIRST_HOP` to a reliable relay you control (optional but recommended)
+- [ ] Test config: `./scripts/run_dns_validation.sh` (single manual run)
+
+#### 4.3 Tor Configuration
+- [ ] Ensure Tor is running and bootstrapped:
+  ```bash
+  sudo systemctl status tor
+  journalctl -u tor | grep "Bootstrapped 100%"
+  ```
+- [ ] (Optional) Configure torrc for better performance:
+  ```
+  # /etc/tor/torrc
+  DataDirectory /var/lib/tor
+  ControlPort 9051
+  CookieAuthentication 1
+  ```
+- [ ] Verify exitmap can connect to Tor:
+  ```bash
+  cd ~/exitmap && source venv/bin/activate
+  exitmap checktest -e $(exitmap -l | head -1)
+  ```
+
+#### 4.4 Cron Setup
+- [ ] Install cron jobs:
+  ```bash
+  sudo cp ~/exitmap-deploy/configs/cron.d/exitmap-dns /etc/cron.d/
+  sudo cp ~/exitmap-deploy/configs/cron.d/exitmap-retention /etc/cron.d/
+  ```
+- [ ] Verify cron syntax: `crontab -l` (if using user crontab)
+- [ ] Set correct user/paths in cron files:
+  ```cron
+  # /etc/cron.d/exitmap-dns
+  15 */6 * * * exitmap /home/exitmap/exitmap-deploy/scripts/run_dns_validation.sh >> /home/exitmap/exitmap-deploy/logs/cron.log 2>&1
+  ```
+
+#### 4.5 Monitoring First Runs
+- [ ] Wait for first scheduled run (or trigger manually)
+- [ ] Check logs: `tail -f ~/exitmap-deploy/logs/cron.log`
+- [ ] Verify output created: `ls -la ~/exitmap-deploy/public/`
+- [ ] Check cloud storage updated:
+  ```bash
+  curl -I https://your-spaces-url/latest.json
+  curl -I https://your-r2-url/latest.json
+  ```
+- [ ] Verify JSON is valid: `cat public/latest.json | jq '.metadata'`
+
+#### 4.6 Second Run Validation
+- [ ] Wait for second scheduled run
+- [ ] Verify `consecutive_failures` is being tracked
+- [ ] Verify `files.json` has multiple entries
+- [ ] Check historical files are being created
+
+#### 4.7 Alerting Setup (Basic)
+- [ ] Add simple failure notification to batch script:
+  ```bash
+  # At end of run_dns_validation.sh
+  FAIL_RATE=$(cat "$LATEST_REPORT" | jq '.metadata.pass_rate_percent')
+  if (( $(echo "$FAIL_RATE < 90" | bc -l) )); then
+      echo "Warning: Pass rate dropped to $FAIL_RATE%" | mail -s "Exitmap Alert" your@email.com
+  fi
+  ```
+- [ ] Or use webhook for Slack/Discord notification
+
+#### 4.8 Documentation
+- [ ] Update exitmap README.md to mention dnshealth module
+- [ ] Create exitmap-deploy README.md with setup instructions
+- [ ] Document runbook for common issues:
+  - What to do if scan fails
+  - How to manually trigger scan
+  - How to check logs
+  - How to rotate credentials
+
+**Phase 4 Exit Criteria:**
+- [ ] Cron runs successfully every 6 hours
+- [ ] Cloud storage receives updates
+- [ ] Logs show no errors
+- [ ] Pass rate is reasonable (>90%)
+- [ ] At least 3 successful scheduled runs completed
+
+---
+
+### Phase 5: Scaling (Future)
+- [ ] Multi-host sharded scanning orchestration
+- [ ] Alerting system (email, webhook, Tor Metrics integration)
+- [ ] Dashboard with trends over time
+- [ ] Operator notification system
+- [ ] Auto-recovery from failed scans
+
+---
+
+## Test Validation Plan
+
+This section defines acceptance criteria and validation steps to verify the implementation is complete and working correctly.
+
+### Unit Test Coverage Targets
+
+| Component | Target | Rationale |
+|-----------|--------|-----------|
+| `dnshealth.py` | 80%+ | Core module, critical for reliability |
+| `generate_unique_query()` | 100% | Simple function, easy to cover |
+| `resolve_with_retry()` | 90%+ | Complex retry logic needs thorough testing |
+| `teardown()` | 85%+ | File I/O edge cases |
+| `should_include_relay()` | 100% | Sharding correctness is critical |
+
+**Run coverage check:**
 ```bash
-# Install
-pip install -e .
-
-# Test the module with a single exit
-exitmap dnshealth -e SOME_EXIT_FPR --analysis-dir ./test_results
-
-# Full scan (single host)
-exitmap dnshealth --analysis-dir ./results --build-delay 2
-
-# Distributed scan across 3 hosts
-# Host 1:
-exitmap dnshealth --shard 0/3 --analysis-dir ./results --build-delay 2
-# Host 2:
-exitmap dnshealth --shard 1/3 --analysis-dir ./results --build-delay 2
-# Host 3:
-exitmap dnshealth --shard 2/3 --analysis-dir ./results --build-delay 2
-
-# NXDOMAIN mode (fallback, no controlled domain needed)
-exitmap dnshealth -H example.com --analysis-dir ./results
+pytest test/test_dnshealth.py --cov=src/modules/dnshealth --cov-report=term-missing --cov-fail-under=80
 ```
 
-### exitmap-deploy (new repo)
+### Integration Test Scenarios
+
+| Scenario | Command | Expected Outcome |
+|----------|---------|------------------|
+| **Single relay** | `exitmap dnshealth -e FINGERPRINT --analysis-dir ./test` | JSON with 1 result |
+| **Small batch** | `exitmap dnshealth -E 10relays.txt --analysis-dir ./test` | JSON with 10 results |
+| **Wildcard mode** | `exitmap dnshealth -e FP --analysis-dir ./test` | Resolves to `64.65.4.1` |
+| **NXDOMAIN mode** | `exitmap dnshealth -e FP -H example.com --analysis-dir ./test` | NXDOMAIN = success |
+| **Sharding** | `exitmap dnshealth --shard 0/3 --analysis-dir ./test` | ~1/3 of exits scanned |
+
+### End-to-End Validation Checklist
+
+Run these manual checks after implementation is complete:
+
 ```bash
-# Clone and configure
+# 1. Verify module loads
+exitmap --help | grep dnshealth
+# Expected: dnshealth module listed
+
+# 2. Verify wildcard DNS is working (from your network)
+dig +short test123.tor.exit.validator.1aeo.com
+# Expected: 64.65.4.1
+
+# 3. Test single relay (use a known good exit)
+GOOD_EXIT=$(exitmap -l 2>/dev/null | grep -v BadExit | head -1 | awk '{print $1}')
+exitmap dnshealth -e "$GOOD_EXIT" --analysis-dir ./validation_test
+cat ./validation_test/dnshealth_*.json | jq '.metadata'
+# Expected: {"total": 1, "passed": 1, "failed": 0, ...}
+
+# 4. Verify JSON structure
+cat ./validation_test/dnshealth_*.json | jq '.results[0] | keys'
+# Expected: ["address", "fingerprint", "latency_ms", "nickname", "ok", "resolved_ip", "run_id", "timestamp"]
+
+# 5. Test failure handling (use known bad exit or nonexistent FP)
+exitmap dnshealth -e "0000000000000000000000000000000000000000" --analysis-dir ./validation_fail
+# Expected: Circuit error or no results (invalid FP)
+
+# 6. Verify sharding produces different subsets
+exitmap dnshealth --shard 0/2 -l 2>/dev/null | wc -l
+exitmap dnshealth --shard 1/2 -l 2>/dev/null | wc -l
+# Expected: Both ~50% of total, no overlap
+
+# 7. Full scan dry-run (list only)
+exitmap dnshealth -l 2>/dev/null | wc -l
+# Expected: ~1500-2000 exits (current network size)
+
+# 8. Test sequential shard orchestration
+mkdir -p ./orchestration_test
+for shard in 0 1 2; do
+    exitmap dnshealth --shard $shard/3 -e $(exitmap -l | head -5 | tail -1) \
+        --analysis-dir ./orchestration_test/shard_$shard
+done
+# Expected: 3 directories with results
+
+# 9. Test result merging
+python scripts/merge_shard_results.py \
+    --results-dir ./orchestration_test \
+    --output ./orchestration_test/merged.json
+cat ./orchestration_test/merged.json | jq '.metadata'
+# Expected: shards_merged: 3, total matches sum of shard results
+
+# 10. Monitor memory during small batch
+./scripts/monitor_scan.sh &
+MONITOR_PID=$!
+exitmap dnshealth -E <(exitmap -l | head -20) --analysis-dir ./mem_test
+kill $MONITOR_PID 2>/dev/null
+# Expected: Memory stays under 500MB for 20 relays
+```
+
+### Performance Benchmarks
+
+| Metric | Target | Measurement Method |
+|--------|--------|-------------------|
+| **Single relay scan** | < 30s | `time exitmap dnshealth -e FP --analysis-dir ./test` |
+| **Memory per relay** | < 5MB | Monitor during scan with `top` |
+| **Result file size** | < 1KB each | `ls -la ./results/result_*.json` |
+| **Merged report size** | < 5MB for 2000 relays | `ls -la ./results/dnshealth_*.json` |
+| **Full scan time** | 2-4 hours (2s delay) | Estimate: `2000 relays * 2s = 66 min` + overhead |
+| **Peak memory (3 shards)** | < 1 GB | `./scripts/monitor_scan.sh` during `run_full_scan.sh` |
+| **Shard merge time** | < 10s | `time python scripts/merge_shard_results.py` |
+
+### Resource Guidelines
+
+| Host RAM | Recommended Config | Est. Peak Memory | Est. Scan Time |
+|----------|-------------------|------------------|----------------|
+| 2 GB | `SHARD_COUNT=6 BUILD_DELAY=3` | ~400 MB | ~4 hours |
+| 4 GB | `SHARD_COUNT=3 BUILD_DELAY=2` | ~800 MB | ~3 hours |
+| 8 GB+ | `SHARD_COUNT=1 BUILD_DELAY=2` | ~1.5 GB | ~2 hours |
+
+### Validation Sign-off
+
+Before marking implementation complete:
+
+- [ ] All unit tests pass (`pytest test/test_dnshealth.py -v`)
+- [ ] Coverage >= 80% (`pytest --cov-fail-under=80`)
+- [ ] CI pipeline passes (if configured)
+- [ ] E2E checklist items 1-7 verified (basic functionality)
+- [ ] E2E checklist items 8-10 verified (orchestration)
+- [ ] Performance within targets
+- [ ] Memory stays within guidelines for host capacity
+- [ ] Sequential shard orchestration completes without manual intervention
+- [ ] Result merging produces valid, deduplicated JSON
+- [ ] Documentation reviewed and accurate
+
+---
+
+## Quick Start Guide
+
+### 5-Minute Setup (exitmap module)
+
+Get the DNS health module running in 5 minutes:
+
+```bash
+# 1. Clone and install exitmap (if not already done)
+git clone https://gitlab.torproject.org/tpo/network-health/exitmap.git
+cd exitmap
+python3 -m venv venv && source venv/bin/activate
+pip install -e .
+
+# 2. Verify Tor is running (exitmap needs it)
+pgrep tor || echo "Start Tor first: sudo systemctl start tor"
+
+# 3. Verify wildcard DNS is working
+dig +short test.tor.exit.validator.1aeo.com
+# Should return: 64.65.4.1
+
+# 4. Run your first scan (single relay)
+mkdir -p results
+exitmap dnshealth -e $(exitmap -l 2>/dev/null | head -1) --analysis-dir ./results
+
+# 5. View results
+cat results/dnshealth_*.json | jq '.metadata'
+```
+
+**Expected output:**
+```json
+{
+  "run_id": "20250115120000",
+  "timestamp": "2025-01-15T12:00:30Z",
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "by_fail_type": {},
+  "pass_rate_percent": 100
+}
+```
+
+### Common Commands
+
+```bash
+# Wildcard mode (default, recommended)
+exitmap dnshealth --analysis-dir ./results
+
+# NXDOMAIN mode (no DNS setup needed)
+exitmap dnshealth -H example.com --analysis-dir ./results
+
+# Single relay test
+exitmap dnshealth -e FINGERPRINT --analysis-dir ./results
+
+# Multiple relays from file
+exitmap dnshealth -E fingerprints.txt --analysis-dir ./results
+
+# Country filter
+exitmap dnshealth -C US --analysis-dir ./results
+
+# Include BadExit relays
+exitmap dnshealth --all-exits --analysis-dir ./results
+
+# Sequential sharding (memory-safe, single host)
+# Runs ~1000 relays at a time instead of all 3000
+for shard in 0 1 2; do
+    exitmap dnshealth --shard $shard/3 --analysis-dir ./results/shard_$shard
+done
+# Then merge: python scripts/merge_shard_results.py -d ./results -o ./results/merged.json
+
+# Or use the orchestration script (recommended):
+./scripts/run_full_scan.sh  # Handles sharding, merging, and error recovery
+
+# Rate limiting (be nice to the network)
+exitmap dnshealth --build-delay 3 --delay-noise 1 --analysis-dir ./results
+```
+
+### Example Output Walkthrough
+
+**Successful scan result:**
+```json
+{
+  "fingerprint": "ABCD1234EFGH5678IJKL9012MNOP3456QRST7890",
+  "nickname": "MyTorRelay",
+  "address": "192.0.2.1",
+  "timestamp": "2025-01-15T12:00:30Z",
+  "run_id": "20250115120000",
+  "ok": true,
+  "resolved_ip": "64.65.4.1",
+  "latency_ms": 1523
+}
+```
+
+**Failed scan result (DNS issue):**
+```json
+{
+  "fingerprint": "WXYZ9876DCBA5432...",
+  "nickname": "BrokenDNSRelay",
+  "address": "198.51.100.1",
+  "timestamp": "2025-01-15T12:01:45Z",
+  "run_id": "20250115120000",
+  "ok": false,
+  "fail_type": "dns",
+  "fail_reason": "nxdomain",
+  "error": "SOCKS 4: Domain not found (NXDOMAIN)",
+  "resolved_ip": null,
+  "latency_ms": 892
+}
+```
+
+**Merged report structure:**
+```json
+{
+  "metadata": {
+    "run_id": "20250115120000",
+    "timestamp": "2025-01-15T12:35:00Z",
+    "total": 1523,
+    "passed": 1489,
+    "failed": 34,
+    "by_fail_type": {
+      "dns": 20,
+      "circuit": 10,
+      "timeout": 4
+    },
+    "pass_rate_percent": 97.77
+  },
+  "results": [ /* array of per-relay results */ ]
+}
+```
+
+### Troubleshooting FAQ
+
+**Q: "Module not found" error**
+```
+A: Run from exitmap root directory, or use: python -m exitmap dnshealth
+```
+
+**Q: "No results generated"**
+```
+A: Did you specify --analysis-dir? It's required:
+   exitmap dnshealth --analysis-dir ./results
+```
+
+**Q: "All relays timing out"**
+```
+A: Check if Tor is running and bootstrapped:
+   - pgrep tor
+   - Check Tor logs for "Bootstrapped 100%"
+   - Try: exitmap checktest (basic connectivity test)
+```
+
+**Q: "0% success rate in wildcard mode"**
+```
+A: Verify DNS is working:
+   dig +short test.tor.exit.validator.1aeo.com
+   Should return: 64.65.4.1
+   
+   If not, try NXDOMAIN mode as fallback:
+   exitmap dnshealth -H example.com --analysis-dir ./results
+```
+
+**Q: "High circuit failure rate"**
+```
+A: This is often transient. Try:
+   1. Use a controlled first hop: --first-hop YOUR_RELAY_FPR
+   2. Increase delays: --build-delay 3 --delay-noise 2
+   3. Filter results: circuit failures aren't the relay's fault
+```
+
+**Q: "How do I filter actionable failures?"**
+```python
+import json
+
+with open('dnshealth_20250115120000.json') as f:
+    data = json.load(f)
+
+# Only DNS issues (actionable - relay's fault)
+dns_issues = [r for r in data['results'] 
+              if r.get('fail_type') == 'dns']
+
+# Ignore circuit issues (not relay's fault)
+testable = [r for r in data['results']
+            if r['ok'] or r.get('fail_type') != 'circuit']
+```
+
+**Q: "Can I run this without the wildcard domain?"**
+```
+A: Yes, use NXDOMAIN mode:
+   exitmap dnshealth -H example.com --analysis-dir ./results
+   
+   This is less rigorous (any DNS response = success) but requires
+   no infrastructure setup.
+```
+
+### exitmap-deploy Quick Start
+
+For automated scheduled scanning:
+
+```bash
+# Clone deployment repo
 git clone https://github.com/1aeo/exitmap-deploy
 cd exitmap-deploy
+
+# Configure
 cp config.env.example config.env
-nano config.env
+nano config.env  # Set EXITMAP_DIR, OUTPUT_DIR, etc.
 
-# Install dependencies
-./scripts/install.sh
-
-# Manual run
+# Test manually
 ./scripts/run_dns_validation.sh
 
 # View results
 cat public/latest.json | jq '.metadata'
+
+# Enable scheduled runs (edit cron)
+sudo cp configs/cron.d/exitmap-dns /etc/cron.d/
 ```
 
 ---
