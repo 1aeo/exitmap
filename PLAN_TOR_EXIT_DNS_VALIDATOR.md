@@ -928,23 +928,31 @@ exitmap dnshealth --build-delay 3 --delay-noise 1 --analysis-dir ./results
 
 ### Complete Error Reference (One Table)
 
-| SOCKS | Meaning | `fail_type` | `fail_reason` | `error` example | Actionable? |
-|-------|---------|-------------|---------------|-----------------|-------------|
-| - | Resolved correctly | - | - | - | ✅ Pass |
-| - | Wrong IP returned | `dns` | `wrong_ip` | `"Got X, expected Y"` | **Yes** |
-| 4 | Host unreachable | `dns` | `nxdomain` | `"NXDOMAIN"` | **Yes** |
-| 5 | Connection refused | `dns` | `refused` | `"Query refused"` | **Yes** |
-| 7,8 | Command not supported | `dns` | `unsupported` | `"Protocol error"` | **Yes** |
-| 1 | General failure | `circuit` | `socks_error` | `"SOCKS 1 via ABC123..."` | No |
-| 2 | Not allowed | `circuit` | `socks_error` | `"Exit policy via ABC123..."` | No |
-| 3 | Network unreachable | `circuit` | `socks_error` | `"Net unreachable via ABC123..."` | No |
-| 6 | TTL expired | `circuit` | `socks_error` | `"TTL expired via ABC123..."` | No |
-| 9+ | Unknown | `circuit` | `socks_error` | `"SOCKS N via ABC123..."` | No |
-| - | Socket timeout | `timeout` | `timeout` | `"Timeout 10s via ABC123..."` | Maybe |
-| - | EOF | `circuit` | `eof` | `"EOF via ABC123..."` | No |
-| - | Exception | `bug` | `exception` | `"ValueError: ..."` | **Yes** |
+All possible output field values:
 
-**Note**: Circuit/timeout errors include first hop fingerprint (truncated) in the error message for troubleshooting network issues.
+| Scenario | `ok` | `fail_type` | `fail_reason` | `error` | `resolved_ip` | Actionable? |
+|----------|------|-------------|---------------|---------|---------------|-------------|
+| ✅ Success | `true` | - | - | - | `"64.65.4.1"` | - |
+| ✅ NXDOMAIN mode success | `true` | - | - | - | `"NXDOMAIN"` | - |
+| Wrong IP returned | `false` | `"dns"` | `"wrong_ip"` | `"Got {ip}, expected {expected}"` | `"{ip}"` | **Yes** |
+| SOCKS 4: Host unreachable | `false` | `"dns"` | `"nxdomain"` | `"NXDOMAIN"` | - | **Yes** |
+| SOCKS 5: Connection refused | `false` | `"dns"` | `"refused"` | `"Query refused"` | - | **Yes** |
+| SOCKS 7/8: Not supported | `false` | `"dns"` | `"unsupported"` | `"SOCKS error {N}: protocol error"` | - | **Yes** |
+| SOCKS 1: General failure | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 1 via {hop}"` | - | No |
+| SOCKS 2: Not allowed | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 2 via {hop}"` | - | No |
+| SOCKS 3: Net unreachable | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 3 via {hop}"` | - | No |
+| SOCKS 6: TTL expired | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 6 via {hop}"` | - | No |
+| SOCKS 9+: Unknown | `false` | `"circuit"` | `"socks_error"` | `"SOCKS {N} via {hop}"` | - | No |
+| Socket timeout | `false` | `"timeout"` | `"timeout"` | `"Timeout 10s via {hop}"` | - | Maybe |
+| Connection closed | `false` | `"circuit"` | `"eof"` | `"EOF via {hop}"` | - | No |
+| Code exception | `false` | `"bug"` | `"exception"` | `"{ExceptionType}: {message}"` | - | **Yes** |
+
+**Legend**:
+- `{ip}` = actual IP returned (e.g., `93.184.216.34`)
+- `{expected}` = expected IP (e.g., `64.65.4.1`)
+- `{hop}` = first hop fingerprint, 8 chars (e.g., `ABC12345`) - omitted if unavailable
+- `{N}` = SOCKS error number
+- `-` = field not present in output
 
 ### Failure Types (4 categories)
 
