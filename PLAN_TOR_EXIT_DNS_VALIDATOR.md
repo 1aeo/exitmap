@@ -216,21 +216,79 @@ Total:           ~76 chars + base_domain ✓ (well under 253 limit)
 
 # Part 1: exitmap Repository (This Repo)
 
-## Existing DNS Modules (Why We Need dnshealth.py)
+## Existing DNS Modules: Modify vs New?
 
-The exitmap codebase already has DNS-related modules that partially address this problem:
+### What Exists Today
 
-### `src/modules/dnsresolution.py`
-- Uses Tor SOCKS `RESOLVE` via `torsocks.torsocket().resolve(domain)`
-- Checks "can resolve at all", but does not ensure uniqueness per relay/run
-- Logs errors, but does not emit structured result artifacts
+| Module | Purpose | Domains | Output | Unique Queries? |
+|--------|---------|---------|--------|-----------------|
+| `dnsresolution.py` | "Can relay resolve DNS?" | Static: `example.com`, `torproject.org` | Log only | ❌ No |
+| `dnspoison.py` | "Is relay returning correct IPs?" | Static list, compared to system DNS whitelist | Log only | ❌ No |
 
-### `src/modules/dnspoison.py`
-- Compares `RESOLVE` results to a whitelist computed via system DNS
-- More about detecting poisoning/mismatch than "DNS is broken"
-- Relies on static domain list unless overridden
+### Options Comparison
 
-**Why we need `dnshealth.py`**: Neither existing module provides unique-per-relay queries, structured JSON output, or consecutive failure tracking needed for systematic DNS health monitoring.
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| **A: New `dnshealth.py`** | Create new module from scratch | Clean design, no breakage, clear purpose | More code to maintain |
+| **B: Modify `dnsresolution.py`** | Add features to existing module | Reuse existing code | Changes behavior, name misleading, heavy modification |
+| **C: Modify `dnspoison.py`** | Repurpose for health checks | Has IP validation | Wrong purpose, relies on system DNS whitelist |
+| **D: Shared utils + new module** | Extract DNS code to `dnsutils.py`, new `dnshealth.py` | DRY, clean | More refactoring, changes internal APIs |
+
+### Detailed Analysis
+
+**Option A: New `dnshealth.py`** ✅ Recommended
+
+```
+dnsresolution.py  →  "Can resolve static domains?" (unchanged)
+dnspoison.py      →  "Is relay poisoning DNS?"     (unchanged)  
+dnshealth.py      →  "Is relay DNS working?"       (NEW - unique queries, JSON output)
+```
+
+- **Different purpose**: Health monitoring ≠ poisoning detection ≠ basic resolution
+- **No breakage**: Existing users of `dnsresolution`/`dnspoison` unaffected
+- **Clean design**: Built for structured output, unique queries, failure tracking
+
+**Option B: Modify `dnsresolution.py`** ⚠️ Not recommended
+
+Would require adding:
+- Unique query generation
+- Structured JSON output with JSONL + locking
+- Retry logic with attempt tracking
+- NXDOMAIN = success interpretation
+- Wildcard mode vs NXDOMAIN mode
+- `setup()` and `teardown()` functions
+
+Problems:
+- Name `dnsresolution` doesn't reflect new capabilities
+- Breaks scripts that expect current behavior (log-only)
+- Module becomes complex multi-purpose tool
+
+**Option C: Modify `dnspoison.py`** ❌ Not recommended
+
+- Designed for different purpose (detecting malicious DNS changes)
+- Relies on system DNS whitelist - we want controlled wildcard domain
+- Would fundamentally change what the module does
+
+**Option D: Shared utilities** 🤔 Future consideration
+
+Could extract common DNS resolution code to `src/dnsutils.py`:
+```python
+# src/dnsutils.py
+def resolve_with_timeout(domain, timeout=10):
+    sock = torsocks.torsocket()
+    sock.settimeout(timeout)
+    return sock.resolve(domain)
+```
+
+But this is premature optimization - the DNS code is only ~10 lines. Consider if we add more DNS modules later.
+
+### Decision: **Option A - New `dnshealth.py`**
+
+Reasons:
+1. **Clear separation**: Each module has one purpose
+2. **No breakage**: Existing modules continue working
+3. **Clean slate**: Design for structured output from the start
+4. **Naming**: `dnshealth` clearly indicates "health check" purpose
 
 ## Scope
 
