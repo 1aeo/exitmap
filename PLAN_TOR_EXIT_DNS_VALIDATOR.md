@@ -786,20 +786,67 @@ if __name__ == "__main__":
     log.critical("Module can only be run via exitmap, not standalone.")
 ```
 
-## Usage Examples
+## Exit Relay Selection (Handled by exitmap, NOT the module)
+
+**Key insight**: Modules don't select which exits to scan - exitmap does.
+
+### How It Works
+
+```
+User runs: exitmap dnshealth -e ABC123 --analysis-dir ./results
+                              │
+                              ▼
+         exitmap.py: select_exits() picks relays based on args
+                              │
+                              ▼
+         For each exit: build circuit, then call module.probe(exit_desc, ...)
+                              │
+                              ▼
+         dnshealth.py: probe() receives ONE exit, tests it, writes result
+```
+
+The module's `probe()` function receives:
+- `exit_desc` - Relay descriptor (fingerprint, address, nickname, etc.)
+- `target_host` - From `-H` flag (we use this for NXDOMAIN mode)
+- `target_port` - From `-p` flag (unused for DNS)
+- `run_python_over_tor` - Wrapper to route code through this circuit
+
+### Exit Selection Options (all handled by exitmap)
 
 ```bash
-# Wildcard mode (default) - recommended
+# Default: all good exits (no BadExit flag)
 exitmap dnshealth --analysis-dir ./results
 
-# NXDOMAIN mode (fallback)
+# Single exit by fingerprint
+exitmap dnshealth -e ABC123DEF456... --analysis-dir ./results
+
+# Multiple exits from file (one fingerprint per line)
+exitmap dnshealth -E exits.txt --analysis-dir ./results
+
+# By country code
+exitmap dnshealth -C US --analysis-dir ./results
+
+# All exits including BadExit
+exitmap dnshealth --all-exits --analysis-dir ./results
+
+# Only BadExit relays
+exitmap dnshealth --bad-exits --analysis-dir ./results
+```
+
+### Module-Specific Options
+
+```bash
+# Wildcard mode (default) - uses controlled domain
+exitmap dnshealth --analysis-dir ./results
+
+# NXDOMAIN mode - uses -H to specify base domain
 exitmap dnshealth -H example.com --analysis-dir ./results
 
-# With first hop for faster scanning
+# With specific first hop (faster, your controlled relay)
 exitmap dnshealth --first-hop YOUR_RELAY_FPR --analysis-dir ./results
 
-# Scan specific exit
-exitmap dnshealth -e EXIT_FINGERPRINT --analysis-dir ./results
+# Rate limiting
+exitmap dnshealth --build-delay 3 --delay-noise 1 --analysis-dir ./results
 ```
 
 ## Output Format
