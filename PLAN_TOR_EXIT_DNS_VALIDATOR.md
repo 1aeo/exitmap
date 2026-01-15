@@ -1027,6 +1027,359 @@ success_rate = len([r for r in testable if r['ok']]) / len(testable)
 
 ---
 
+## Unit Tests: `test/test_dnshealth.py`
+
+```python
+"""Unit tests for dnshealth module."""
+import pytest
+import json
+import os
+import tempfile
+from unittest.mock import Mock, patch, MagicMock
+
+# Import module under test
+import sys
+sys.path.insert(0, 'src/modules')
+
+
+class TestGenerateUniqueQuery:
+    """Test unique query generation."""
+    
+    def test_format(self):
+        """Query follows expected format."""
+        from dnshealth import generate_unique_query, setup
+        setup()  # Initialize _run_id
+        
+        query = generate_unique_query("ABCD1234" * 5, "example.com", attempt=1)
+        parts = query.split(".")
+        
+        assert len(parts) >= 5  # run_id.attempt.offset.fingerprint.domain
+        assert parts[1] == "1"  # attempt
+        assert len(parts[3]) == 40  # full fingerprint
+        assert "example.com" in query
+    
+    def test_uniqueness(self):
+        """Each call produces unique query."""
+        from dnshealth import generate_unique_query, setup
+        setup()
+        
+        fp = "ABCD1234" * 5
+        q1 = generate_unique_query(fp, "example.com", 1)
+        q2 = generate_unique_query(fp, "example.com", 1)
+        
+        assert q1 != q2  # Different offset_ms
+    
+    def test_retry_different(self):
+        """Different attempts produce different queries."""
+        from dnshealth import generate_unique_query, setup
+        setup()
+        
+        fp = "ABCD1234" * 5
+        q1 = generate_unique_query(fp, "example.com", 1)
+        q2 = generate_unique_query(fp, "example.com", 2)
+        
+        assert q1 != q2
+        assert ".1." in q1
+        assert ".2." in q2
+
+
+class TestRetryStrategy:
+    """Test error-specific retry behavior."""
+    
+    @patch('dnshealth.torsocks')
+    def test_dns_error_no_retry(self, mock_torsocks):
+        """DNS errors should not retry."""
+        from dnshealth import resolve_with_retry, setup
+        import error
+        
+        setup()
+        mock_sock = MagicMock()
+        mock_sock.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 5")
+        mock_torsocks.torsocket.return_value = mock_sock
+        
+        exit_desc = Mock(fingerprint="A" * 40)
+        result = resolve_with_retry(exit_desc, "example.com", "1.2.3.4")
+        
+        assert result["ok"] == False
+        assert result["fail_type"] == "dns"
+        assert mock_sock.resolve.call_count == 1  # No retries
+    
+    @patch('dnshealth.torsocks')
+    def test_circuit_error_retries(self, mock_torsocks):
+        """Circuit errors should retry up to CIRCUIT_RETRIES times."""
+        from dnshealth import resolve_with_retry, setup, CIRCUIT_RETRIES
+        import error
+        
+        setup()
+        mock_sock = MagicMock()
+        mock_sock.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 1")
+        mock_torsocks.torsocket.return_value = mock_sock
+        
+        exit_desc = Mock(fingerprint="A" * 40)
+        result = resolve_with_retry(exit_desc, "example.com", "1.2.3.4")
+        
+        assert result["fail_type"] == "circuit"
+        assert mock_sock.resolve.call_count == CIRCUIT_RETRIES + 1
+    
+    @patch('dnshealth.torsocks')
+    def test_timeout_limited_retries(self, mock_torsocks):
+        """Timeouts should retry only TIMEOUT_RETRIES times."""
+        from dnshealth import resolve_with_retry, setup, TIMEOUT_RETRIES
+        import socket
+        
+        setup()
+        mock_sock = MagicMock()
+        mock_sock.resolve.side_effect = socket.timeout()
+        mock_torsocks.torsocket.return_value = mock_sock
+        
+        exit_desc = Mock(fingerprint="A" * 40)
+        result = resolve_with_retry(exit_desc, "example.com", "1.2.3.4")
+        
+        assert result["fail_type"] == "timeout"
+        assert mock_sock.resolve.call_count == TIMEOUT_RETRIES + 1
+
+
+class TestOutputFormat:
+    """Test result output format."""
+    
+    @patch('dnshealth.torsocks')
+    def test_success_fields(self, mock_torsocks):
+        """Success result has correct fields."""
+        from dnshealth import resolve_with_retry, setup
+        
+        setup()
+        mock_sock = MagicMock()
+        mock_sock.resolve.return_value = "64.65.4.1"
+        mock_torsocks.torsocket.return_value = mock_sock
+        
+        exit_desc = Mock(fingerprint="A" * 40, nickname="TestRelay", address="1.2.3.4")
+        result = resolve_with_retry(exit_desc, "example.com", "64.65.4.1")
+        
+        assert result["ok"] == True
+        assert result["resolved_ip"] == "64.65.4.1"
+        assert result["latency_ms"] is not None
+        assert "fail_type" not in result or result.get("fail_type") is None
+    
+    @patch('dnshealth.torsocks')
+    def test_failure_fields(self, mock_torsocks):
+        """Failure result has error fields."""
+        from dnshealth import resolve_with_retry, setup
+        import error
+        
+        setup()
+        mock_sock = MagicMock()
+        mock_sock.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
+        mock_torsocks.torsocket.return_value = mock_sock
+        
+        exit_desc = Mock(fingerprint="A" * 40, nickname="TestRelay", address="1.2.3.4")
+        result = resolve_with_retry(exit_desc, "example.com", "64.65.4.1")
+        
+        assert result["ok"] == False
+        assert result["fail_type"] == "dns"
+        assert result["fail_reason"] == "nxdomain"
+        assert "SOCKS 4" in result["error"]
+
+
+class TestNXDOMAINMode:
+    """Test NXDOMAIN mode (fallback)."""
+    
+    @patch('dnshealth.torsocks')
+    def test_nxdomain_is_success(self, mock_torsocks):
+        """In NXDOMAIN mode, SOCKS error 4 is success."""
+        from dnshealth import resolve_with_retry, setup
+        import error
+        
+        setup()
+        mock_sock = MagicMock()
+        mock_sock.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
+        mock_torsocks.torsocket.return_value = mock_sock
+        
+        exit_desc = Mock(fingerprint="A" * 40)
+        # expected_ip=None triggers NXDOMAIN mode
+        result = resolve_with_retry(exit_desc, "example.com", expected_ip=None)
+        
+        assert result["ok"] == True
+        assert result["resolved_ip"] == "NXDOMAIN"
+
+
+class TestTeardown:
+    """Test result aggregation in teardown."""
+    
+    def test_merge_results(self):
+        """Teardown merges per-relay files correctly."""
+        from dnshealth import teardown, setup, _run_id
+        import dnshealth
+        
+        setup()
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create mock result files
+            for i, status in enumerate([True, True, False]):
+                result = {
+                    "fingerprint": f"FP{i}" * 10,
+                    "ok": status,
+                    "fail_type": "dns" if not status else None,
+                }
+                with open(os.path.join(tmpdir, f"result_FP{i}.json"), "w") as f:
+                    json.dump(result, f)
+            
+            # Mock util.analysis_dir
+            with patch.object(dnshealth, 'util') as mock_util:
+                mock_util.analysis_dir = tmpdir
+                dnshealth._run_id = "20250114120000"
+                teardown()
+            
+            # Check merged report
+            report_path = os.path.join(tmpdir, f"dnshealth_{dnshealth._run_id}.json")
+            with open(report_path) as f:
+                report = json.load(f)
+            
+            assert report["metadata"]["total"] == 3
+            assert report["metadata"]["passed"] == 2
+            assert report["metadata"]["failed"] == 1
+            assert len(report["results"]) == 3
+```
+
+### Running Tests
+
+```bash
+# From exitmap root directory
+pytest test/test_dnshealth.py -v
+
+# With coverage
+pytest test/test_dnshealth.py --cov=src/modules/dnshealth --cov-report=term-missing
+
+# Quick smoke test
+pytest test/test_dnshealth.py::TestGenerateUniqueQuery -v
+```
+
+---
+
+## Module Documentation
+
+### `src/modules/dnshealth.py` - DNS Health Check Module
+
+**Purpose**: Validate DNS resolution through Tor exit relays using unique queries per relay.
+
+#### Usage
+
+```bash
+# Default: Wildcard mode (recommended)
+exitmap dnshealth --analysis-dir ./results
+
+# NXDOMAIN mode (fallback, no infrastructure needed)
+exitmap dnshealth -H example.com --analysis-dir ./results
+
+# Single relay test
+exitmap dnshealth -e FINGERPRINT --analysis-dir ./results
+
+# All exits including BadExit
+exitmap dnshealth --all-exits --analysis-dir ./results
+```
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--analysis-dir` | Output directory for results | Required |
+| `-H`, `--target-host` | Base domain (enables NXDOMAIN mode) | None (wildcard mode) |
+| `-e` | Single exit fingerprint | All exits |
+| `-E` | File with fingerprints (one per line) | All exits |
+| `-C` | Country code filter | All countries |
+| `--first-hop` | Specific guard relay | Random |
+| `--build-delay` | Seconds between circuits | 2 |
+| `--all-exits` | Include BadExit relays | False |
+
+#### Output
+
+Results written to `{analysis-dir}/dnshealth_{run_id}.json`:
+
+```json
+{
+  "metadata": {
+    "run_id": "20250114143052",
+    "timestamp": "2025-01-14T14:35:00Z",
+    "total": 1500,
+    "passed": 1450,
+    "failed": 50,
+    "by_fail_type": {"dns": 30, "circuit": 15, "timeout": 5},
+    "pass_rate_percent": 96.67
+  },
+  "results": [
+    {"fingerprint": "...", "ok": true, "resolved_ip": "64.65.4.1", ...},
+    {"fingerprint": "...", "ok": false, "fail_type": "dns", "error": "...", ...}
+  ]
+}
+```
+
+#### Modes
+
+| Mode | Domain | Success Condition | Use When |
+|------|--------|-------------------|----------|
+| **Wildcard** | `*.tor.exit.validator.1aeo.com` | Returns `64.65.4.1` | You control DNS infrastructure |
+| **NXDOMAIN** | `*.{your-domain}` | SOCKS error 4 | Quick testing, no DNS setup |
+
+#### Dependencies
+
+```
+# Already in exitmap requirements.txt
+stem>=1.8.0
+
+# Standard library (no additional deps)
+socket, json, time, os, glob, logging
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+| Problem | Cause | Solution |
+|---------|-------|----------|
+| `No results generated` | `--analysis-dir` not specified | Add `--analysis-dir ./results` |
+| `All relays timeout` | Tor not running/bootstrapped | Check `tor` process, wait for bootstrap |
+| `0% success rate` | Wildcard domain not resolving | Test: `dig test.tor.exit.validator.1aeo.com` |
+| `Module not found` | Wrong working directory | Run from exitmap root: `./bin/exitmap dnshealth` |
+| `Permission denied` | Can't write to analysis dir | Check directory permissions |
+| `High circuit failure rate` | Network issues / bad guard | Try `--first-hop YOUR_RELAY` |
+
+### Debugging
+
+```bash
+# Verbose logging
+exitmap -v dnshealth --analysis-dir ./results
+
+# Test single relay first
+exitmap dnshealth -e KNOWN_GOOD_FINGERPRINT --analysis-dir ./results
+
+# Check Tor connectivity
+exitmap checktest --analysis-dir ./results
+
+# Inspect raw result files (before teardown merges them)
+ls -la ./results/result_*.json
+```
+
+### Verifying Setup
+
+```bash
+# 1. Check wildcard DNS is working
+dig +short test123.tor.exit.validator.1aeo.com
+# Should return: 64.65.4.1
+
+# 2. Check Tor is running
+pgrep -a tor
+
+# 3. Test with one relay
+exitmap dnshealth -e $(exitmap -l | head -1) --analysis-dir ./test_results
+cat ./test_results/dnshealth_*.json | jq '.metadata'
+
+# 4. Run full scan
+exitmap dnshealth --analysis-dir ./results
+```
+
+---
+
 # Part 2: exitmap-deploy Repository (New Repo)
 
 ## Scope
