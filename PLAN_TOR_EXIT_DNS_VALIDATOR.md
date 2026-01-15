@@ -636,12 +636,15 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
                 except (ValueError, IndexError):
                     pass
             
+            # Helper for first_hop suffix
+            hop_suffix = f" via {first_hop}" if first_hop else ""
+            
             # SOCKS error 4 = NXDOMAIN
             if socks_err == 4:
                 if _expected_ip:
                     result["fail_type"] = "dns"
                     result["fail_reason"] = "nxdomain"
-                    result["error"] = "NXDOMAIN"
+                    result["error"] = "SOCKS 4: Domain not found (NXDOMAIN)"
                     log.warning(f"✗ {exit_url} NXDOMAIN")
                 else:
                     # NXDOMAIN mode: this is success
@@ -650,43 +653,58 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
                     log.info(f"✓ {exit_url} NXDOMAIN (DNS working)")
                 return result
             
-            # DNS errors (actionable)
+            # DNS errors (actionable) - no first_hop, it's the exit's fault
             elif socks_err == 5:
                 result["fail_type"] = "dns"
                 result["fail_reason"] = "refused"
-                result["error"] = "Query refused"
+                result["error"] = "SOCKS 5: Connection refused"
             elif socks_err in (7, 8):
                 result["fail_type"] = "dns"
                 result["fail_reason"] = "unsupported"
-                result["error"] = f"SOCKS error {socks_err}: protocol error"
+                result["error"] = f"SOCKS {socks_err}: Command not supported"
             
             # Circuit errors (not relay's fault) - include first_hop for debugging
+            elif socks_err == 1:
+                result["fail_type"] = "circuit"
+                result["fail_reason"] = "socks_error"
+                result["error"] = f"SOCKS 1: General failure{hop_suffix}"
+            elif socks_err == 2:
+                result["fail_type"] = "circuit"
+                result["fail_reason"] = "socks_error"
+                result["error"] = f"SOCKS 2: Not allowed by ruleset{hop_suffix}"
+            elif socks_err == 3:
+                result["fail_type"] = "circuit"
+                result["fail_reason"] = "socks_error"
+                result["error"] = f"SOCKS 3: Network unreachable{hop_suffix}"
+            elif socks_err == 6:
+                result["fail_type"] = "circuit"
+                result["fail_reason"] = "socks_error"
+                result["error"] = f"SOCKS 6: TTL expired{hop_suffix}"
             else:
                 result["fail_type"] = "circuit"
                 result["fail_reason"] = "socks_error"
-                hop_info = f" via {first_hop}" if first_hop else ""
-                result["error"] = f"SOCKS {socks_err or '?'}{hop_info}"
+                result["error"] = f"SOCKS {socks_err or '?'}: Unknown error{hop_suffix}"
             
             log.warning(f"Attempt {attempt}/{retries}: {exit_url} {result['error']}")
             
         except EOFError:
+            hop_suffix = f" via {first_hop}" if first_hop else ""
             result["fail_type"] = "circuit"
             result["fail_reason"] = "eof"
-            hop_info = f" via {first_hop}" if first_hop else ""
-            result["error"] = f"EOF{hop_info}"
+            result["error"] = f"Connection closed unexpectedly{hop_suffix}"
             log.warning(f"Attempt {attempt}/{retries}: {exit_url} EOF")
             
         except socket.timeout:
+            hop_suffix = f" via {first_hop}" if first_hop else ""
             result["fail_type"] = "timeout"
             result["fail_reason"] = "timeout"
-            hop_info = f" via {first_hop}" if first_hop else ""
-            result["error"] = f"Timeout {QUERY_TIMEOUT}s{hop_info}"
+            result["error"] = f"Timed out after {QUERY_TIMEOUT}s{hop_suffix}"
             log.warning(f"Attempt {attempt}/{retries}: {exit_url} timeout")
             
         except Exception as err:
             result["fail_type"] = "bug"
             result["fail_reason"] = "exception"
-            result["error"] = f"{type(err).__name__}: {err}"
+            result["error"] = f"Exception: {type(err).__name__}: {err}"
             log.error(f"Attempt {attempt}/{retries}: {exit_url} {err}")
         
         # Wait before retry
@@ -935,22 +953,24 @@ All possible output field values:
 | ✅ Success | `true` | - | - | - | `"64.65.4.1"` | - |
 | ✅ NXDOMAIN mode success | `true` | - | - | - | `"NXDOMAIN"` | - |
 | Wrong IP returned | `false` | `"dns"` | `"wrong_ip"` | `"Got {ip}, expected {expected}"` | `"{ip}"` | **Yes** |
-| SOCKS 4: Host unreachable | `false` | `"dns"` | `"nxdomain"` | `"NXDOMAIN"` | - | **Yes** |
-| SOCKS 5: Connection refused | `false` | `"dns"` | `"refused"` | `"Query refused"` | - | **Yes** |
-| SOCKS 7/8: Not supported | `false` | `"dns"` | `"unsupported"` | `"SOCKS error {N}: protocol error"` | - | **Yes** |
-| SOCKS 1: General failure | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 1 via {first_hop}"` | - | No |
-| SOCKS 2: Not allowed | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 2 via {first_hop}"` | - | No |
-| SOCKS 3: Net unreachable | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 3 via {first_hop}"` | - | No |
-| SOCKS 6: TTL expired | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 6 via {first_hop}"` | - | No |
-| SOCKS 9+: Unknown | `false` | `"circuit"` | `"socks_error"` | `"SOCKS {N} via {first_hop}"` | - | No |
-| Socket timeout | `false` | `"timeout"` | `"timeout"` | `"Timeout 10s via {first_hop}"` | - | Maybe |
-| Connection closed | `false` | `"circuit"` | `"eof"` | `"EOF via {first_hop}"` | - | No |
-| Code exception | `false` | `"bug"` | `"exception"` | `"{ExceptionType}: {message}"` | - | **Yes** |
+| SOCKS 4: Host unreachable | `false` | `"dns"` | `"nxdomain"` | `"SOCKS 4: Domain not found (NXDOMAIN)"` | - | **Yes** |
+| SOCKS 5: Connection refused | `false` | `"dns"` | `"refused"` | `"SOCKS 5: Connection refused"` | - | **Yes** |
+| SOCKS 7/8: Not supported | `false` | `"dns"` | `"unsupported"` | `"SOCKS {N}: Command not supported"` | - | **Yes** |
+| SOCKS 1: General failure | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 1: General failure via {first_hop}"` | - | No |
+| SOCKS 2: Not allowed | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 2: Not allowed by ruleset via {first_hop}"` | - | No |
+| SOCKS 3: Net unreachable | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 3: Network unreachable via {first_hop}"` | - | No |
+| SOCKS 6: TTL expired | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 6: TTL expired via {first_hop}"` | - | No |
+| SOCKS 9+: Unknown | `false` | `"circuit"` | `"socks_error"` | `"SOCKS {N}: Unknown error via {first_hop}"` | - | No |
+| Socket timeout | `false` | `"timeout"` | `"timeout"` | `"Timed out after 10s via {first_hop}"` | - | Maybe |
+| Connection closed | `false` | `"circuit"` | `"eof"` | `"Connection closed unexpectedly via {first_hop}"` | - | No |
+| Code exception | `false` | `"bug"` | `"exception"` | `"Exception: {Type}: {message}"` | - | **Yes** |
+
+**Format**: `"SOCKS {N}: {description}"` for SOCKS errors, `"{description}"` for others. Circuit/timeout errors append `" via {first_hop}"`.
 
 **Legend**:
 - `{ip}` = actual IP returned (e.g., `93.184.216.34`)
 - `{expected}` = expected IP (e.g., `64.65.4.1`)
-- `{first_hop}` = full 40-char first hop fingerprint - omitted if unavailable
+- `{first_hop}` = full 40-char first hop fingerprint (omitted if unavailable)
 - `{N}` = SOCKS error number
 - `-` = field not present in output
 
