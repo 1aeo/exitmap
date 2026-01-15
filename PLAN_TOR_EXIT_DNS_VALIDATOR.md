@@ -304,91 +304,125 @@ Add a new module `dnshealth.py` to the existing exitmap codebase that:
 src/modules/dnshealth.py          # Main DNS health validation module
 ```
 
-## Results Storage: JSONL with File Locking (Recommended)
+## Results Storage: Per-Process Files + Merge (Recommended)
 
-### Why JSONL?
+### The Lock Contention Problem
 
-Exitmap uses **multiprocessing** - each relay is tested in a separate subprocess. Unlike aroivalidator (which is single-process/multithreaded and collects results in memory), we need a process-safe way to write results.
+Exitmap uses **multiprocessing** - each relay is tested in a separate subprocess. 
 
-**JSONL (JSON Lines)** is the most efficient approach:
-- Single output file from the start (no aggregation step needed)
-- Append-only (fast, no rewriting)
-- Process-safe with file locking
-- Easy to parse (one JSON object per line)
+**Why NOT JSONL with file locking?**
+
+```
+Subprocess 1 ─┐
+Subprocess 2 ─┼─► LOCK_EX ─► write ─► UNLOCK ─► exit
+Subprocess 3 ─┤     ↑
+    ...       │     │ BLOCKED (waiting for lock)
+Subprocess N ─┘     │
+```
+
+Risk: If many circuits complete simultaneously, processes queue up waiting for the lock. While lock duration is short (~1ms), 100 processes arriving at once = 100ms queue, and processes hold memory while waiting.
 
 ### Comparison
 
-| Option | How it works | For exitmap? |
-|--------|--------------|--------------|
-| **aroivalidator style** | Collect in memory list, write once | ❌ Won't work - multiprocess, not multithreaded |
-| **Per-relay JSON files** | One file per relay, aggregate later | ⚠️ Works but wasteful - 1000+ small files |
-| **JSONL with locking** | Append one line per relay with `flock` | ✅ Best - single file, process-safe |
-| **Manager list** | `multiprocessing.Manager().list()` | ⚠️ Works but memory-heavy for large scans |
+| Option | How it works | Lock contention? | Recommendation |
+|--------|--------------|------------------|----------------|
+| **aroivalidator style** | Collect in memory, write once | N/A | ❌ Won't work (multiprocess) |
+| **JSONL with locking** | Each process locks, appends, unlocks | ⚠️ Yes - queue risk | ❌ Risky |
+| **Per-process files + merge** | Each process writes own file, merge in teardown | ✅ None | ✅ Recommended |
+| **Manager list** | `multiprocessing.Manager().list()` | ⚠️ IPC overhead | ⚠️ Complex |
+
+### Recommended: Per-Process Files + Merge
+
+```
+During scan (parallel, no locking):
+  Subprocess 1 ──► results/abc123...json
+  Subprocess 2 ──► results/def456...json
+  Subprocess N ──► results/xyz789...json
+
+After scan (teardown, sequential):
+  results/*.json ──► dnshealth_20250114143052.json (single merged file)
+                 ──► delete individual files
+```
+
+**Benefits**:
+- **No lock contention**: Each process writes to unique file
+- **No blocking**: Processes never wait on each other
+- **Simple**: No locking code needed
+- **Atomic**: Each write is independent
+- **Clean output**: Single JSON file after merge
+
+**The "many small files" concern is minimal**:
+- Files are tiny (~500 bytes each)
+- They're temporary (deleted after merge)
+- Modern filesystems handle 1000s of small files fine
+- All created in a dedicated subdirectory
 
 ### Implementation
 
 ```python
-import fcntl
-import json
-import os
-
-def append_result_jsonl(result: dict, filepath: str):
+def write_result(result: dict, fingerprint: str):
     """
-    Append a result to JSONL file with file locking.
-    Process-safe for exitmap's multiprocess model.
+    Write result to per-process file. No locking needed.
     """
-    with open(filepath, 'a') as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # Exclusive lock
-        try:
-            f.write(json.dumps(result) + '\n')
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)  # Release lock
-```
-
-### Output Files
-
-```
-analysis_dir/
-└── dnshealth_20250114143052.jsonl    # Single file, one JSON per line
-```
-
-The `teardown()` function can optionally convert JSONL → JSON with metadata:
-
-```python
-def teardown():
-    """Convert JSONL to final JSON report with metadata."""
     if not util.analysis_dir:
         return
     
-    jsonl_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.jsonl")
-    json_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.json")
+    # Each process writes to unique file (fingerprint is unique)
+    filepath = os.path.join(util.analysis_dir, f"result_{fingerprint}.json")
+    with open(filepath, 'w') as f:
+        json.dump(result, f)
+```
+
+### Merge in teardown()
+
+```python
+def teardown():
+    """
+    Merge per-relay result files into single JSON report.
+    Called after ALL subprocesses complete (no concurrency issues).
+    """
+    if not util.analysis_dir:
+        return
+    
+    import glob
     
     results = []
     stats = defaultdict(int)
     
-    with open(jsonl_path, 'r') as f:
-        for line in f:
-            result = json.loads(line)
+    # Read all result files
+    pattern = os.path.join(util.analysis_dir, "result_*.json")
+    for filepath in glob.glob(pattern):
+        with open(filepath, 'r') as f:
+            result = json.load(f)
             results.append(result)
             stats[result.get('status', 'unknown')] += 1
+        # Delete after reading
+        os.remove(filepath)
     
+    # Write merged report
     total = len(results)
     report = {
         'metadata': {
             'run_id': _run_id,
+            'shard': _shard,
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'total_relays': total,
             'success': stats['success'],
+            'dns_fail': stats['dns_fail'],
+            'wrong_ip': stats['wrong_ip'],
+            'timeout': stats['timeout'],
+            'error': stats['error'],
             'success_rate_percent': round(stats['success'] / total * 100, 2) if total else 0,
         },
-        'results': results
+        'results': results,
     }
     
-    with open(json_path, 'w') as f:
+    output_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.json")
+    with open(output_path, 'w') as f:
         json.dump(report, f, indent=2)
     
-    # Optionally remove JSONL after conversion
-    os.remove(jsonl_path)
+    log.info(f"Report: {output_path}")
+    log.info(f"Results: {total} relays, {stats['success']} success")
 ```
 
 ## Scaling & Performance Controls
@@ -458,7 +492,7 @@ import socket
 import time
 import json
 import os
-import fcntl
+import glob
 from typing import Dict, Any
 from collections import defaultdict
 from datetime import datetime
@@ -668,18 +702,17 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
         # Query is generated inside resolve_with_retry for each attempt
         result = resolve_with_retry(exit_desc, base_domain, expected_ip)
         
-        # Append result to JSONL file (process-safe with locking)
+        # Write result to per-process file (no locking needed - unique per fingerprint)
         if util.analysis_dir:
-            jsonl_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.jsonl")
+            filepath = os.path.join(
+                util.analysis_dir, 
+                f"result_{exit_desc.fingerprint}.json"
+            )
             try:
-                with open(jsonl_path, 'a') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                    try:
-                        f.write(json.dumps(result) + '\n')
-                    finally:
-                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                with open(filepath, 'w') as f:
+                    json.dump(result, f)
             except Exception as e:
-                log.error(f"Failed to append to {jsonl_path}: {e}")
+                log.error(f"Failed to write {filepath}: {e}")
     
     run_python_over_tor(do_validation, exit_desc, base_domain, expected_ip)
 
@@ -687,30 +720,35 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
 def teardown():
     """
     Called after all probes complete.
-    Converts JSONL to final JSON report with metadata.
+    Merges per-relay result files into single JSON report.
+    No concurrency issues - all subprocesses have exited.
     """
     log.info(f"DNS Health scan complete. Run ID: {_run_id}")
     
     if not util.analysis_dir:
         return
     
-    jsonl_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.jsonl")
-    json_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.json")
-    
-    if not os.path.exists(jsonl_path):
-        log.warning(f"No results file found: {jsonl_path}")
-        return
-    
-    # Read JSONL and aggregate
+    # Read all per-relay result files
     results = []
     stats = defaultdict(int)
     
-    with open(jsonl_path, 'r') as f:
-        for line in f:
-            if line.strip():
-                result = json.loads(line)
+    pattern = os.path.join(util.analysis_dir, "result_*.json")
+    result_files = glob.glob(pattern)
+    
+    if not result_files:
+        log.warning(f"No result files found matching: {pattern}")
+        return
+    
+    for filepath in result_files:
+        try:
+            with open(filepath, 'r') as f:
+                result = json.load(f)
                 results.append(result)
                 stats[result.get('status', 'unknown')] += 1
+            # Delete individual file after reading
+            os.remove(filepath)
+        except Exception as e:
+            log.error(f"Failed to read {filepath}: {e}")
     
     total = len(results)
     success_rate = round(stats['success'] / total * 100, 2) if total else 0
@@ -731,11 +769,9 @@ def teardown():
         'results': results,
     }
     
+    json_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.json")
     with open(json_path, 'w') as f:
         json.dump(report, f, indent=2)
-    
-    # Remove JSONL after successful conversion
-    os.remove(jsonl_path)
     
     log.info(f"Report: {json_path}")
     log.info(f"Results: {total} relays, {stats['success']} success ({success_rate}%)")
