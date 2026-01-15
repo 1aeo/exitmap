@@ -562,7 +562,7 @@ def generate_unique_query(fingerprint: str, base_domain: str, attempt: int = 1) 
 
 
 def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None, 
-                       retries: int = MAX_RETRIES) -> Dict[str, Any]:
+                       retries: int = MAX_RETRIES, first_hop: str = None) -> Dict[str, Any]:
     """
     Resolve domain through exit relay with retry logic.
     
@@ -660,24 +660,27 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
                 result["fail_reason"] = "unsupported"
                 result["error"] = f"SOCKS error {socks_err}: protocol error"
             
-            # Circuit errors (not relay's fault)
+            # Circuit errors (not relay's fault) - include first_hop for debugging
             else:
                 result["fail_type"] = "circuit"
                 result["fail_reason"] = "socks_error"
-                result["error"] = f"SOCKS error {socks_err or '?'}: {err_str}"
+                hop_info = f" via {first_hop[:8]}" if first_hop else ""
+                result["error"] = f"SOCKS {socks_err or '?'}{hop_info}"
             
             log.warning(f"Attempt {attempt}/{retries}: {exit_url} {result['error']}")
             
         except EOFError:
             result["fail_type"] = "circuit"
             result["fail_reason"] = "eof"
-            result["error"] = "Connection closed"
+            hop_info = f" via {first_hop[:8]}" if first_hop else ""
+            result["error"] = f"EOF{hop_info}"
             log.warning(f"Attempt {attempt}/{retries}: {exit_url} EOF")
             
         except socket.timeout:
             result["fail_type"] = "timeout"
             result["fail_reason"] = "timeout"
-            result["error"] = f"Timed out after {QUERY_TIMEOUT}s"
+            hop_info = f" via {first_hop[:8]}" if first_hop else ""
+            result["error"] = f"Timeout {QUERY_TIMEOUT}s{hop_info}"
             log.warning(f"Attempt {attempt}/{retries}: {exit_url} timeout")
             
         except Exception as err:
@@ -695,12 +698,14 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
 
 
 def probe(exit_desc, target_host, target_port, run_python_over_tor, 
-          run_cmd_over_tor, **kwargs):
+          run_cmd_over_tor, first_hop=None, **kwargs):
     """
     Probe the given exit relay's DNS resolution capability.
     
     If target_host is provided (-H flag), use NXDOMAIN mode.
     Otherwise, use wildcard mode with WILDCARD_DOMAIN.
+    
+    first_hop: Optional first hop fingerprint (requires exitmap modification).
     """
     if target_host:
         # NXDOMAIN mode: user specified a domain
@@ -711,9 +716,9 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
         base_domain = WILDCARD_DOMAIN
         expected_ip = EXPECTED_IP
     
-    def do_validation(exit_desc, base_domain, expected_ip):
+    def do_validation(exit_desc, base_domain, expected_ip, first_hop):
         # Query is generated inside resolve_with_retry for each attempt
-        result = resolve_with_retry(exit_desc, base_domain, expected_ip)
+        result = resolve_with_retry(exit_desc, base_domain, expected_ip, first_hop=first_hop)
         
         # Write result to per-process file (no locking needed - unique per fingerprint)
         if util.analysis_dir:
@@ -727,7 +732,7 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
             except Exception as e:
                 log.error(f"Failed to write {filepath}: {e}")
     
-    run_python_over_tor(do_validation, exit_desc, base_domain, expected_ip)
+    run_python_over_tor(do_validation, exit_desc, base_domain, expected_ip, first_hop)
 
 
 def teardown():
@@ -814,6 +819,21 @@ The module's `probe()` function receives:
 - `target_host` - From `-H` flag (we use this for NXDOMAIN mode)
 - `target_port` - From `-p` flag (unused for DNS)
 - `run_python_over_tor` - Wrapper to route code through this circuit
+- `first_hop` - **Optional** (requires exitmap modification below)
+
+### Optional: Add first_hop to exitmap (for debugging)
+
+To include first hop fingerprint in circuit error messages, add to `eventhandler.py`:
+
+```python
+# In new_circuit(), after getting exit_fpr:
+first_hop_fpr = circ_event.path[0][0] if circ_event.path else None
+
+# In module_call args, add first_hop_fpr parameter
+# In module(), pass first_hop=first_hop_fpr to probe()
+```
+
+Without this change, `dnshealth.py` still works - error messages just won't include first hop info.
 
 ### Exit Selection Options (all handled by exitmap)
 
@@ -915,14 +935,16 @@ exitmap dnshealth --build-delay 3 --delay-noise 1 --analysis-dir ./results
 | 4 | Host unreachable | `dns` | `nxdomain` | `"NXDOMAIN"` | **Yes** |
 | 5 | Connection refused | `dns` | `refused` | `"Query refused"` | **Yes** |
 | 7,8 | Command not supported | `dns` | `unsupported` | `"Protocol error"` | **Yes** |
-| 1 | General failure | `circuit` | `socks_error` | `"SOCKS error 1"` | No |
-| 2 | Not allowed | `circuit` | `socks_error` | `"Exit policy"` | No |
-| 3 | Network unreachable | `circuit` | `socks_error` | `"Network unreachable"` | No |
-| 6 | TTL expired | `circuit` | `socks_error` | `"TTL expired"` | No |
-| 9+ | Unknown | `circuit` | `socks_error` | `"SOCKS error N"` | No |
-| - | Socket timeout | `timeout` | `timeout` | `"Timed out after 10s"` | Maybe |
-| - | EOF | `circuit` | `eof` | `"Connection closed"` | No |
+| 1 | General failure | `circuit` | `socks_error` | `"SOCKS 1 via ABC123..."` | No |
+| 2 | Not allowed | `circuit` | `socks_error` | `"Exit policy via ABC123..."` | No |
+| 3 | Network unreachable | `circuit` | `socks_error` | `"Net unreachable via ABC123..."` | No |
+| 6 | TTL expired | `circuit` | `socks_error` | `"TTL expired via ABC123..."` | No |
+| 9+ | Unknown | `circuit` | `socks_error` | `"SOCKS N via ABC123..."` | No |
+| - | Socket timeout | `timeout` | `timeout` | `"Timeout 10s via ABC123..."` | Maybe |
+| - | EOF | `circuit` | `eof` | `"EOF via ABC123..."` | No |
 | - | Exception | `bug` | `exception` | `"ValueError: ..."` | **Yes** |
+
+**Note**: Circuit/timeout errors include first hop fingerprint (truncated) in the error message for troubleshooting network issues.
 
 ### Failure Types (4 categories)
 
