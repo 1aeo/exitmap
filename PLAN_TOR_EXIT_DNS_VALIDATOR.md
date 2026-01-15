@@ -165,51 +165,56 @@ Each DNS query must be unique per relay per run to:
 | Format | Example | Debuggability | Collision Risk |
 |--------|---------|---------------|----------------|
 | ~~UUID + FP prefix~~ | `f47ac10b-...uuid.abc12345.domain` | ❌ Poor - UUID is meaningless | None |
-| **RunID + Timestamp_ms + Full FP** | `20250114143052.1.20250114143127789.ABC...40chars.domain` | ✅ Excellent | None |
+| **RunID + Offset + Full FP** | `20250114143052.1.75789.ABC...40chars.domain` | ✅ Excellent | None |
 
 ### Recommended Format
 
 ```
-{run_id}.{attempt}.{timestamp_ms}.{full_fingerprint}.{base_domain}
+{run_id}.{attempt}.{offset_ms}.{full_fingerprint}.{base_domain}
 ```
 
 | Field | Purpose | Example |
 |-------|---------|---------|
 | `run_id` | Batch identifier - correlate all queries from same scan | `20250114143052` |
 | `attempt` | Retry attempt (1 = first try, 2 = first retry) | `1` |
-| `timestamp_ms` | Exact query moment - correlate with authoritative DNS logs | `20250114143127789` |
+| `offset_ms` | Milliseconds since batch start - unique per query, dedups with run_id | `75789` |
 | `full_fingerprint` | 40-char relay fingerprint - unambiguous identification | `ABCD1234...7890` |
 | `base_domain` | Your wildcard domain | `tor.exit.validator.1aeo.com` |
 
 ### Example
 
 ```
-20250114143052.1.20250114143127789.ABCD1234EFGH5678IJKL9012MNOP3456QRST7890.tor.exit.validator.1aeo.com
-│              │ │                 │                                        │
-│              │ │                 └─ Full fingerprint (which relay)        └─ Base domain
-│              │ └─ Query timestamp_ms (exact moment of this query)
+20250114143052.1.75789.ABCD1234EFGH5678IJKL9012MNOP3456QRST7890.tor.exit.validator.1aeo.com
+│              │ │     │                                        │
+│              │ │     └─ Full fingerprint (which relay)        └─ Base domain
+│              │ └─ Offset: 75789ms = 75.789 seconds since batch start
 │              └─ Attempt number (1=first, 2=retry)
-└─ Run ID (which batch)
+└─ Run ID (batch start: 2025-01-14 14:30:52)
 ```
+
+**To reconstruct exact query time:** `run_id + offset_ms`
+- Run started: 2025-01-14 14:30:52.000
+- Offset: 75789ms = 75.789 seconds
+- Query time: 2025-01-14 14:31:27.789
 
 ### Why This Format
 
-1. **run_id + attempt are grouped** - Both are "run context"
-2. **timestamp_ms is query-specific** - Exact moment this DNS query was made
+1. **No redundancy** - `offset_ms` instead of full `timestamp_ms` saves ~12 chars
+2. **Still unique** - Each query has different offset (time keeps moving)
 3. **Full fingerprint** - No ambiguity, no collisions between relays
-4. **No UUID** - Every field has debugging value
-5. **Retry uniqueness** - Each retry has different attempt + timestamp_ms, ensuring fresh DNS lookup
+4. **Reconstructable** - Can compute exact time from run_id + offset
+5. **Retry uniqueness** - Each retry has different attempt + offset_ms
 
 ### DNS Label Length Check
 
 ```
 run_id:           14 chars  (20250114143052)
 attempt:           1 char   (1)
-timestamp_ms:     17 chars  (20250114143127789)
+offset_ms:      3-6 chars   (75789) - varies, max ~6 for multi-hour scans
 fingerprint:      40 chars  (full hex)
 separators:        4 chars  (dots)
                   ─────────
-Total:           ~76 chars + base_domain ✓ (well under 253 limit)
+Total:           ~62-65 chars + base_domain ✓ (well under 253 limit)
 ```
 
 ---
@@ -525,41 +530,37 @@ destinations = None  # Module uses DNS resolution, not TCP connections
 
 # Run metadata
 _run_id = None
-_shard = "0/1"  # Default: no sharding
-_first_hop = None  # Track first hop for debugging
+_run_start_time = None  # For computing offset_ms
 
 
 def setup(consensus=None, target=None, **kwargs):
     """Initialize scan metadata."""
-    global _run_id, _shard, _first_hop
-    _run_id = time.strftime("%Y%m%d_%H%M%S")
-    
-    # Extract shard info if provided (future: from command line)
-    _shard = kwargs.get('shard', '0/1')
-    _first_hop = kwargs.get('first_hop', None)
+    global _run_id, _run_start_time
+    _run_start_time = time.time()
+    _run_id = time.strftime("%Y%m%d%H%M%S")
     
     if target:
         log.info(f"DNS Health: NXDOMAIN mode (target={target})")
     else:
         log.info(f"DNS Health: Wildcard mode ({WILDCARD_DOMAIN} → {EXPECTED_IP})")
     
-    log.info(f"Run ID: {_run_id}, Shard: {_shard}")
+    log.info(f"Run ID: {_run_id}")
 
 
 def generate_unique_query(fingerprint: str, base_domain: str, attempt: int = 1) -> str:
     """
     Generate a unique DNS query for this relay.
     
-    Format: {run_id}.{attempt}.{timestamp_ms}.{full_fingerprint}.{base_domain}
+    Format: {run_id}.{attempt}.{offset_ms}.{full_fingerprint}.{base_domain}
     
     Every field has debugging value:
     - run_id: Which batch (correlate queries from same scan)
     - attempt: Which try (1=first, 2+=retry)
-    - timestamp_ms: Exact query moment (correlate with authoritative DNS logs)
+    - offset_ms: Milliseconds since run start (unique, can reconstruct exact time)
     - full_fingerprint: Which relay (unambiguous)
     """
-    timestamp_ms = time.strftime("%Y%m%d%H%M%S") + f"{int(time.time() * 1000) % 1000:03d}"
-    return f"{_run_id}.{attempt}.{timestamp_ms}.{fingerprint}.{base_domain}"
+    offset_ms = int((time.time() - _run_start_time) * 1000)
+    return f"{_run_id}.{attempt}.{offset_ms}.{fingerprint}.{base_domain}"
 
 
 def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None, 
