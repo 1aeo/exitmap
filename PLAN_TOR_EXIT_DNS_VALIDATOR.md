@@ -399,20 +399,21 @@ def teardown():
         # Delete after reading
         os.remove(filepath)
     
+    # Calculate category counts
+    categories = defaultdict(int)
+    for r in results:
+        categories[r.get('category', 'bug')] += 1
+    
     # Write merged report
     total = len(results)
     report = {
         'metadata': {
             'run_id': _run_id,
-            'shard': _shard,
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'total_relays': total,
-            'success': stats['success'],
-            'dns_fail': stats['dns_fail'],
-            'wrong_ip': stats['wrong_ip'],
-            'timeout': stats['timeout'],
-            'error': stats['error'],
-            'success_rate_percent': round(stats['success'] / total * 100, 2) if total else 0,
+            'by_status': dict(stats),
+            'by_category': dict(categories),
+            'success_rate_percent': round(categories['ok'] / total * 100, 2) if total else 0,
         },
         'results': results,
     }
@@ -422,7 +423,7 @@ def teardown():
         json.dump(report, f, indent=2)
     
     log.info(f"Report: {output_path}")
-    log.info(f"Results: {total} relays, {stats['success']} success")
+    log.info(f"Results: {total} relays, {categories['ok']} ok, {categories['dns']} dns issues")
 ```
 
 ## Scaling & Performance Controls
@@ -576,21 +577,20 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
     exit_url = exiturl(exit_fp)
     
     result = {
-        "exit_fingerprint": exit_fp,
-        "exit_nickname": getattr(exit_desc, 'nickname', 'unknown'),
-        "exit_address": getattr(exit_desc, 'address', 'unknown'),
-        "first_hop_fingerprint": _first_hop,  # Track entry guard for debugging
-        "query_domain": None,  # Set per attempt
-        "expected_ip": expected_ip,
-        "timestamp": time.time(),
+        "fingerprint": exit_fp,
+        "nickname": getattr(exit_desc, 'nickname', 'unknown'),
+        "address": getattr(exit_desc, 'address', 'unknown'),
+        "timestamp": datetime.utcnow().isoformat() + 'Z',
         "run_id": _run_id,
-        "shard": _shard,
-        "mode": "wildcard" if expected_ip else "nxdomain",
+        
         "status": "unknown",
+        "category": "bug",  # Default to bug, update on success/known error
+        
         "resolved_ip": None,
+        "expected_ip": expected_ip,
         "latency_ms": None,
+        
         "error": None,
-        "error_code": None,  # Normalized error code for programmatic use
         "attempt": 0,
     }
     
@@ -614,14 +614,17 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
             if expected_ip:
                 if ip == expected_ip:
                     result["status"] = "success"
+                    result["category"] = "ok"
                     log.info(f"✓ {exit_url} resolved to {ip} (correct)")
                 else:
                     result["status"] = "wrong_ip"
-                    result["error"] = f"Expected {expected_ip}, got {ip}"
-                    log.warning(f"✗ {exit_url} returned wrong IP: {ip} != {expected_ip}")
+                    result["category"] = "dns"
+                    result["error"] = f"DNS returned {ip}, expected {expected_ip}"
+                    log.warning(f"✗ {exit_url} wrong IP: {ip} != {expected_ip}")
             else:
                 # NXDOMAIN mode: any resolution is success
                 result["status"] = "success"
+                result["category"] = "ok"
                 log.info(f"✓ {exit_url} resolved to {ip}")
             
             return result
@@ -633,49 +636,42 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
             # SOCKS error 4 = Host Unreachable = NXDOMAIN
             if "error 4" in err_str:
                 if expected_ip:
-                    # Wildcard mode: NXDOMAIN is failure (should have resolved)
-                    result["status"] = "dns_fail"
-                    result["error"] = "NXDOMAIN (domain should resolve)"
-                    result["error_code"] = "NXDOMAIN"
-                    log.warning(f"✗ {exit_url} returned NXDOMAIN for wildcard domain")
+                    # Wildcard mode: NXDOMAIN is failure
+                    result["status"] = "nxdomain"
+                    result["category"] = "dns"
+                    result["error"] = "NXDOMAIN: relay's resolver says domain doesn't exist"
+                    log.warning(f"✗ {exit_url} NXDOMAIN for wildcard domain")
                 else:
-                    # NXDOMAIN mode: NXDOMAIN is success (expected)
+                    # NXDOMAIN mode: NXDOMAIN is success
                     result["status"] = "success"
+                    result["category"] = "ok"
                     result["resolved_ip"] = "NXDOMAIN"
-                    log.info(f"✓ {exit_url} returned NXDOMAIN (DNS working)")
+                    log.info(f"✓ {exit_url} NXDOMAIN (DNS working)")
                 return result
             
-            # Classify SOCKS errors
-            if "error 1" in err_str:
-                result["error_code"] = "SOCKS_GENERAL_FAILURE"
-            elif "error 2" in err_str:
-                result["error_code"] = "SOCKS_NOT_ALLOWED"
-            elif "error 3" in err_str:
-                result["error_code"] = "SOCKS_NETWORK_UNREACHABLE"
-            elif "error 5" in err_str:
-                result["error_code"] = "SOCKS_CONNECTION_REFUSED"
-            elif "error 6" in err_str:
-                result["error_code"] = "SOCKS_TTL_EXPIRED"
-            elif "error 7" in err_str:
-                result["error_code"] = "SOCKS_COMMAND_NOT_SUPPORTED"
+            # SOCKS error 5 = Connection refused (could be DNS refusing)
+            if "error 5" in err_str:
+                result["status"] = "refused"
+                result["category"] = "dns"
+                result["error"] = "DNS query refused by relay's resolver"
+                log.warning(f"Attempt {attempt}/{retries}: {exit_url} refused")
             else:
-                result["error_code"] = "SOCKS_UNKNOWN"
-            
-            # Other SOCKS errors
-            result["status"] = "error"
-            result["error"] = err_str
-            log.warning(f"Attempt {attempt}/{retries}: {exit_url} SOCKS error: {err}")
+                # Other SOCKS errors are circuit issues, not DNS issues
+                result["status"] = "circuit_error"
+                result["category"] = "circuit"
+                result["error"] = f"SOCKS error: {err_str}"
+                log.warning(f"Attempt {attempt}/{retries}: {exit_url} circuit error: {err}")
             
         except socket.timeout:
             result["status"] = "timeout"
-            result["error"] = f"Timeout after {QUERY_TIMEOUT}s"
-            result["error_code"] = "TIMEOUT"
-            log.warning(f"Attempt {attempt}/{retries}: {exit_url} timed out")
+            result["category"] = "timeout"
+            result["error"] = f"DNS resolution timed out after {QUERY_TIMEOUT}s"
+            log.warning(f"Attempt {attempt}/{retries}: {exit_url} timeout")
             
         except Exception as err:
             result["status"] = "exception"
-            result["error"] = str(err)
-            result["error_code"] = "EXCEPTION"
+            result["category"] = "bug"
+            result["error"] = f"Unexpected error: {type(err).__name__} - {err}"
             log.error(f"Attempt {attempt}/{retries}: {exit_url} exception: {err}")
         
         # Wait before retry
@@ -755,20 +751,21 @@ def teardown():
         except Exception as e:
             log.error(f"Failed to read {filepath}: {e}")
     
+    # Calculate category counts
+    categories = defaultdict(int)
+    for r in results:
+        categories[r.get('category', 'bug')] += 1
+    
     total = len(results)
-    success_rate = round(stats['success'] / total * 100, 2) if total else 0
+    success_rate = round(categories['ok'] / total * 100, 2) if total else 0
     
     report = {
         'metadata': {
             'run_id': _run_id,
-            'shard': _shard,
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'total_relays': total,
-            'success': stats['success'],
-            'dns_fail': stats['dns_fail'],
-            'wrong_ip': stats['wrong_ip'],
-            'timeout': stats['timeout'],
-            'error': stats['error'],
+            'by_status': dict(stats),
+            'by_category': dict(categories),
             'success_rate_percent': success_rate,
         },
         'results': results,
@@ -779,7 +776,7 @@ def teardown():
         json.dump(report, f, indent=2)
     
     log.info(f"Report: {json_path}")
-    log.info(f"Results: {total} relays, {stats['success']} success ({success_rate}%)")
+    log.info(f"Results: {total} relays, {categories['ok']} ok, {categories['dns']} dns issues")
 
 
 if __name__ == "__main__":
@@ -851,70 +848,152 @@ exitmap dnshealth --build-delay 3 --delay-noise 1 --analysis-dir ./results
 
 ## Output Format
 
-Each relay produces a JSON file in `analysis_dir`:
+### Per-Relay Result (Simplified)
 
 ```json
 {
-  "exit_fingerprint": "ABCD1234EFGH5678IJKL9012MNOP3456QRST7890",
-  "exit_nickname": "MyRelay",
-  "exit_address": "192.0.2.1",
-  "first_hop_fingerprint": "DEF456...",
-  "query_domain": "20250114143052.1.20250114143127789.ABCD1234EFGH5678IJKL9012MNOP3456QRST7890.tor.exit.validator.1aeo.com",
-  "expected_ip": "64.65.4.1",
-  "timestamp": 1736865052.123,
+  "fingerprint": "ABCD1234EFGH5678IJKL9012MNOP3456QRST7890",
+  "nickname": "MyRelay",
+  "address": "192.0.2.1",
+  "timestamp": "2025-01-14T14:30:52.123Z",
   "run_id": "20250114143052",
-  "shard": "0/1",
-  "mode": "wildcard",
+  
   "status": "success",
+  "category": "ok",
+  
   "resolved_ip": "64.65.4.1",
+  "expected_ip": "64.65.4.1",
   "latency_ms": 1523,
+  
   "error": null,
-  "error_code": null,
   "attempt": 1
 }
 ```
 
-### Field Descriptions
+### Field Reference
 
-| Field | Description |
-|-------|-------------|
-| `exit_fingerprint` | 40-char hex fingerprint of exit relay |
-| `exit_nickname` | Human-readable relay name |
-| `exit_address` | IPv4/IPv6 address of exit |
-| `first_hop_fingerprint` | Entry guard fingerprint (useful for debugging) |
-| `query_domain` | Unique DNS name tested |
-| `expected_ip` | Expected resolution (wildcard mode only) |
-| `timestamp` | Unix timestamp of test |
-| `run_id` | Batch identifier (YYYYMMDD_HHMMSS) |
-| `shard` | Shard identifier (N/M format) |
-| `mode` | `wildcard` or `nxdomain` |
-| `status` | See Status Values table |
-| `resolved_ip` | Actual IP returned (or "NXDOMAIN") |
-| `latency_ms` | Resolution time in milliseconds |
-| `error` | Human-readable error message |
-| `error_code` | Normalized error code for programmatic use |
-| `attempt` | Which retry attempt succeeded/failed |
+| Field | Type | Description |
+|-------|------|-------------|
+| `fingerprint` | string | 40-char relay fingerprint |
+| `nickname` | string | Relay name |
+| `address` | string | Relay IP |
+| `timestamp` | string | ISO 8601 timestamp of test |
+| `run_id` | string | Batch ID (for grouping results) |
+| `status` | string | Specific outcome (see below) |
+| `category` | string | Error category for filtering: `ok`, `dns`, `circuit`, `timeout`, `bug` |
+| `resolved_ip` | string/null | IP returned by DNS (null if failed, `"NXDOMAIN"` if no record) |
+| `expected_ip` | string/null | Expected IP (wildcard mode) or null (nxdomain mode) |
+| `latency_ms` | int/null | Resolution time in ms (null if failed before resolution) |
+| `error` | string/null | Human-readable error with troubleshooting details |
+| `attempt` | int | Which retry attempt (1 = first try, 2+ = retries) |
 
-## Status Values
+### Status Values & Categories
 
-| Status | Meaning | Actionable? | Category |
-|--------|---------|-------------|----------|
-| `success` | DNS working correctly | No | ✅ Pass |
-| `wrong_ip` | Resolved to unexpected IP (possible poisoning) | Yes - investigate | ❌ DNS Issue |
-| `dns_fail` | DNS resolution failed (NXDOMAIN for wildcard) | Yes - relay has broken DNS | ❌ DNS Issue |
-| `timeout` | Resolution timed out | Maybe - could be transient | ⚠️ Transient |
-| `circuit_fail` | Circuit build failed before DNS test | No - not a DNS issue | ⚠️ Network |
-| `error` | SOCKS/connection error on built circuit | Maybe - could be circuit issue | ⚠️ Transient |
-| `exception` | Unexpected error | Yes - investigate | ❌ Bug |
+| Status | Category | Meaning | Actionable? |
+|--------|----------|---------|-------------|
+| `success` | `ok` | DNS resolved correctly | No |
+| `wrong_ip` | `dns` | Resolved to unexpected IP | **Yes** - possible poisoning/misconfiguration |
+| `nxdomain` | `dns` | Got NXDOMAIN for domain that should resolve | **Yes** - broken resolver |
+| `refused` | `dns` | DNS query refused | **Yes** - resolver blocking queries |
+| `timeout` | `timeout` | Resolution timed out | Maybe - could be transient |
+| `circuit_error` | `circuit` | SOCKS/circuit error | No - not a DNS issue |
+| `exception` | `bug` | Unexpected code error | **Yes** - report bug |
 
-### Error Classification
+### Error Categories Explained
 
-**Key insight**: Separate circuit build failures from DNS resolution failures.
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ category: "ok"       │ DNS is working                          │
+├─────────────────────────────────────────────────────────────────┤
+│ category: "dns"      │ DNS problem on the relay                │
+│   - wrong_ip         │   Resolver returned wrong IP            │
+│   - nxdomain         │   Resolver says domain doesn't exist    │
+│   - refused          │   Resolver refused the query            │
+├─────────────────────────────────────────────────────────────────┤
+│ category: "circuit"  │ Network/circuit issue (not relay's DNS) │
+│   - circuit_error    │   SOCKS error, connection failed, etc.  │
+├─────────────────────────────────────────────────────────────────┤
+│ category: "timeout"  │ Timed out (could be DNS or circuit)     │
+│   - timeout          │   No response within timeout            │
+├─────────────────────────────────────────────────────────────────┤
+│ category: "bug"      │ Our code had an error                   │
+│   - exception        │   Unexpected exception                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-- **Circuit failures** (path/network issues): Don't count against DNS health
-- **DNS failures** (on a successfully built circuit): Count against relay's DNS
+### Error Message Examples
 
-This prevents false positives where a relay has working DNS but circuit builds fail due to network conditions.
+Good error messages include all info needed to troubleshoot:
+
+```json
+// Wrong IP - include both expected and actual
+{
+  "status": "wrong_ip",
+  "category": "dns",
+  "resolved_ip": "93.184.216.34",
+  "expected_ip": "64.65.4.1",
+  "error": "DNS returned 93.184.216.34, expected 64.65.4.1"
+}
+
+// NXDOMAIN - note the domain should have resolved
+{
+  "status": "nxdomain",
+  "category": "dns",
+  "resolved_ip": null,
+  "error": "NXDOMAIN: relay's resolver says domain doesn't exist"
+}
+
+// Timeout - include how long we waited
+{
+  "status": "timeout",
+  "category": "timeout",
+  "resolved_ip": null,
+  "latency_ms": null,
+  "error": "DNS resolution timed out after 10s"
+}
+
+// Circuit error - include SOCKS error details
+{
+  "status": "circuit_error",
+  "category": "circuit",
+  "resolved_ip": null,
+  "error": "SOCKS error 5: connection refused by exit relay"
+}
+
+// Exception - include exception type and message
+{
+  "status": "exception",
+  "category": "bug",
+  "error": "Unexpected error: ValueError - invalid response format"
+}
+```
+
+### Fields Removed (vs previous design)
+
+| Removed | Reason |
+|---------|--------|
+| `exit_fingerprint` | Renamed to `fingerprint` (shorter) |
+| `exit_nickname` | Renamed to `nickname` (shorter) |
+| `exit_address` | Renamed to `address` (shorter) |
+| `query_domain` | Can reconstruct from `run_id` + `fingerprint` if needed |
+| `first_hop_fingerprint` | Rarely needed; add back if debugging circuit issues |
+| `shard` | Only relevant for sharded scans; add to metadata instead |
+| `mode` | Infer from `expected_ip`: if set = wildcard, if null = nxdomain |
+| `error_code` | Merged into `status` - one field instead of two |
+
+### Filtering by Category
+
+```python
+# Get all DNS issues (actionable)
+dns_issues = [r for r in results if r['category'] == 'dns']
+
+# Get all failures (excluding transient)
+failures = [r for r in results if r['category'] in ('dns', 'bug')]
+
+# Get success rate excluding circuit issues
+testable = [r for r in results if r['category'] != 'circuit']
+success_rate = len([r for r in testable if r['status'] == 'success']) / len(testable)
+```
 
 ---
 
@@ -1209,7 +1288,9 @@ def main():
         data = json.load(f)
     
     meta = data.get('metadata', {})
-    failures = data.get('failures', [])
+    results = data.get('results', [])
+    # Failures = anything not in 'ok' category
+    failures = [r for r in results if r.get('category') != 'ok']
     
     report = f"""# DNS Health Report
 
@@ -1220,21 +1301,22 @@ def main():
 | Metric | Value |
 |--------|-------|
 | Total Relays | {meta.get('total_relays', 0)} |
-| Success | {meta.get('success', 0)} |
-| DNS Failures | {meta.get('dns_fail', 0)} |
-| Wrong IP | {meta.get('wrong_ip', 0)} |
-| Timeouts | {meta.get('timeout', 0)} |
-| Errors | {meta.get('error', 0)} |
+| Success (ok) | {meta.get('by_category', {}).get('ok', 0)} |
+| DNS Issues | {meta.get('by_category', {}).get('dns', 0)} |
+| Circuit Issues | {meta.get('by_category', {}).get('circuit', 0)} |
+| Timeouts | {meta.get('by_category', {}).get('timeout', 0)} |
 | **Success Rate** | **{meta.get('success_rate_percent', 0):.1f}%** |
 
 ## Failing Relays ({len(failures)})
 
-| Fingerprint | Nickname | Exit IP | Status | Consecutive Failures |
-|-------------|----------|---------|--------|---------------------|
+| Fingerprint | Nickname | Exit IP | Status | Category | Error |
+|-------------|----------|---------|--------|----------|-------|
 """
     
-    for f in sorted(failures, key=lambda x: x.get('consecutive_failures', 0), reverse=True):
-        report += f"| `{f.get('exit_fingerprint', '')[:16]}...` | {f.get('exit_nickname', 'unknown')} | {f.get('exit_address', 'unknown')} | {f.get('status', 'unknown')} | {f.get('consecutive_failures', 0)} |\n"
+    for f in sorted(failures, key=lambda x: x.get('category', ''), reverse=True):
+        fp = f.get('fingerprint', '')[:16]
+        error = (f.get('error', '') or '')[:40]
+        report += f"| `{fp}...` | {f.get('nickname', '?')} | {f.get('address', '?')} | {f.get('status', '?')} | {f.get('category', '?')} | {error} |\n"
     
     with open(args.output, 'w') as f:
         f.write(report)
