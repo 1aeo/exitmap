@@ -521,8 +521,10 @@ EXPECTED_IP = "64.65.4.1"
 NXDOMAIN_DOMAIN = "example.com"
 
 # Scan settings
-QUERY_TIMEOUT = 10  # seconds
-MAX_RETRIES = 2     # Total attempts per relay
+QUERY_TIMEOUT = 10  # seconds per attempt
+CIRCUIT_RETRIES = 2 # Retries for circuit failures (instant, cheap to retry)
+TIMEOUT_RETRIES = 1 # Retries for timeouts (already waited 10s, expensive)
+DNS_RETRIES = 0     # No retries for DNS errors (relay's fault, won't change)
 
 destinations = None  # Module uses DNS resolution, not TCP connections
 
@@ -562,15 +564,16 @@ def generate_unique_query(fingerprint: str, base_domain: str, attempt: int = 1) 
 
 
 def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None, 
-                       retries: int = MAX_RETRIES, first_hop: str = None) -> Dict[str, Any]:
+                       first_hop: str = None) -> Dict[str, Any]:
     """
-    Resolve domain through exit relay with retry logic.
+    Resolve domain through exit relay with smart retry logic.
+    
+    Retry strategy (based on error type):
+    - DNS errors: No retry (relay's fault, won't change)
+    - Timeouts: 1 retry (already waited 10s, expensive)
+    - Circuit errors: 2 retries (instant failure, cheap to retry)
     
     Each attempt generates a fresh unique query to avoid DNS caching.
-    
-    Modes:
-    - If expected_ip is set: Wildcard mode, verify IP matches
-    - If expected_ip is None: NXDOMAIN mode, SOCKS error 4 = success
     """
     exit_fp = exit_desc.fingerprint
     exit_url = exiturl(exit_fp)
@@ -591,34 +594,39 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
     
     # Track expected_ip for validation (not in output)
     _expected_ip = expected_ip
+    hop_suffix = f" via {first_hop}" if first_hop else ""
     
-    for attempt in range(1, retries + 1):
-        # Generate fresh unique query for each attempt (avoids DNS caching)
+    # Retry counters (different limits by error type)
+    circuit_attempts = 0
+    timeout_attempts = 0
+    attempt = 0
+    
+    while True:
+        attempt += 1
         domain = generate_unique_query(exit_fp, base_domain, attempt)
         
         sock = torsocks.torsocket()
         sock.settimeout(QUERY_TIMEOUT)
         
         start_time = time.time()
+        should_retry = False
         
         try:
             ip = sock.resolve(domain)
             result["resolved_ip"] = ip
             result["latency_ms"] = int((time.time() - start_time) * 1000)
             
-            # Wildcard mode: verify IP matches expected
             if _expected_ip:
                 if ip == _expected_ip:
                     result["ok"] = True
                     log.info(f"✓ {exit_url} resolved to {ip}")
                 else:
-                    result["ok"] = False
+                    # DNS error - NO RETRY (relay's fault)
                     result["fail_type"] = "dns"
                     result["fail_reason"] = "wrong_ip"
                     result["error"] = f"Got {ip}, expected {_expected_ip}"
                     log.warning(f"✗ {exit_url} wrong IP: {ip}")
             else:
-                # NXDOMAIN mode: any resolution is success
                 result["ok"] = True
                 log.info(f"✓ {exit_url} resolved to {ip}")
             
@@ -636,24 +644,21 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
                 except (ValueError, IndexError):
                     pass
             
-            # Helper for first_hop suffix
-            hop_suffix = f" via {first_hop}" if first_hop else ""
-            
-            # SOCKS error 4 = NXDOMAIN
+            # SOCKS 4 = NXDOMAIN
             if socks_err == 4:
                 if _expected_ip:
+                    # DNS error - NO RETRY
                     result["fail_type"] = "dns"
                     result["fail_reason"] = "nxdomain"
                     result["error"] = "SOCKS 4: Domain not found (NXDOMAIN)"
                     log.warning(f"✗ {exit_url} NXDOMAIN")
                 else:
-                    # NXDOMAIN mode: this is success
                     result["ok"] = True
                     result["resolved_ip"] = "NXDOMAIN"
                     log.info(f"✓ {exit_url} NXDOMAIN (DNS working)")
                 return result
             
-            # DNS errors (actionable) - no first_hop, it's the exit's fault
+            # DNS errors - NO RETRY (relay's fault, won't change)
             elif socks_err == 5:
                 result["fail_type"] = "dns"
                 result["fail_reason"] = "refused"
@@ -663,55 +668,62 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
                 result["fail_reason"] = "unsupported"
                 result["error"] = f"SOCKS {socks_err}: Command not supported"
             
-            # Circuit errors (not relay's fault) - include first_hop for debugging
-            elif socks_err == 1:
-                result["fail_type"] = "circuit"
-                result["fail_reason"] = "socks_error"
-                result["error"] = f"SOCKS 1: General failure{hop_suffix}"
-            elif socks_err == 2:
-                result["fail_type"] = "circuit"
-                result["fail_reason"] = "socks_error"
-                result["error"] = f"SOCKS 2: Not allowed by ruleset{hop_suffix}"
-            elif socks_err == 3:
-                result["fail_type"] = "circuit"
-                result["fail_reason"] = "socks_error"
-                result["error"] = f"SOCKS 3: Network unreachable{hop_suffix}"
-            elif socks_err == 6:
-                result["fail_type"] = "circuit"
-                result["fail_reason"] = "socks_error"
-                result["error"] = f"SOCKS 6: TTL expired{hop_suffix}"
+            # Circuit errors - RETRY (transient, cheap to retry)
             else:
+                circuit_attempts += 1
                 result["fail_type"] = "circuit"
                 result["fail_reason"] = "socks_error"
-                result["error"] = f"SOCKS {socks_err or '?'}: Unknown error{hop_suffix}"
-            
-            log.warning(f"Attempt {attempt}/{retries}: {exit_url} {result['error']}")
+                
+                if socks_err == 1:
+                    result["error"] = f"SOCKS 1: General failure{hop_suffix}"
+                elif socks_err == 2:
+                    result["error"] = f"SOCKS 2: Not allowed by ruleset{hop_suffix}"
+                elif socks_err == 3:
+                    result["error"] = f"SOCKS 3: Network unreachable{hop_suffix}"
+                elif socks_err == 6:
+                    result["error"] = f"SOCKS 6: TTL expired{hop_suffix}"
+                else:
+                    result["error"] = f"SOCKS {socks_err or '?'}: Unknown error{hop_suffix}"
+                
+                if circuit_attempts <= CIRCUIT_RETRIES:
+                    should_retry = True
+                    log.info(f"Circuit error ({circuit_attempts}/{CIRCUIT_RETRIES}), retrying: {exit_url}")
             
         except EOFError:
-            hop_suffix = f" via {first_hop}" if first_hop else ""
+            circuit_attempts += 1
             result["fail_type"] = "circuit"
             result["fail_reason"] = "eof"
             result["error"] = f"Connection closed unexpectedly{hop_suffix}"
-            log.warning(f"Attempt {attempt}/{retries}: {exit_url} EOF")
+            
+            if circuit_attempts <= CIRCUIT_RETRIES:
+                should_retry = True
+                log.info(f"EOF ({circuit_attempts}/{CIRCUIT_RETRIES}), retrying: {exit_url}")
             
         except socket.timeout:
-            hop_suffix = f" via {first_hop}" if first_hop else ""
+            timeout_attempts += 1
             result["fail_type"] = "timeout"
             result["fail_reason"] = "timeout"
             result["error"] = f"Timed out after {QUERY_TIMEOUT}s{hop_suffix}"
-            log.warning(f"Attempt {attempt}/{retries}: {exit_url} timeout")
+            
+            # Timeouts are EXPENSIVE (already waited 10s) - limited retries
+            if timeout_attempts <= TIMEOUT_RETRIES:
+                should_retry = True
+                log.info(f"Timeout ({timeout_attempts}/{TIMEOUT_RETRIES}), retrying: {exit_url}")
             
         except Exception as err:
+            # Bug - NO RETRY
             result["fail_type"] = "bug"
             result["fail_reason"] = "exception"
             result["error"] = f"Exception: {type(err).__name__}: {err}"
-            log.error(f"Attempt {attempt}/{retries}: {exit_url} {err}")
+            log.error(f"Exception: {exit_url} {err}")
         
-        # Wait before retry
-        if attempt < retries:
-            time.sleep(1)
+        if not should_retry:
+            break
+        
+        # Short delay before retry (circuit failures are instant)
+        time.sleep(0.5)
     
-    log.warning(f"✗ {exit_url} FAILED after {result['attempt']} attempts: {result['error']}")
+    log.warning(f"✗ {exit_url} FAILED: {result['error']}")
     return result
 
 
@@ -948,31 +960,46 @@ exitmap dnshealth --build-delay 3 --delay-noise 1 --analysis-dir ./results
 
 All possible output field values:
 
-| Scenario | `ok` | `fail_type` | `fail_reason` | `error` | `resolved_ip` | Actionable? |
-|----------|------|-------------|---------------|---------|---------------|-------------|
-| ✅ Success | `true` | - | - | - | `"64.65.4.1"` | - |
-| ✅ NXDOMAIN mode success | `true` | - | - | - | `"NXDOMAIN"` | - |
-| Wrong IP returned | `false` | `"dns"` | `"wrong_ip"` | `"Got {ip}, expected {expected}"` | `"{ip}"` | **Yes** |
-| SOCKS 4: Host unreachable | `false` | `"dns"` | `"nxdomain"` | `"SOCKS 4: Domain not found (NXDOMAIN)"` | - | **Yes** |
-| SOCKS 5: Connection refused | `false` | `"dns"` | `"refused"` | `"SOCKS 5: Connection refused"` | - | **Yes** |
-| SOCKS 7/8: Not supported | `false` | `"dns"` | `"unsupported"` | `"SOCKS {N}: Command not supported"` | - | **Yes** |
-| SOCKS 1: General failure | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 1: General failure via {first_hop}"` | - | No |
-| SOCKS 2: Not allowed | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 2: Not allowed by ruleset via {first_hop}"` | - | No |
-| SOCKS 3: Net unreachable | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 3: Network unreachable via {first_hop}"` | - | No |
-| SOCKS 6: TTL expired | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 6: TTL expired via {first_hop}"` | - | No |
-| SOCKS 9+: Unknown | `false` | `"circuit"` | `"socks_error"` | `"SOCKS {N}: Unknown error via {first_hop}"` | - | No |
-| Socket timeout | `false` | `"timeout"` | `"timeout"` | `"Timed out after 10s via {first_hop}"` | - | Maybe |
-| Connection closed | `false` | `"circuit"` | `"eof"` | `"Connection closed unexpectedly via {first_hop}"` | - | No |
-| Code exception | `false` | `"bug"` | `"exception"` | `"Exception: {Type}: {message}"` | - | **Yes** |
+| Scenario | `ok` | `fail_type` | `fail_reason` | `error` | Retries |
+|----------|------|-------------|---------------|---------|---------|
+| ✅ Success | `true` | - | - | - | - |
+| ✅ NXDOMAIN mode | `true` | - | - | - | - |
+| Wrong IP | `false` | `"dns"` | `"wrong_ip"` | `"Got {ip}, expected {expected}"` | 0 |
+| SOCKS 4: NXDOMAIN | `false` | `"dns"` | `"nxdomain"` | `"SOCKS 4: Domain not found (NXDOMAIN)"` | 0 |
+| SOCKS 5: Refused | `false` | `"dns"` | `"refused"` | `"SOCKS 5: Connection refused"` | 0 |
+| SOCKS 7/8: Unsupported | `false` | `"dns"` | `"unsupported"` | `"SOCKS {N}: Command not supported"` | 0 |
+| SOCKS 1: General | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 1: General failure via {first_hop}"` | 2 |
+| SOCKS 2: Not allowed | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 2: Not allowed by ruleset via {first_hop}"` | 2 |
+| SOCKS 3: Net unreachable | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 3: Network unreachable via {first_hop}"` | 2 |
+| SOCKS 6: TTL expired | `false` | `"circuit"` | `"socks_error"` | `"SOCKS 6: TTL expired via {first_hop}"` | 2 |
+| SOCKS 9+: Unknown | `false` | `"circuit"` | `"socks_error"` | `"SOCKS {N}: Unknown error via {first_hop}"` | 2 |
+| EOF | `false` | `"circuit"` | `"eof"` | `"Connection closed unexpectedly via {first_hop}"` | 2 |
+| Timeout | `false` | `"timeout"` | `"timeout"` | `"Timed out after 10s via {first_hop}"` | 1 |
+| Exception | `false` | `"bug"` | `"exception"` | `"Exception: {Type}: {message}"` | 0 |
 
-**Format**: `"SOCKS {N}: {description}"` for SOCKS errors, `"{description}"` for others. Circuit/timeout errors append `" via {first_hop}"`.
+**Legend**: `{ip}` = actual IP, `{expected}` = expected IP, `{first_hop}` = 40-char fingerprint (if available), `{N}` = SOCKS error number
 
-**Legend**:
-- `{ip}` = actual IP returned (e.g., `93.184.216.34`)
-- `{expected}` = expected IP (e.g., `64.65.4.1`)
-- `{first_hop}` = full 40-char first hop fingerprint (omitted if unavailable)
-- `{N}` = SOCKS error number
-- `-` = field not present in output
+### Retry Strategy
+
+| Error Type | Retries | Delay | Rationale |
+|------------|---------|-------|-----------|
+| **DNS errors** (`dns`) | 0 | - | Relay's fault - won't change on retry |
+| **Circuit errors** (`circuit`) | 2 | 0.5s | Transient Tor issue - cheap to retry (instant failure) |
+| **Timeouts** (`timeout`) | 1 | 0.5s | Already waited 10s - expensive, but worth one more try |
+| **Bugs** (`bug`) | 0 | - | Our code error - won't change on retry |
+
+**Why different retry counts?**
+
+```
+DNS error:     [attempt 1] ──► FAIL (relay's DNS is broken, retrying won't help)
+               Total time: ~1s
+
+Circuit error: [attempt 1] ──► fail ──► [attempt 2] ──► fail ──► [attempt 3] ──► FAIL
+               Total time: ~2s (instant failures + 0.5s delays)
+
+Timeout:       [attempt 1] ──────10s──────► fail ──► [attempt 2] ──────10s──────► FAIL
+               Total time: ~20s (expensive! only 1 retry)
+```
 
 ### Failure Types (4 categories)
 
