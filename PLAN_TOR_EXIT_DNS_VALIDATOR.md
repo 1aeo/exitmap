@@ -246,16 +246,92 @@ Add a new module `dnshealth.py` to the existing exitmap codebase that:
 src/modules/dnshealth.py          # Main DNS health validation module
 ```
 
-## Results Storage Options
+## Results Storage: JSONL with File Locking (Recommended)
 
-| Option | Description | Pros | Cons |
-|--------|-------------|------|------|
-| **Per-relay JSON files** (recommended) | Write `dnshealth_<fingerprint>.json` per exit | Simple, easy aggregation | Many small files |
-| **JSONL append** | Append JSON lines to single file | Single file, process-safe with locking | Requires file locking |
-| **Results queue** | IPC queue from module to main process | Cleanest long-term | More complex |
-| **Manager list/dict** | Shared memory structure | Simple for small runs | Memory-heavy on large runs |
+### Why JSONL?
 
-**Recommendation**: Start with per-relay JSON files (simplest), aggregate in batch runner.
+Exitmap uses **multiprocessing** - each relay is tested in a separate subprocess. Unlike aroivalidator (which is single-process/multithreaded and collects results in memory), we need a process-safe way to write results.
+
+**JSONL (JSON Lines)** is the most efficient approach:
+- Single output file from the start (no aggregation step needed)
+- Append-only (fast, no rewriting)
+- Process-safe with file locking
+- Easy to parse (one JSON object per line)
+
+### Comparison
+
+| Option | How it works | For exitmap? |
+|--------|--------------|--------------|
+| **aroivalidator style** | Collect in memory list, write once | ❌ Won't work - multiprocess, not multithreaded |
+| **Per-relay JSON files** | One file per relay, aggregate later | ⚠️ Works but wasteful - 1000+ small files |
+| **JSONL with locking** | Append one line per relay with `flock` | ✅ Best - single file, process-safe |
+| **Manager list** | `multiprocessing.Manager().list()` | ⚠️ Works but memory-heavy for large scans |
+
+### Implementation
+
+```python
+import fcntl
+import json
+import os
+
+def append_result_jsonl(result: dict, filepath: str):
+    """
+    Append a result to JSONL file with file locking.
+    Process-safe for exitmap's multiprocess model.
+    """
+    with open(filepath, 'a') as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # Exclusive lock
+        try:
+            f.write(json.dumps(result) + '\n')
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)  # Release lock
+```
+
+### Output Files
+
+```
+analysis_dir/
+└── dnshealth_20250114143052.jsonl    # Single file, one JSON per line
+```
+
+The `teardown()` function can optionally convert JSONL → JSON with metadata:
+
+```python
+def teardown():
+    """Convert JSONL to final JSON report with metadata."""
+    if not util.analysis_dir:
+        return
+    
+    jsonl_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.jsonl")
+    json_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.json")
+    
+    results = []
+    stats = defaultdict(int)
+    
+    with open(jsonl_path, 'r') as f:
+        for line in f:
+            result = json.loads(line)
+            results.append(result)
+            stats[result.get('status', 'unknown')] += 1
+    
+    total = len(results)
+    report = {
+        'metadata': {
+            'run_id': _run_id,
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'total_relays': total,
+            'success': stats['success'],
+            'success_rate_percent': round(stats['success'] / total * 100, 2) if total else 0,
+        },
+        'results': results
+    }
+    
+    with open(json_path, 'w') as f:
+        json.dump(report, f, indent=2)
+    
+    # Optionally remove JSONL after conversion
+    os.remove(jsonl_path)
+```
 
 ## Scaling & Performance Controls
 
@@ -324,7 +400,10 @@ import socket
 import time
 import json
 import os
+import fcntl
 from typing import Dict, Any
+from collections import defaultdict
+from datetime import datetime
 
 import torsocks
 import error
@@ -531,26 +610,77 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
         # Query is generated inside resolve_with_retry for each attempt
         result = resolve_with_retry(exit_desc, base_domain, expected_ip)
         
-        # Write individual result to analysis_dir
+        # Append result to JSONL file (process-safe with locking)
         if util.analysis_dir:
-            filename = os.path.join(
-                util.analysis_dir, 
-                f"dnshealth_{exit_desc.fingerprint}.json"
-            )
+            jsonl_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.jsonl")
             try:
-                with open(filename, 'w') as f:
-                    json.dump(result, f, indent=2)
+                with open(jsonl_path, 'a') as f:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    try:
+                        f.write(json.dumps(result) + '\n')
+                    finally:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
             except Exception as e:
-                log.error(f"Failed to write {filename}: {e}")
+                log.error(f"Failed to append to {jsonl_path}: {e}")
     
     run_python_over_tor(do_validation, exit_desc, base_domain, expected_ip)
 
 
 def teardown():
-    """Called after all probes complete."""
+    """
+    Called after all probes complete.
+    Converts JSONL to final JSON report with metadata.
+    """
     log.info(f"DNS Health scan complete. Run ID: {_run_id}")
-    if util.analysis_dir:
-        log.info(f"Results written to: {util.analysis_dir}")
+    
+    if not util.analysis_dir:
+        return
+    
+    jsonl_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.jsonl")
+    json_path = os.path.join(util.analysis_dir, f"dnshealth_{_run_id}.json")
+    
+    if not os.path.exists(jsonl_path):
+        log.warning(f"No results file found: {jsonl_path}")
+        return
+    
+    # Read JSONL and aggregate
+    results = []
+    stats = defaultdict(int)
+    
+    with open(jsonl_path, 'r') as f:
+        for line in f:
+            if line.strip():
+                result = json.loads(line)
+                results.append(result)
+                stats[result.get('status', 'unknown')] += 1
+    
+    total = len(results)
+    success_rate = round(stats['success'] / total * 100, 2) if total else 0
+    
+    report = {
+        'metadata': {
+            'run_id': _run_id,
+            'shard': _shard,
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'total_relays': total,
+            'success': stats['success'],
+            'dns_fail': stats['dns_fail'],
+            'wrong_ip': stats['wrong_ip'],
+            'timeout': stats['timeout'],
+            'error': stats['error'],
+            'success_rate_percent': success_rate,
+        },
+        'results': results,
+    }
+    
+    with open(json_path, 'w') as f:
+        json.dump(report, f, indent=2)
+    
+    # Remove JSONL after successful conversion
+    os.remove(jsonl_path)
+    
+    log.info(f"Report: {json_path}")
+    log.info(f"Results: {total} relays, {stats['success']} success ({success_rate}%)")
 
 
 if __name__ == "__main__":
@@ -660,8 +790,9 @@ exitmap-deploy/
 ├── config.env.example           # Configuration template
 ├── scripts/
 │   ├── run_dns_validation.sh    # Main batch runner
-│   ├── aggregate_results.py     # JSON aggregation
+│   ├── postprocess_results.py   # Add consecutive failure tracking
 │   ├── generate_report.py       # Generate human-readable report.md
+│   ├── retention.sh             # Monthly cleanup script
 │   ├── upload_do.sh             # DigitalOcean Spaces upload
 │   ├── upload_r2.sh             # Cloudflare R2 upload
 │   └── install.sh               # Setup script
@@ -677,16 +808,16 @@ exitmap-deploy/
 
 ## Output Artifacts
 
-Each run produces:
+Exitmap's `dnshealth` module produces a **single JSON file** directly (no aggregation needed):
 
 | File | Description | Cache TTL |
 |------|-------------|-----------|
-| `dns_health_YYYYMMDD_HHMMSS.json` | Full results (immutable) | 1 year |
-| `summary_YYYYMMDD_HHMMSS.json` | Metadata + stats only | 1 year |
-| `report_YYYYMMDD_HHMMSS.md` | Human-readable report | 1 year |
-| `latest.json` | Copy of latest full JSON | 1 minute |
-| `latest_summary.json` | Copy of latest summary | 1 minute |
+| `dnshealth_YYYYMMDD_HHMMSS.json` | Full results with metadata (from exitmap) | 1 year |
+| `latest.json` | Copy of latest JSON (from batch runner) | 1 minute |
 | `files.json` | Manifest of all run files | 1 minute |
+| `report_YYYYMMDD_HHMMSS.md` | Human-readable report (optional) | 1 year |
+
+**Note**: The `dnshealth.py` module's `teardown()` function converts the working JSONL file to a single JSON with metadata. The batch runner just needs to copy it to `latest.json` and update the manifest.
 
 ## Configuration: `config.env.example`
 
@@ -787,23 +918,29 @@ $CMD > "$LOG_DIR/exitmap_${TIMESTAMP}.log" 2>&1 || {
     log "Exitmap had errors - check logs"
 }
 
-# Aggregate results
-log "Aggregating results..."
-python3 "$SCRIPT_DIR/aggregate_results.py" \
-    --input "$ANALYSIS_DIR" \
-    --output "$REPORT_FILE" \
-    --previous "$LATEST_REPORT"
+# Find the output JSON (exitmap's teardown() creates it)
+REPORT_FILE=$(find "$ANALYSIS_DIR" -name "dnshealth_*.json" -type f | head -1)
 
-# Update latest.json and manifest
 if [[ -f "$REPORT_FILE" ]]; then
-    cp "$REPORT_FILE" "$LATEST_REPORT"
+    # Add consecutive failure tracking
+    log "Post-processing results..."
+    python3 "$SCRIPT_DIR/postprocess_results.py" \
+        --input "$REPORT_FILE" \
+        --previous "$LATEST_REPORT"
+    
+    # Copy to public directory with timestamp
+    FINAL_REPORT="${OUTPUT_DIR}/dnshealth_${TIMESTAMP}.json"
+    cp "$REPORT_FILE" "$FINAL_REPORT"
+    cp "$FINAL_REPORT" "$LATEST_REPORT"
     
     # Update files.json manifest
-    find "$OUTPUT_DIR" -maxdepth 1 -name "dns_health_*.json" -printf '%f\n' \
+    find "$OUTPUT_DIR" -maxdepth 1 -name "dnshealth_*.json" -printf '%f\n' \
         | sort -r | jq -Rs 'split("\n") | map(select(length > 0))' \
         > "$OUTPUT_DIR/files.json"
     
-    log "Report: $REPORT_FILE"
+    log "Report: $FINAL_REPORT"
+else
+    log "No results file found in $ANALYSIS_DIR"
 fi
 
 # Cloud uploads (parallel)
@@ -829,24 +966,34 @@ done
 log "=== Complete ==="
 ```
 
-## Result Aggregator: `scripts/aggregate_results.py`
+## Post-Processor: `scripts/postprocess_results.py`
+
+Since `dnshealth.py` now produces a single JSON file directly, this script only needs to:
+1. Add consecutive failure tracking (comparing to previous run)
+2. Add failure groupings
 
 ```python
 #!/usr/bin/env python3
-"""Aggregate per-relay DNS health results into a single report."""
+"""Post-process DNS health results: add consecutive failure tracking."""
 import argparse
 import json
-import glob
 import os
-from datetime import datetime
 from collections import defaultdict
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input', required=True, help='Analysis directory')
-    parser.add_argument('--output', required=True, help='Output report file')
-    parser.add_argument('--previous', help='Previous report for tracking')
+    parser.add_argument('--input', required=True, help='Current run JSON file')
+    parser.add_argument('--previous', help='Previous run JSON for failure tracking')
+    parser.add_argument('--output', help='Output file (default: overwrite input)')
     args = parser.parse_args()
+    
+    output_path = args.output or args.input
+    
+    # Load current results
+    with open(args.input) as f:
+        data = json.load(f)
+    
+    results = data.get('results', [])
     
     # Load previous state for consecutive failure tracking
     previous_state = {}
@@ -861,67 +1008,37 @@ def main():
         except Exception as e:
             print(f"Warning: Could not load previous report: {e}")
     
-    # Find all result files
-    files = glob.glob(os.path.join(args.input, 'dnshealth_*.json'))
+    # Add consecutive failure tracking
+    for result in results:
+        fp = result.get('exit_fingerprint')
+        status = result.get('status')
+        
+        if status == 'success':
+            result['consecutive_failures'] = 0
+        else:
+            prev_failures = 0
+            if fp in previous_state:
+                prev = previous_state[fp]
+                if prev.get('status') != 'success':
+                    prev_failures = prev.get('consecutive_failures', 0)
+            result['consecutive_failures'] = prev_failures + 1
     
-    results = []
-    stats = defaultdict(int)
-    
-    for f in files:
-        try:
-            with open(f) as fd:
-                data = json.load(fd)
-                
-                status = data.get('status', 'unknown')
-                stats[status] += 1
-                
-                # Track consecutive failures
-                fp = data.get('exit_fingerprint')
-                if status == 'success':
-                    data['consecutive_failures'] = 0
-                else:
-                    prev_failures = 0
-                    if fp in previous_state:
-                        prev = previous_state[fp]
-                        if prev.get('status') != 'success':
-                            prev_failures = prev.get('consecutive_failures', 0)
-                    data['consecutive_failures'] = prev_failures + 1
-                
-                results.append(data)
-        except Exception as e:
-            print(f"Error reading {f}: {e}")
-    
-    total = len(results)
-    success_rate = (stats['success'] / total * 100) if total > 0 else 0
-    
-    # Group failures by IP
+    # Add failure groupings
     failures_by_ip = defaultdict(list)
     for r in results:
         if r.get('status') != 'success':
             ip = r.get('exit_address', 'unknown')
             failures_by_ip[ip].append(r['exit_fingerprint'])
     
-    report = {
-        'metadata': {
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
-            'total_relays': total,
-            'success': stats['success'],
-            'wrong_ip': stats['wrong_ip'],
-            'dns_fail': stats['dns_fail'],
-            'timeout': stats['timeout'],
-            'error': stats['error'],
-            'success_rate_percent': round(success_rate, 2),
-        },
-        'results': results,
-        'failures': [r for r in results if r.get('status') != 'success'],
-        'failures_by_ip': dict(failures_by_ip),
-    }
+    data['failures'] = [r for r in results if r.get('status') != 'success']
+    data['failures_by_ip'] = dict(failures_by_ip)
     
-    with open(args.output, 'w') as f:
-        json.dump(report, f, indent=2)
+    with open(output_path, 'w') as f:
+        json.dump(data, f, indent=2)
     
-    print(f"Aggregated {total} results: {stats['success']} success, "
-          f"{total - stats['success']} failures ({success_rate:.1f}% success rate)")
+    total = len(results)
+    failures = len(data['failures'])
+    print(f"Processed {total} results: {failures} failures tracked")
 
 if __name__ == '__main__':
     main()
