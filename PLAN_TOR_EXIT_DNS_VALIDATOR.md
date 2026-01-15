@@ -56,7 +56,7 @@ Since `*.tor.exit.validator.1aeo.com` is working and resolves to `64.65.4.1`, us
 
 ---
 
-## Unique Query Format (from GPT5.2)
+## Unique Query Format
 
 ### Why Uniqueness Matters
 
@@ -67,19 +67,55 @@ Each DNS query must be unique per relay per run to:
 
 ### Format Options
 
-| Format | Example | Pros | Cons |
-|--------|---------|------|------|
-| **UUID + Fingerprint prefix** (recommended) | `a1b2c3d4-e5f6-7890-abcd-ef1234567890.abc12345.tor.exit.validator.1aeo.com` | Unique, traceable | Longer |
-| **Hash-based** | `h7x9k2m4.dnscheck.example.com` | Shorter | Less traceable |
-| **Timestamp + FP** | `20250114_143000.abc12345.dnscheck.example.com` | Time-traceable | Collision possible |
+| Format | Example | Debuggability | Collision Risk |
+|--------|---------|---------------|----------------|
+| ~~UUID + FP prefix~~ | `f47ac10b-...uuid.abc12345.domain` | ❌ Poor - UUID is meaningless | None |
+| **RunID + Timestamp_ms + Full FP** | `20250114143052.1.20250114143127789.ABC...40chars.domain` | ✅ Excellent | None |
 
 ### Recommended Format
 
 ```
-{uuid}.{fingerprint_prefix_8}.{base_domain}
+{run_id}.{attempt}.{timestamp_ms}.{full_fingerprint}.{base_domain}
 ```
 
-Example: `f47ac10b-58cc-4372-a567-0e02b2c3d479.abc12345.tor.exit.validator.1aeo.com`
+| Field | Purpose | Example |
+|-------|---------|---------|
+| `run_id` | Batch identifier - correlate all queries from same scan | `20250114143052` |
+| `attempt` | Retry attempt (1 = first try, 2 = first retry) | `1` |
+| `timestamp_ms` | Exact query moment - correlate with authoritative DNS logs | `20250114143127789` |
+| `full_fingerprint` | 40-char relay fingerprint - unambiguous identification | `ABCD1234...7890` |
+| `base_domain` | Your wildcard domain | `tor.exit.validator.1aeo.com` |
+
+### Example
+
+```
+20250114143052.1.20250114143127789.ABCD1234EFGH5678IJKL9012MNOP3456QRST7890.tor.exit.validator.1aeo.com
+│              │ │                 │                                        │
+│              │ │                 └─ Full fingerprint (which relay)        └─ Base domain
+│              │ └─ Query timestamp_ms (exact moment of this query)
+│              └─ Attempt number (1=first, 2=retry)
+└─ Run ID (which batch)
+```
+
+### Why This Format
+
+1. **run_id + attempt are grouped** - Both are "run context"
+2. **timestamp_ms is query-specific** - Exact moment this DNS query was made
+3. **Full fingerprint** - No ambiguity, no collisions between relays
+4. **No UUID** - Every field has debugging value
+5. **Retry uniqueness** - Each retry has different attempt + timestamp_ms, ensuring fresh DNS lookup
+
+### DNS Label Length Check
+
+```
+run_id:           14 chars  (20250114143052)
+attempt:           1 char   (1)
+timestamp_ms:     17 chars  (20250114143127789)
+fingerprint:      40 chars  (full hex)
+separators:        4 chars  (dots)
+                  ─────────
+Total:           ~76 chars + base_domain ✓ (well under 253 limit)
+```
 
 ---
 
@@ -193,7 +229,6 @@ import socket
 import time
 import json
 import os
-import uuid
 from typing import Dict, Any
 
 import torsocks
@@ -239,21 +274,28 @@ def setup(consensus=None, target=None, **kwargs):
     log.info(f"Run ID: {_run_id}, Shard: {_shard}")
 
 
-def generate_unique_query(fingerprint: str, base_domain: str) -> str:
+def generate_unique_query(fingerprint: str, base_domain: str, attempt: int = 1) -> str:
     """
     Generate a unique DNS query for this relay.
     
-    Format: {uuid}.{fingerprint_prefix}.{base_domain}
+    Format: {run_id}.{attempt}.{timestamp_ms}.{full_fingerprint}.{base_domain}
+    
+    Every field has debugging value:
+    - run_id: Which batch (correlate queries from same scan)
+    - attempt: Which try (1=first, 2+=retry)
+    - timestamp_ms: Exact query moment (correlate with authoritative DNS logs)
+    - full_fingerprint: Which relay (unambiguous)
     """
-    unique_id = str(uuid.uuid4())
-    fp_prefix = fingerprint[:8].lower()
-    return f"{unique_id}.{fp_prefix}.{base_domain}"
+    timestamp_ms = time.strftime("%Y%m%d%H%M%S") + f"{int(time.time() * 1000) % 1000:03d}"
+    return f"{_run_id}.{attempt}.{timestamp_ms}.{fingerprint}.{base_domain}"
 
 
-def resolve_with_retry(exit_desc, domain: str, expected_ip: str = None, 
+def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None, 
                        retries: int = MAX_RETRIES) -> Dict[str, Any]:
     """
     Resolve domain through exit relay with retry logic.
+    
+    Each attempt generates a fresh unique query to avoid DNS caching.
     
     Modes:
     - If expected_ip is set: Wildcard mode, verify IP matches
@@ -267,7 +309,7 @@ def resolve_with_retry(exit_desc, domain: str, expected_ip: str = None,
         "exit_nickname": getattr(exit_desc, 'nickname', 'unknown'),
         "exit_address": getattr(exit_desc, 'address', 'unknown'),
         "first_hop_fingerprint": _first_hop,  # Track entry guard for debugging
-        "query_domain": domain,
+        "query_domain": None,  # Set per attempt
         "expected_ip": expected_ip,
         "timestamp": time.time(),
         "run_id": _run_id,
@@ -282,7 +324,11 @@ def resolve_with_retry(exit_desc, domain: str, expected_ip: str = None,
     }
     
     for attempt in range(1, retries + 1):
+        # Generate fresh unique query for each attempt (avoids DNS caching)
+        domain = generate_unique_query(exit_fp, base_domain, attempt)
+        result["query_domain"] = domain
         result["attempt"] = attempt
+        
         sock = torsocks.torsocket()
         sock.settimeout(QUERY_TIMEOUT)
         
@@ -386,10 +432,9 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
         base_domain = WILDCARD_DOMAIN
         expected_ip = EXPECTED_IP
     
-    query_domain = generate_unique_query(exit_desc.fingerprint, base_domain)
-    
-    def do_validation(exit_desc, query_domain, expected_ip):
-        result = resolve_with_retry(exit_desc, query_domain, expected_ip)
+    def do_validation(exit_desc, base_domain, expected_ip):
+        # Query is generated inside resolve_with_retry for each attempt
+        result = resolve_with_retry(exit_desc, base_domain, expected_ip)
         
         # Write individual result to analysis_dir
         if util.analysis_dir:
@@ -403,7 +448,7 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
             except Exception as e:
                 log.error(f"Failed to write {filename}: {e}")
     
-    run_python_over_tor(do_validation, exit_desc, query_domain, expected_ip)
+    run_python_over_tor(do_validation, exit_desc, base_domain, expected_ip)
 
 
 def teardown():
@@ -439,14 +484,14 @@ Each relay produces a JSON file in `analysis_dir`:
 
 ```json
 {
-  "exit_fingerprint": "ABC123...",
+  "exit_fingerprint": "ABCD1234EFGH5678IJKL9012MNOP3456QRST7890",
   "exit_nickname": "MyRelay",
   "exit_address": "192.0.2.1",
   "first_hop_fingerprint": "DEF456...",
-  "query_domain": "uuid.abc123.tor.exit.validator.1aeo.com",
+  "query_domain": "20250114143052.1.20250114143127789.ABCD1234EFGH5678IJKL9012MNOP3456QRST7890.tor.exit.validator.1aeo.com",
   "expected_ip": "64.65.4.1",
-  "timestamp": 1704825600.123,
-  "run_id": "20250109_143000",
+  "timestamp": 1736865052.123,
+  "run_id": "20250114143052",
   "shard": "0/1",
   "mode": "wildcard",
   "status": "success",
@@ -1142,7 +1187,7 @@ def send_alerts(alerts, channel='email'):
 | Feature | Source |
 |---------|--------|
 | NXDOMAIN = Success insight | Gemini 3 |
-| UUID uniqueness | Gemini 3 |
+| Per-query uniqueness concept | Gemini 3 (improved: UUID → run_id.attempt.timestamp_ms.fingerprint) |
 | Per-relay JSON files | Gemini 3 |
 | Retry with delay | Gemini 3 |
 | Auto-create virtualenv | Gemini 3 |
