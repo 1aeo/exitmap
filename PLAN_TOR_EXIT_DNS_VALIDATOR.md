@@ -12,6 +12,101 @@ This plan outlines a system that periodically connects to all Tor exit relays, r
 
 ---
 
+## Exitmap Architecture & Data Flow
+
+### Current Codebase Structure
+
+```
+src/
+├── exitmap.py          # Main entry point, bootstraps Tor, orchestrates scans
+├── eventhandler.py     # Handles Tor circuit/stream events, spawns module processes
+├── relayselector.py    # Selects exit relays from consensus
+├── torsocks.py         # Routes Python network calls through Tor SOCKS
+├── command.py          # Routes shell commands through Tor
+├── util.py             # Utilities (analysis_dir, exiturl, etc.)
+├── error.py            # Custom exceptions (SOCKSv5Error, etc.)
+├── stats.py            # Scan statistics tracking
+└── modules/            # Scanning modules (one per task)
+    ├── dnsresolution.py    # Basic DNS resolution check
+    ├── dnspoison.py        # DNS poisoning detection
+    ├── dnssec.py           # DNSSEC validation
+    └── ...                 # Other modules
+```
+
+### Data Flow: How a Scan Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. STARTUP                                                                  │
+│    exitmap.py main()                                                        │
+│    ├── Parse command line args                                              │
+│    ├── Bootstrap Tor process (stem)                                         │
+│    └── Connect to Tor controller                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 2. MODULE LOADING                                                           │
+│    run_module(module_name, ...)                                             │
+│    ├── Import module from src/modules/{name}.py                             │
+│    ├── Call module.setup(consensus=...) if exists                           │
+│    └── Select exit relays via relayselector.get_exits()                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 3. CIRCUIT CREATION                                                         │
+│    iter_exit_relays(exit_relays, ...)                                       │
+│    ├── For each exit relay:                                                 │
+│    │   ├── Pick first hop (--first-hop or random)                           │
+│    │   ├── controller.new_circuit([first_hop, exit_relay])                  │
+│    │   └── Sleep (--build-delay + noise)                                    │
+│    └── EventHandler listens for CIRC events                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 4. MODULE EXECUTION (per circuit)                                           │
+│    EventHandler.new_circuit() [when CircStatus.BUILT]                       │
+│    ├── Get exit relay descriptor                                            │
+│    ├── Spawn new process:                                                   │
+│    │   └── module.probe(                                                    │
+│    │         exit_desc,              # Relay info (fingerprint, address)    │
+│    │         run_python_over_tor,    # Wrapper to route Python through Tor  │
+│    │         run_cmd_over_tor,       # Wrapper to route commands through Tor│
+│    │         target_host,            # From -H flag                         │
+│    │         target_port             # From -p flag                         │
+│    │       )                                                                │
+│    └── Module does its work over the Tor circuit                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 5. CLEANUP                                                                  │
+│    ├── Module signals completion via IPC queue                              │
+│    ├── Circuit is closed                                                    │
+│    ├── When all circuits done: module.teardown() if exists                  │
+│    └── Exit                                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Where Our New Module Fits
+
+```
+src/modules/
+├── dnsresolution.py    # Existing: Basic "can resolve" check (no uniqueness)
+├── dnspoison.py        # Existing: Compare to whitelist (static domains)
+├── dnssec.py           # Existing: DNSSEC validation
+└── dnshealth.py        # NEW: Unique queries + structured JSON output ◄────
+```
+
+**Why `dnshealth.py` is needed:**
+- `dnsresolution.py`: No unique queries, no structured output, can't track failures over time
+- `dnspoison.py`: Static domain list, focused on poisoning not broken DNS
+- `dnshealth.py`: Unique query per relay, JSON output, consecutive failure tracking
+
+---
+
 ## DNS Test Modes: Wildcard vs NXDOMAIN
 
 ### Comparison
@@ -40,7 +135,7 @@ This plan outlines a system that periodically connects to all Tor exit relays, r
 2. **Fallback**: If wildcard domain is unreachable
 3. **Simpler logic**: Any resolver response = working DNS
 
-### Fallback: Multiple Stable Domains (from GPT5.2)
+### Fallback: Multiple Stable Domains
 
 If you cannot operate any DNS zone, a less reliable but workable fallback:
 
@@ -121,7 +216,7 @@ Total:           ~76 chars + base_domain ✓ (well under 253 limit)
 
 # Part 1: exitmap Repository (This Repo)
 
-## What Already Exists (from GPT5.2)
+## Existing DNS Modules (Why We Need dnshealth.py)
 
 The exitmap codebase already has DNS-related modules that partially address this problem:
 
@@ -151,7 +246,7 @@ Add a new module `dnshealth.py` to the existing exitmap codebase that:
 src/modules/dnshealth.py          # Main DNS health validation module
 ```
 
-## Results Storage Options (from GPT5.2)
+## Results Storage Options
 
 | Option | Description | Pros | Cons |
 |--------|-------------|------|------|
@@ -374,7 +469,7 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
                     log.info(f"✓ {exit_url} returned NXDOMAIN (DNS working)")
                 return result
             
-            # Classify SOCKS errors (from GPT5.2 error taxonomy)
+            # Classify SOCKS errors
             if "error 1" in err_str:
                 result["error_code"] = "SOCKS_GENERAL_FAILURE"
             elif "error 2" in err_str:
@@ -503,7 +598,7 @@ Each relay produces a JSON file in `analysis_dir`:
 }
 ```
 
-### Field Descriptions (from GPT5.2)
+### Field Descriptions
 
 | Field | Description |
 |-------|-------------|
@@ -536,7 +631,7 @@ Each relay produces a JSON file in `analysis_dir`:
 | `error` | SOCKS/connection error on built circuit | Maybe - could be circuit issue | ⚠️ Transient |
 | `exception` | Unexpected error | Yes - investigate | ❌ Bug |
 
-### Error Classification (from GPT5.2)
+### Error Classification
 
 **Key insight**: Separate circuit build failures from DNS resolution failures.
 
@@ -580,7 +675,7 @@ exitmap-deploy/
     └── index.html               # Dashboard (optional)
 ```
 
-## Output Artifacts (from GPT5.2)
+## Output Artifacts
 
 Each run produces:
 
@@ -665,7 +760,7 @@ log "=== DNS Health Validation Starting ==="
 
 mkdir -p "$ANALYSIS_DIR" "$LOG_DIR"
 
-# Setup exitmap environment (auto-create venv if needed - from Gemini 3)
+# Setup exitmap environment (auto-create venv if needed)
 cd "$EXITMAP_DIR"
 if [[ -d "venv" ]]; then
     source venv/bin/activate
@@ -832,7 +927,7 @@ if __name__ == '__main__':
     main()
 ```
 
-## Report Generator: `scripts/generate_report.py` (from GPT5.2)
+## Report Generator: `scripts/generate_report.py`
 
 ```python
 #!/usr/bin/env python3
@@ -894,7 +989,7 @@ if __name__ == '__main__':
 15 */6 * * * exitmap /home/exitmap/exitmap-deploy/scripts/run_dns_validation.sh >> /home/exitmap/exitmap-deploy/logs/cron.log 2>&1
 ```
 
-## Monthly Retention: `configs/cron.d/exitmap-retention` (from GPT5.2)
+## Monthly Retention: `configs/cron.d/exitmap-retention`
 
 ```cron
 # Monthly: compress old results, delete very old data
@@ -955,7 +1050,7 @@ export async function onRequest(context) {
 
 ---
 
-## Network Sensitivity & Constraints (from GPT5.2)
+## Network Sensitivity & Constraints
 
 ### Important Considerations
 
@@ -1066,7 +1161,7 @@ cat public/latest.json | jq '.metadata'
 
 ---
 
-## Future Work: Dashboard UI (from GPT5.2)
+## Future Work: Dashboard UI
 
 A minimal frontend page (`public/index.html`) can show:
 
@@ -1120,7 +1215,7 @@ const historical = await fetch(`/${files[5]}`).then(r => r.json());
    - Generate operator-specific reports
    - Opt-in notification system
 
-### Alert Payload (from GPT5.2)
+### Alert Payload
 
 Each alert should include:
 - `fingerprint`: Relay fingerprint
