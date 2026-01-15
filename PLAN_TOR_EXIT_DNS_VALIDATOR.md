@@ -633,34 +633,71 @@ def resolve_with_retry(exit_desc, base_domain: str, expected_ip: str = None,
             err_str = str(err)
             result["latency_ms"] = int((time.time() - start_time) * 1000)
             
-            # SOCKS error 4 = Host Unreachable = NXDOMAIN
-            if "error 4" in err_str:
+            # Parse SOCKS error number from message like "SOCKS Server error 4"
+            socks_err = None
+            if "error " in err_str:
+                try:
+                    socks_err = int(err_str.split("error ")[-1].split()[0])
+                except (ValueError, IndexError):
+                    pass
+            
+            # Classify by SOCKS error code
+            if socks_err == 4:  # Host unreachable = NXDOMAIN
                 if expected_ip:
-                    # Wildcard mode: NXDOMAIN is failure
                     result["status"] = "nxdomain"
                     result["category"] = "dns"
-                    result["error"] = "NXDOMAIN: relay's resolver says domain doesn't exist"
-                    log.warning(f"✗ {exit_url} NXDOMAIN for wildcard domain")
+                    result["error"] = "SOCKS error 4: NXDOMAIN - domain doesn't exist"
+                    log.warning(f"✗ {exit_url} NXDOMAIN")
                 else:
-                    # NXDOMAIN mode: NXDOMAIN is success
+                    # NXDOMAIN mode: this is success
                     result["status"] = "success"
                     result["category"] = "ok"
                     result["resolved_ip"] = "NXDOMAIN"
                     log.info(f"✓ {exit_url} NXDOMAIN (DNS working)")
                 return result
             
-            # SOCKS error 5 = Connection refused (could be DNS refusing)
-            if "error 5" in err_str:
+            elif socks_err == 5:  # Connection refused
                 result["status"] = "refused"
                 result["category"] = "dns"
-                result["error"] = "DNS query refused by relay's resolver"
-                log.warning(f"Attempt {attempt}/{retries}: {exit_url} refused")
-            else:
-                # Other SOCKS errors are circuit issues, not DNS issues
-                result["status"] = "circuit_error"
+                result["error"] = "SOCKS error 5: DNS query refused"
+            
+            elif socks_err in (7, 8):  # Command/address not supported
+                result["status"] = "unsupported"
+                result["category"] = "dns"
+                result["error"] = f"SOCKS error {socks_err}: DNS command not supported"
+            
+            elif socks_err == 6:  # TTL expired
+                result["status"] = "ttl_expired"
+                result["category"] = "circuit"
+                result["error"] = "SOCKS error 6: TTL expired (circuit timeout)"
+            
+            elif socks_err == 3:  # Network unreachable
+                result["status"] = "net_unreachable"
+                result["category"] = "circuit"
+                result["error"] = "SOCKS error 3: Network unreachable"
+            
+            elif socks_err == 2:  # Not allowed by ruleset
+                result["status"] = "not_allowed"
+                result["category"] = "circuit"
+                result["error"] = "SOCKS error 2: Not allowed by exit policy"
+            
+            elif socks_err == 1:  # General failure
+                result["status"] = "general_failure"
+                result["category"] = "circuit"
+                result["error"] = "SOCKS error 1: General SOCKS failure"
+            
+            else:  # Unknown or unparseable
+                result["status"] = "general_failure"
                 result["category"] = "circuit"
                 result["error"] = f"SOCKS error: {err_str}"
-                log.warning(f"Attempt {attempt}/{retries}: {exit_url} circuit error: {err}")
+            
+            log.warning(f"Attempt {attempt}/{retries}: {exit_url} {result['error']}")
+            
+        except EOFError as err:
+            result["status"] = "eof"
+            result["category"] = "circuit"
+            result["error"] = "Connection closed unexpectedly (EOF)"
+            log.warning(f"Attempt {attempt}/{retries}: {exit_url} EOF")
             
         except socket.timeout:
             result["status"] = "timeout"
@@ -893,25 +930,53 @@ exitmap dnshealth --build-delay 3 --delay-noise 1 --analysis-dir ./results
 |--------|----------|---------|-------------|
 | `success` | `ok` | DNS resolved correctly | No |
 | `wrong_ip` | `dns` | Resolved to unexpected IP | **Yes** - possible poisoning/misconfiguration |
-| `nxdomain` | `dns` | Got NXDOMAIN for domain that should resolve | **Yes** - broken resolver |
-| `refused` | `dns` | DNS query refused | **Yes** - resolver blocking queries |
-| `timeout` | `timeout` | Resolution timed out | Maybe - could be transient |
-| `circuit_error` | `circuit` | SOCKS/circuit error | No - not a DNS issue |
+| `nxdomain` | `dns` | SOCKS error 4: Host unreachable (NXDOMAIN) | **Yes** - broken resolver |
+| `refused` | `dns` | SOCKS error 5: Connection refused | **Yes** - resolver blocking queries |
+| `unsupported` | `dns` | SOCKS error 7/8: Command/address not supported | **Yes** - DNS protocol issue |
+| `timeout` | `timeout` | Resolution timed out (socket.timeout) | Maybe - could be transient |
+| `ttl_expired` | `circuit` | SOCKS error 6: TTL expired | No - circuit timeout |
+| `net_unreachable` | `circuit` | SOCKS error 3: Network unreachable | No - network issue |
+| `not_allowed` | `circuit` | SOCKS error 2: Not allowed by ruleset | No - exit policy |
+| `general_failure` | `circuit` | SOCKS error 1: General SOCKS failure | No - unclear cause |
+| `eof` | `circuit` | Connection closed unexpectedly (EOFError) | No - circuit dropped |
 | `exception` | `bug` | Unexpected code error | **Yes** - report bug |
+
+### SOCKS5 Error Code Reference
+
+From `torsocks.py`, the SOCKS5 error codes and how we classify them:
+
+| SOCKS Error | Errno | Meaning | Our Status | Category |
+|-------------|-------|---------|------------|----------|
+| 0 | - | Success | `success` | `ok` |
+| 1 | EIO | General failure | `general_failure` | `circuit` |
+| 2 | EACCES | Not allowed by ruleset | `not_allowed` | `circuit` |
+| 3 | ENETUNREACH | Network unreachable | `net_unreachable` | `circuit` |
+| 4 | EHOSTUNREACH | Host unreachable | `nxdomain` | `dns` |
+| 5 | ECONNREFUSED | Connection refused | `refused` | `dns` |
+| 6 | ETIMEDOUT | TTL expired | `ttl_expired` | `circuit` |
+| 7 | ENOTSUP | Command not supported | `unsupported` | `dns` |
+| 8 | EAFNOSUPPORT | Address type not supported | `unsupported` | `dns` |
+| 9+ | - | Unknown error | `general_failure` | `circuit` |
 
 ### Error Categories Explained
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ category: "ok"       │ DNS is working                          │
+│   - success          │   Resolved to correct IP                │
 ├─────────────────────────────────────────────────────────────────┤
-│ category: "dns"      │ DNS problem on the relay                │
+│ category: "dns"      │ DNS problem on the relay (ACTIONABLE)   │
 │   - wrong_ip         │   Resolver returned wrong IP            │
-│   - nxdomain         │   Resolver says domain doesn't exist    │
-│   - refused          │   Resolver refused the query            │
+│   - nxdomain         │   SOCKS 4: Domain doesn't exist         │
+│   - refused          │   SOCKS 5: Query refused                │
+│   - unsupported      │   SOCKS 7/8: Command not supported      │
 ├─────────────────────────────────────────────────────────────────┤
 │ category: "circuit"  │ Network/circuit issue (not relay's DNS) │
-│   - circuit_error    │   SOCKS error, connection failed, etc.  │
+│   - ttl_expired      │   SOCKS 6: Circuit timed out            │
+│   - net_unreachable  │   SOCKS 3: Network unreachable          │
+│   - not_allowed      │   SOCKS 2: Exit policy blocked          │
+│   - general_failure  │   SOCKS 1/9+: General failure           │
+│   - eof              │   Connection closed unexpectedly        │
 ├─────────────────────────────────────────────────────────────────┤
 │ category: "timeout"  │ Timed out (could be DNS or circuit)     │
 │   - timeout          │   No response within timeout            │
