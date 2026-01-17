@@ -60,9 +60,11 @@ def test_iter_exit_relays(exit_relays, controller, stats_obj, args, caplog):
 
 
 def test_sleep(args):
+    # Test with a small fixed delay (not dependent on args.build_delay which is now 0)
+    test_delay = 0.1
     start = time.monotonic()
-    exitmap.sleep(args.build_delay, args.delay_noise)
+    exitmap.sleep(test_delay, args.delay_noise)
     stop = time.monotonic()
     delta = stop - start
-    assert delta != 3
-    assert delta > 3
+    assert delta >= test_delay * 0.9  # Allow 10% tolerance
+    assert delta < test_delay + 0.5   # Should not take too long
