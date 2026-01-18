@@ -89,6 +89,25 @@ def temp_analysis_dir(tmp_path):
     util.analysis_dir = old_dir
 
 
+@pytest.fixture
+def mock_torsocket():
+    """Fixture that provides a mock torsocket with patch context.
+    
+    Usage:
+        def test_foo(mock_torsocket):
+            mock_socket, use_socket = mock_torsocket
+            mock_socket.resolve.return_value = "1.2.3.4"
+            with use_socket():
+                result = dnshealth.resolve_with_retry(...)
+    """
+    mock_socket = MagicMock()
+    
+    def use_socket():
+        return patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket)
+    
+    return mock_socket, use_socket
+
+
 # === Test: generate_unique_query ===
 
 class TestGenerateUniqueQuery:
@@ -503,149 +522,107 @@ class TestWriteResult:
 class TestResolveWithRetry:
     """Tests for DNS resolution with retry logic (mocked)."""
 
-    def test_successful_wildcard_resolution(self, mock_exit_desc):
+    def test_successful_wildcard_resolution(self, mock_exit_desc, mock_torsocket):
         """Successful wildcard resolution should return success status."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.return_value = "64.65.4.1"
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
+        with use_socket():
             result = dnshealth.resolve_with_retry(
-                mock_exit_desc,
-                "test.example.com",
-                expected_ip="64.65.4.1",
-                retries=1
-            )
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
 
         assert result["status"] == "success"
         assert result["resolved_ip"] == "64.65.4.1"
 
-    def test_wrong_ip_detection(self, mock_exit_desc):
+    def test_wrong_ip_detection(self, mock_exit_desc, mock_torsocket):
         """Wrong IP should be detected and reported."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.return_value = "1.2.3.4"  # Wrong IP
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
+        with use_socket():
             result = dnshealth.resolve_with_retry(
-                mock_exit_desc,
-                "test.example.com",
-                expected_ip="64.65.4.1",
-                retries=1
-            )
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
 
         assert result["status"] == "wrong_ip"
         assert result["resolved_ip"] == "1.2.3.4"
         assert "Expected" in result["error"]
 
-    def test_nxdomain_success_in_nxdomain_mode(self, mock_exit_desc):
+    def test_nxdomain_success_in_nxdomain_mode(self, mock_exit_desc, mock_torsocket):
         """NXDOMAIN should be success in NXDOMAIN mode."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.side_effect = error.SOCKSv5Error("error 4: domain not found")
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
+        with use_socket():
             result = dnshealth.resolve_with_retry(
-                mock_exit_desc,
-                "nonexistent.example.com",
-                expected_ip=None,  # NXDOMAIN mode
-                retries=1
-            )
+                mock_exit_desc, "nonexistent.example.com", expected_ip=None, retries=1)
 
         assert result["status"] == "success"
         assert result["resolved_ip"] == "NXDOMAIN"
 
-    def test_nxdomain_failure_in_wildcard_mode(self, mock_exit_desc):
+    def test_nxdomain_failure_in_wildcard_mode(self, mock_exit_desc, mock_torsocket):
         """NXDOMAIN should be failure in wildcard mode."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.side_effect = error.SOCKSv5Error("error 4: domain not found")
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
+        with use_socket():
             result = dnshealth.resolve_with_retry(
-                mock_exit_desc,
-                "test.example.com",
-                expected_ip="64.65.4.1",  # Wildcard mode
-                retries=1
-            )
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
 
         assert result["status"] == "dns_fail"
 
-    def test_timeout_handling(self, mock_exit_desc):
+    def test_timeout_handling(self, mock_exit_desc, mock_torsocket):
         """Socket timeout should be handled gracefully."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.side_effect = socket.timeout()
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
+        with use_socket():
             result = dnshealth.resolve_with_retry(
-                mock_exit_desc,
-                "test.example.com",
-                expected_ip="64.65.4.1",
-                retries=1
-            )
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
 
         assert result["status"] == "timeout"
 
-    def test_retry_on_transient_error(self, mock_exit_desc):
+    def test_retry_on_transient_error(self, mock_exit_desc, mock_torsocket):
         """Should retry on transient errors."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
-        # Fail first time, succeed second time
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.side_effect = [
             error.SOCKSv5Error("error 1: general failure"),
             "64.65.4.1"
         ]
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
-            with patch.object(dnshealth.time, 'sleep'):  # Skip actual sleep
-                result = dnshealth.resolve_with_retry(
-                    mock_exit_desc,
-                    "test.example.com",
-                    expected_ip="64.65.4.1",
-                    retries=2
-                )
+        with use_socket(), patch.object(dnshealth.time, 'sleep'):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=2)
 
         assert result["status"] == "success"
         assert result["attempt"] == 2
 
-    def test_socket_closed_on_error(self, mock_exit_desc):
+    def test_socket_closed_on_error(self, mock_exit_desc, mock_torsocket):
         """Socket should be closed even on error."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.side_effect = Exception("Test error")
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
+        with use_socket():
             dnshealth.resolve_with_retry(
-                mock_exit_desc,
-                "test.example.com",
-                expected_ip="64.65.4.1",
-                retries=1
-            )
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
 
         mock_socket.close.assert_called()
 
-    def test_latency_recorded(self, mock_exit_desc):
+    def test_latency_recorded(self, mock_exit_desc, mock_torsocket):
         """Latency should be recorded in milliseconds."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.return_value = "64.65.4.1"
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
+        with use_socket():
             result = dnshealth.resolve_with_retry(
-                mock_exit_desc,
-                "test.example.com",
-                expected_ip="64.65.4.1",
-                retries=1
-            )
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
 
         assert result["latency_ms"] is not None
         assert isinstance(result["latency_ms"], int)
@@ -656,35 +633,25 @@ class TestResolveWithRetry:
 class TestDoValidation:
     """Tests for the validation wrapper with hard timeout."""
 
-    def test_updates_status_counts(self, mock_exit_desc, temp_analysis_dir):
+    def test_updates_status_counts(self, mock_exit_desc, temp_analysis_dir, mock_torsocket):
         """Validation should update status counts."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.return_value = "64.65.4.1"
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
-            dnshealth.do_validation(
-                mock_exit_desc,
-                "test.example.com",
-                "64.65.4.1"
-            )
+        with use_socket():
+            dnshealth.do_validation(mock_exit_desc, "test.example.com", "64.65.4.1")
 
         assert dnshealth._status_counts["success"] == 1
 
-    def test_writes_result_file(self, mock_exit_desc, temp_analysis_dir):
+    def test_writes_result_file(self, mock_exit_desc, temp_analysis_dir, mock_torsocket):
         """Validation should write result file."""
         dnshealth.setup()
-
-        mock_socket = MagicMock()
+        mock_socket, use_socket = mock_torsocket
         mock_socket.resolve.return_value = "64.65.4.1"
 
-        with patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket):
-            dnshealth.do_validation(
-                mock_exit_desc,
-                "test.example.com",
-                "64.65.4.1"
-            )
+        with use_socket():
+            dnshealth.do_validation(mock_exit_desc, "test.example.com", "64.65.4.1")
 
         expected_path = temp_analysis_dir / f"dnshealth_{mock_exit_desc.fingerprint}.json"
         assert expected_path.exists()

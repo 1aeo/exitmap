@@ -96,6 +96,23 @@ _SOCKS_ERROR_MESSAGES = {
 # Regex to extract SOCKS error code (compiled once)
 _SOCKS_ERROR_RE = re.compile(r"(?:error\s*|0x0)([1-8])", re.IGNORECASE)
 
+
+def _fmt_first_hop(first_hop):
+    """Format first hop suffix for error messages. Returns 'via FP' or empty string."""
+    return "via %s" % first_hop if first_hop else ""
+
+
+def _fmt_with_hop(msg, first_hop_info):
+    """Append first hop info to message if present."""
+    return "%s %s" % (msg, first_hop_info) if first_hop_info else msg
+
+
+def _fmt_exception(err):
+    """Format exception as 'Type: message' or just 'Type' if message is empty."""
+    err_type = type(err).__name__
+    err_str = str(err)
+    return "%s: %s" % (err_type, err_str) if err_str else err_type
+
 # Module state
 destinations = None
 _run_id = None
@@ -222,7 +239,7 @@ def generate_unique_query(fingerprint, base_domain):
 def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES, first_hop=None):
     """Resolve domain through exit relay with retry logic."""
     exit_url = exiturl(exit_desc.fingerprint)
-    first_hop_info = "via %s" % first_hop if first_hop else ""
+    hop_info = _fmt_first_hop(first_hop)
     result = _make_result(exit_desc, domain, expected_ip, first_hop=first_hop)
 
     for attempt in range(1, retries + 1):
@@ -271,36 +288,33 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             # Other SOCKS errors - use descriptive messages with first hop
             status = _SOCKS_ERROR_MAP.get(err_code, "socks_error")
             base_msg = _SOCKS_ERROR_MESSAGES.get(err_code, "SOCKS %s: Unknown error" % err_code)
-            error_msg = "%s %s" % (base_msg, first_hop_info) if first_hop_info else base_msg
+            error_msg = _fmt_with_hop(base_msg, hop_info)
 
         except socket.timeout:
             status = "timeout"
-            error_msg = "Timeout after %ds %s" % (QUERY_TIMEOUT, first_hop_info) if first_hop_info else "Timeout after %ds" % QUERY_TIMEOUT
+            error_msg = _fmt_with_hop("Timeout after %ds" % QUERY_TIMEOUT, hop_info)
 
-        except EOFError as err:
+        except EOFError:
             status = "eof_error"
-            error_msg = "Connection closed unexpectedly %s" % first_hop_info if first_hop_info else "Connection closed unexpectedly"
+            error_msg = _fmt_with_hop("Connection closed unexpectedly", hop_info)
 
-        except FileNotFoundError as err:
+        except FileNotFoundError:
             # Tor SOCKS socket gone - process likely crashed
             status = "tor_connection_lost"
-            error_msg = "Lost connection to Tor (socket gone, process may have crashed) while testing exit %s %s" % (
-                exit_desc.fingerprint[:8], first_hop_info) if first_hop_info else \
-                "Lost connection to Tor (socket gone, process may have crashed) while testing exit %s" % exit_desc.fingerprint[:8]
+            error_msg = _fmt_with_hop(
+                "Lost connection to Tor (socket gone) while testing exit %s" % exit_desc.fingerprint[:8],
+                hop_info)
 
-        except ConnectionRefusedError as err:
+        except ConnectionRefusedError:
             # Tor not accepting connections
             status = "tor_connection_refused"
-            error_msg = "Tor refused connection (process may be restarting) while testing exit %s %s" % (
-                exit_desc.fingerprint[:8], first_hop_info) if first_hop_info else \
-                "Tor refused connection (process may be restarting) while testing exit %s" % exit_desc.fingerprint[:8]
+            error_msg = _fmt_with_hop(
+                "Tor refused connection (may be restarting) while testing exit %s" % exit_desc.fingerprint[:8],
+                hop_info)
 
         except Exception as err:
-            # Include exception type name for debugging (str(err) is often empty)
-            err_type = type(err).__name__
-            err_str = str(err)
             status = "exception"
-            error_msg = "%s: %s" % (err_type, err_str) if err_str else err_type
+            error_msg = _fmt_exception(err)
 
         finally:
             # Ensure socket is closed even on error
@@ -326,25 +340,21 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 def do_validation(exit_desc, query_domain, expected_ip, first_hop=None):
     """Perform DNS validation with hard timeout protection."""
     fp = exit_desc.fingerprint
-    first_hop_info = "via %s" % first_hop if first_hop else ""
+    hop_info = _fmt_first_hop(first_hop)
 
     with _AlarmContext(HARD_TIMEOUT):
         try:
             result = resolve_with_retry(exit_desc, query_domain, expected_ip, first_hop=first_hop)
         except HardTimeoutError:
             log.error("HARD_TIMEOUT %s exceeded %ds", exiturl(fp), HARD_TIMEOUT)
-            error_msg = "Hard timeout after %ds %s" % (HARD_TIMEOUT, first_hop_info) if first_hop_info else "Hard timeout after %ds" % HARD_TIMEOUT
             result = _make_result(exit_desc, query_domain, expected_ip,
                                   status="hard_timeout",
                                   latency_ms=HARD_TIMEOUT * 1000,
-                                  error_msg=error_msg,
+                                  error_msg=_fmt_with_hop("Hard timeout after %ds" % HARD_TIMEOUT, hop_info),
                                   attempt=MAX_RETRIES,
                                   first_hop=first_hop)
         except Exception as e:
-            # Include exception type name for debugging (str(e) is often empty)
-            err_type = type(e).__name__
-            err_str = str(e)
-            error_msg = "%s: %s" % (err_type, err_str) if err_str else err_type
+            error_msg = _fmt_exception(e)
             log.error("EXCEPTION %s: %s", exiturl(fp), error_msg)
             result = _make_result(exit_desc, query_domain, expected_ip,
                                   status="exception", error_msg=error_msg, first_hop=first_hop)

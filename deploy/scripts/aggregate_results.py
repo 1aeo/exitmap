@@ -92,30 +92,11 @@ def _extract_instance_detail(result):
     status = result.get("status", "unknown")
     detail = {"status": status}
     
-    # Always include attempt if present
-    if result.get("attempt"):
-        detail["attempt"] = result["attempt"]
-    
-    if status == "success":
-        if result.get("latency_ms"):
-            detail["latency_ms"] = result["latency_ms"]
-        if result.get("resolved_ip"):
-            detail["resolved_ip"] = result["resolved_ip"]
-    elif status == "wrong_ip":
-        if result.get("resolved_ip"):
-            detail["resolved_ip"] = result["resolved_ip"]
-        if result.get("expected_ip"):
-            detail["expected_ip"] = result["expected_ip"]
-        if result.get("latency_ms"):
-            detail["latency_ms"] = result["latency_ms"]
-        if result.get("error"):
-            detail["error"] = result["error"]
-    else:
-        # For all error types: dns_fail, timeout, socks_error, network_error, etc.
-        if result.get("error"):
-            detail["error"] = result["error"]
-        if result.get("latency_ms"):
-            detail["latency_ms"] = result["latency_ms"]
+    # Copy relevant fields if present (avoids repetitive if-blocks)
+    # Keys included per status: attempt (always), latency_ms (all), resolved_ip, expected_ip, error
+    for key in ("attempt", "latency_ms", "resolved_ip", "expected_ip", "error"):
+        if result.get(key):
+            detail[key] = result[key]
     
     return detail
 
