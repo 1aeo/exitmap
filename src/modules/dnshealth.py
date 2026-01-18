@@ -172,7 +172,7 @@ def _parse_socks_error_code(err_str):
 
 
 def _make_result(exit_desc, domain, expected_ip, status="unknown",
-                 resolved_ip=None, latency_ms=None, error_msg=None, attempt=0, first_hop=None):
+                 resolved_ip=None, timing=None, error_msg=None, attempt=0, first_hop=None):
     """Create result dict - single source of truth for result structure."""
     fp = exit_desc.fingerprint
     return {
@@ -188,7 +188,7 @@ def _make_result(exit_desc, domain, expected_ip, status="unknown",
         "first_hop": first_hop,  # Full 40-char fingerprint of first hop relay
         "status": status,
         "resolved_ip": resolved_ip,
-        "latency_ms": latency_ms,
+        "timing": timing,  # {total_ms} - see _make_timing()
         "error": error_msg,
         "attempt": attempt,
     }
@@ -197,6 +197,26 @@ def _make_result(exit_desc, domain, expected_ip, status="unknown",
 def _elapsed_ms(start_time):
     """Calculate elapsed time in milliseconds."""
     return int((time.time() - start_time) * 1000)
+
+
+def _make_timing(total_start=None, total_ms=None):
+    """
+    Create timing dict with total elapsed time.
+    
+    Note: We cannot easily split Tor circuit establishment from DNS resolution
+    because both happen inside torsocks.resolve() - negotiate() is called internally.
+    The total_ms includes: socket creation + Tor circuit + DNS resolution.
+    
+    Args:
+        total_start: Time when measurement began (calculates elapsed time)
+        total_ms: Direct total_ms value (overrides calculation, for hard timeouts)
+    
+    Returns:
+        dict with total_ms (socket_ms and dns_ms reserved for future use)
+    """
+    if total_ms is None:
+        total_ms = _elapsed_ms(total_start) if total_start else None
+    return {"total_ms": total_ms}
 
 
 def _write_result(result, fingerprint):
@@ -245,15 +265,16 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
     for attempt in range(1, retries + 1):
         result["attempt"] = attempt
         sock = None
-        start = time.time()
+        total_start = time.time()
         status = error_msg = None
 
         try:
             sock = torsocks.torsocket()
             sock.settimeout(QUERY_TIMEOUT)
             ip = _normalize_ip(sock.resolve(domain))
+            
             result["resolved_ip"] = ip
-            result["latency_ms"] = _elapsed_ms(start)
+            result["timing"] = _make_timing(total_start)
 
             if expected_ip:
                 if ip == expected_ip:
@@ -269,7 +290,8 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             return result
 
         except error.SOCKSv5Error as err:
-            result["latency_ms"] = _elapsed_ms(start)
+            # SOCKS error - DNS was attempted but failed
+            result["timing"] = _make_timing(total_start)
             err_str = str(err)
             err_code = _parse_socks_error_code(err_str)
 
@@ -326,7 +348,7 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
         # Common error handling for non-SOCKS errors (only if status was set)
         if status is not None:
-            result["latency_ms"] = _elapsed_ms(start)
+            result["timing"] = _make_timing(total_start)
             result["status"] = status
             result["error"] = error_msg
             log.warning("Attempt %d/%d: %s [%s] %s", attempt, retries, exit_url, status, error_msg)
@@ -349,7 +371,7 @@ def do_validation(exit_desc, query_domain, expected_ip, first_hop=None):
             log.error("HARD_TIMEOUT %s exceeded %ds", exiturl(fp), HARD_TIMEOUT)
             result = _make_result(exit_desc, query_domain, expected_ip,
                                   status="hard_timeout",
-                                  latency_ms=HARD_TIMEOUT * 1000,
+                                  timing=_make_timing(total_ms=HARD_TIMEOUT * 1000),
                                   error_msg=_fmt_with_hop("Hard timeout after %ds" % HARD_TIMEOUT, hop_info),
                                   attempt=MAX_RETRIES,
                                   first_hop=first_hop)
