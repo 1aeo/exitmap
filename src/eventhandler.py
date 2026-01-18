@@ -130,7 +130,8 @@ def module_call(queue, module, circ_id, socks_port,
             run_cmd_over_tor,
             destinations,
             target_host,
-            target_port
+            target_port,
+            first_hop_fpr=None
             ):
     """
     Run the module and then inform the event handler.
@@ -165,7 +166,8 @@ def module_call(queue, module, circ_id, socks_port,
             run_cmd_over_tor=run_cmd_over_tor,
             destinations=destinations,
             target_host=target_host,
-            target_port=target_port
+            target_port=target_port,
+            first_hop=first_hop_fpr
         )
         log.debug("Informing event handler that module finished.")
         queue.put((circ_id, None))
@@ -292,10 +294,12 @@ class EventHandler(object):
         if circ_event.status not in [CircStatus.BUILT]:
             return
 
+        first_hop = circ_event.path[0]
+        first_hop_fpr = first_hop[0]
         last_hop = circ_event.path[-1]
         exit_fpr = last_hop[0]
-        log.debug("Circuit for exit relay \"%s\" is built.  "
-                  "Now invoking probing module." % exit_fpr)
+        log.debug("Circuit for exit relay \"%s\" is built (first hop: %s).  "
+                  "Now invoking probing module." % (exit_fpr, first_hop_fpr))
 
         run_cmd_over_tor = command.Command(self.queue,
                                            circ_event.id,
@@ -315,7 +319,8 @@ class EventHandler(object):
             run_cmd_over_tor,
             self.exit_destinations[exit_fpr],
             self.target_host,
-            self.target_port
+            self.target_port,
+            first_hop_fpr
         ))
         proc.daemon = True
         proc.start()
