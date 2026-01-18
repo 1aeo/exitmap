@@ -79,6 +79,7 @@ DELAY_NOISE="${DELAY_NOISE:-0}"
 
 # Export settings for the Python modules (read from environment)
 [[ -n "${MAX_PENDING_CIRCUITS:-}" ]] && export MAX_PENDING_CIRCUITS
+[[ -n "${RELIABLE_FIRST_HOP:-}" ]] && export RELIABLE_FIRST_HOP
 [[ -n "${DNS_WILDCARD_DOMAIN:-}" ]] && export DNS_WILDCARD_DOMAIN
 [[ -n "${DNS_EXPECTED_IP:-}" ]] && export DNS_EXPECTED_IP
 [[ -n "${DNS_QUERY_TIMEOUT:-}" ]] && export DNS_QUERY_TIMEOUT
@@ -86,6 +87,8 @@ DELAY_NOISE="${DELAY_NOISE:-0}"
 [[ -n "${DNS_HARD_TIMEOUT:-}" ]] && export DNS_HARD_TIMEOUT
 [[ -n "${DNS_RETRY_DELAY:-}" ]] && export DNS_RETRY_DELAY
 FIRST_HOP="${FIRST_HOP:-}"
+# Export first hop for tracking in dnshealth module results
+[[ -n "${FIRST_HOP}" ]] && export EXITMAP_FIRST_HOP="$FIRST_HOP"
 ALL_EXITS="${ALL_EXITS:-true}"
 DO_ENABLED="${DO_ENABLED:-false}"
 R2_ENABLED="${R2_ENABLED:-false}"
@@ -636,6 +639,7 @@ main() {
     log "DELAY_NOISE: $DELAY_NOISE"
     log "ALL_EXITS: ${ALL_EXITS:-true}"
     log "FIRST_HOP: ${FIRST_HOP:-<random>}"
+    log "RELIABLE_FIRST_HOP: ${RELIABLE_FIRST_HOP:-false}"
     log "BOOTSTRAP_TIMEOUT: ${BOOTSTRAP_TIMEOUT}s"
     log "MAX_BOOTSTRAP_RETRIES: $MAX_BOOTSTRAP_RETRIES"
     log "PROGRESS_CHECK_INTERVAL: ${PROGRESS_CHECK_INTERVAL}s"
