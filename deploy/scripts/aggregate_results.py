@@ -79,70 +79,153 @@ def load_results(input_dir):
     return results
 
 
+def _get_instance_name(source_dir):
+    """Extract instance name from source directory path."""
+    # /path/to/analysis_2026-01-17_15-49-26_cv2 -> cv2
+    basename = os.path.basename(source_dir.rstrip('/'))
+    parts = basename.split('_')
+    return parts[-1] if parts else basename
+
+
+def _extract_instance_detail(result):
+    """Extract relevant fields from a result based on its status."""
+    status = result.get("status", "unknown")
+    detail = {"status": status}
+    
+    # Always include attempt if present
+    if result.get("attempt"):
+        detail["attempt"] = result["attempt"]
+    
+    if status == "success":
+        if result.get("latency_ms"):
+            detail["latency_ms"] = result["latency_ms"]
+        if result.get("resolved_ip"):
+            detail["resolved_ip"] = result["resolved_ip"]
+    elif status == "wrong_ip":
+        if result.get("resolved_ip"):
+            detail["resolved_ip"] = result["resolved_ip"]
+        if result.get("expected_ip"):
+            detail["expected_ip"] = result["expected_ip"]
+        if result.get("latency_ms"):
+            detail["latency_ms"] = result["latency_ms"]
+        if result.get("error"):
+            detail["error"] = result["error"]
+    else:
+        # For all error types: dns_fail, timeout, socks_error, network_error, etc.
+        if result.get("error"):
+            detail["error"] = result["error"]
+        if result.get("latency_ms"):
+            detail["latency_ms"] = result["latency_ms"]
+    
+    return detail
+
+
 def load_all_source_results(source_dirs):
-    """Load results from multiple source directories for cross-validation."""
-    all_results = {}  # fingerprint -> list of results from each source
+    """Load results from multiple source directories, tracking instance names."""
+    all_results = {}  # fingerprint -> {instance_name: result}
+    instance_names = []
     
     for source_dir in source_dirs:
+        instance_name = _get_instance_name(source_dir)
+        instance_names.append(instance_name)
+        
         for fpath in _iter_result_files(source_dir, recursive=True):
             result = _load_json_file(fpath)
             if result:
                 fp = result.get("exit_fingerprint")
                 if fp:
-                    all_results.setdefault(fp, []).append(result)
+                    all_results.setdefault(fp, {})[instance_name] = result
     
-    return all_results
+    return all_results, instance_names
 
 
 def cross_validate_results(source_dirs):
     """
-    Cross-validate results from multiple sources.
+    Cross-validate results from multiple sources with full per-instance details.
     
     For each relay, keep the BEST result (success beats timeout, etc.)
     This allows transient failures in one instance to be recovered by success in another.
+    Each relay gets a 'cv' field with per-instance breakdown.
     """
-    all_results = load_all_source_results(source_dirs)
+    all_results, instance_names = load_all_source_results(source_dirs)
     
     merged = []
     cv_stats = {
         "improved": 0,
         "instances": len(source_dirs),
+        "instance_names": instance_names,
         "recovered_from_timeout": 0,
-        "recovered_from_error": 0,
         "recovered_from_dns_fail": 0,
+        "recovered_from_error": 0,
+        "consistency": {"all_success": 0, "all_failed": 0, "mixed": 0},
+        "per_instance_stats": {name: Counter() for name in instance_names},
     }
     
-    for fp, results in all_results.items():
-        if not results:
+    for fp, instance_results in all_results.items():
+        if not instance_results:
             continue
         
-        # Sort by status priority (best first)
-        results.sort(key=lambda r: STATUS_PRIORITY.get(r.get("status", "unknown"), 99))
-        best = results[0]
+        # Build per-instance details and track stats
+        per_instance = {}
+        for inst_name, result in instance_results.items():
+            status = result.get("status", "unknown")
+            cv_stats["per_instance_stats"][inst_name][status] += 1
+            per_instance[inst_name] = _extract_instance_detail(result)
         
-        # Check if cross-validation improved the result
-        statuses = [r.get("status") for r in results]
-        if "success" in statuses and statuses.count("success") < len(statuses):
+        # Find best result (sort by status priority)
+        sorted_results = sorted(
+            instance_results.items(),
+            key=lambda x: STATUS_PRIORITY.get(x[1].get("status", "unknown"), 99)
+        )
+        best_inst, best_result = sorted_results[0]
+        
+        # Calculate consistency stats
+        statuses = [r.get("status") for r in instance_results.values()]
+        success_count = statuses.count("success")
+        
+        if success_count == len(statuses):
+            cv_stats["consistency"]["all_success"] += 1
+        elif success_count == 0:
+            cv_stats["consistency"]["all_failed"] += 1
+        else:
+            cv_stats["consistency"]["mixed"] += 1
+        
+        # Build CV details for this relay
+        cv_detail = {
+            "result_source": best_inst,
+            "instances_success": success_count,
+            "instances_total": len(instance_results),
+            "improved": success_count > 0 and success_count < len(statuses),
+            "per_instance": per_instance,
+        }
+        
+        # Track improvements and what we recovered from
+        if cv_detail["improved"]:
             cv_stats["improved"] += 1
-            best["cross_validated"] = True
-            best["cv_statuses"] = statuses
-            
-            # Track what we recovered from
+            recovered_from = []
             for s in statuses:
                 if s != "success":
-                    if s == "timeout":
+                    recovered_from.append(s)
+                    if s in ("timeout", "hard_timeout"):
                         cv_stats["recovered_from_timeout"] += 1
                     elif s == "dns_fail":
                         cv_stats["recovered_from_dns_fail"] += 1
                     else:
                         cv_stats["recovered_from_error"] += 1
+            cv_detail["recovered_from"] = recovered_from
         
-        merged.append(best)
+        # Add CV details to best result
+        best_result["cv"] = cv_detail
+        merged.append(best_result)
     
+    # Print summary
     print(f"Cross-validation: {cv_stats['improved']} relays improved")
     print(f"  - Recovered from timeout: {cv_stats['recovered_from_timeout']}")
     print(f"  - Recovered from DNS fail: {cv_stats['recovered_from_dns_fail']}")
     print(f"  - Recovered from other errors: {cv_stats['recovered_from_error']}")
+    print(f"Consistency: {cv_stats['consistency']['all_success']} all-success, "
+          f"{cv_stats['consistency']['all_failed']} all-failed, "
+          f"{cv_stats['consistency']['mixed']} mixed")
     return merged, cv_stats
 
 
@@ -256,6 +339,32 @@ def print_summary(report):
     print("  Other Error:   %5d" % m["error"])
     print("  Exception:     %5d" % m["exception"])
     print()
+    
+    # Cross-validation details
+    cv = m.get("cross_validation", {})
+    if cv.get("enabled"):
+        print("CROSS-VALIDATION (%d instances):" % cv.get("instances", 0))
+        print("  Instances: %s" % ", ".join(cv.get("instance_names", [])))
+        cons = cv.get("consistency", {})
+        print("  Consistency: %d all-success, %d all-failed, %d mixed" % (
+            cons.get("all_success", 0), cons.get("all_failed", 0), cons.get("mixed", 0)))
+        print("  Relays improved: %d" % cv.get("relays_improved", 0))
+        print("    - Recovered from timeout: %d" % cv.get("recovered_from_timeout", 0))
+        print("    - Recovered from DNS fail: %d" % cv.get("recovered_from_dns_fail", 0))
+        print("    - Recovered from other: %d" % cv.get("recovered_from_error", 0))
+        
+        # Per-instance stats
+        per_inst = cv.get("per_instance_stats", {})
+        if per_inst:
+            print("  Per-instance results:")
+            for inst_name in sorted(per_inst.keys()):
+                stats = per_inst[inst_name]
+                success = stats.get("success", 0)
+                total = sum(stats.values())
+                print("    %s: %d/%d success (%.1f%%)" % (
+                    inst_name, success, total, (success/total*100) if total else 0))
+        print()
+    
     print("LATENCY STATISTICS (successful resolutions):")
     print("  Average: %d ms | Min: %d ms | Max: %d ms" % (lat["avg_ms"], lat["min_ms"], lat["max_ms"]))
     print("  P50: %d ms | P95: %d ms | P99: %d ms" % (lat["p50_ms"], lat["p95_ms"], lat["p99_ms"]))
@@ -314,10 +423,16 @@ def main():
         report["metadata"]["cross_validation"] = {
             "enabled": True,
             "instances": cv_stats["instances"],
+            "instance_names": cv_stats.get("instance_names", []),
             "relays_improved": cv_stats["improved"],
             "recovered_from_timeout": cv_stats.get("recovered_from_timeout", 0),
             "recovered_from_dns_fail": cv_stats.get("recovered_from_dns_fail", 0),
             "recovered_from_error": cv_stats.get("recovered_from_error", 0),
+            "consistency": cv_stats.get("consistency", {}),
+            "per_instance_stats": {
+                name: dict(counts) 
+                for name, counts in cv_stats.get("per_instance_stats", {}).items()
+            },
         }
 
     with open(args.output, "w") as f:
