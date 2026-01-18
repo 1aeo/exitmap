@@ -8,9 +8,14 @@ This directory contains deployment infrastructure for automated DNS health valid
 deploy/
 ├── README.md                     # This file
 ├── config.env.example            # Configuration template
+├── wrangler.toml                 # Cloudflare Pages configuration
 ├── configs/
 │   └── cron.d/
 │       └── exitmap-dns           # System cron.d template
+├── functions/
+│   └── [[path]].js               # Cloudflare Pages function (JSON API)
+├── public/
+│   └── index.html                # Dashboard static HTML
 └── scripts/
     ├── install.sh                # Setup script (venv, dependencies)
     ├── run_dns_validation.sh     # Main runner (single/cross-validate/split)
@@ -224,3 +229,63 @@ The report includes cross-validation metadata:
 - `logs/exitmap_*.log` - Individual exitmap instance logs
 - `logs/exitmap_*_cv*.log` - Cross-validation instance logs
 - `logs/exitmap_*_split*.log` - Split mode instance logs
+
+## Cloudflare Pages Dashboard
+
+The `deploy/` directory includes a Cloudflare Pages deployment for a public dashboard.
+
+### Features
+
+- **Real-time dashboard** (`public/index.html`) - Shows scan statistics and failed relays
+- **JSON API** (`functions/[[path]].js`) - Serves results from R2 with caching
+- **Endpoints**:
+  - `/latest.json` - Most recent scan results (1 min cache)
+  - `/files.json` - Index of all available reports (1 min cache)
+  - `/dns_health_*.json` - Historical reports (1 year cache)
+  - `/api/status` - Health check
+
+### Cloudflare Pages Deployment
+
+1. **Create a Cloudflare Pages project**:
+   ```bash
+   # Via CLI
+   npx wrangler pages project create tor-dns-health
+   ```
+
+2. **Create an R2 bucket** for storing results:
+   ```bash
+   npx wrangler r2 bucket create tor-dns-health-results
+   ```
+
+3. **Deploy the dashboard**:
+   ```bash
+   cd deploy
+   npx wrangler pages deploy public --project-name tor-dns-health
+   ```
+
+4. **Bind R2 to Pages** (in Cloudflare dashboard):
+   - Go to Pages > tor-dns-health > Settings > Functions
+   - Add R2 bucket binding:
+     - Variable name: `R2_BUCKET`
+     - R2 bucket: `tor-dns-health-results`
+
+5. **Upload results to R2** after each scan:
+   ```bash
+   # Ensure R2_ENABLED=true in config.env
+   ./deploy/scripts/upload_r2.sh results/latest.json
+   ```
+
+### Local Development
+
+```bash
+cd deploy
+npx wrangler pages dev public --r2 R2_BUCKET=tor-dns-health-results
+```
+
+### Dashboard Screenshot
+
+The dashboard shows:
+- Total relays scanned
+- Success/failure counts
+- Success rate percentage
+- Table of failed relays with status and error details
