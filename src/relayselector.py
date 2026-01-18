@@ -68,18 +68,45 @@ def parse_cmd_args():
     return parser.parse_args()
 
 
-def get_fingerprints(cached_consensus_path, exclude=[]):
+def get_fingerprints(cached_consensus_path, exclude=[],
+                     include_flags=None, exclude_flags=None,
+                     min_bandwidth_kb=None, require_measured_bw=False,
+                     include_country=None):
     """
-    Get all relay fingerprints in the provided consensus.
+    Get relay fingerprints from consensus, optionally filtered.
 
-    Relay fingerprints which are present in the list `exclude' are ignored.
+    Args:
+        cached_consensus_path: Path to cached-consensus file
+        exclude: List of fingerprints to exclude
+        include_flags: Set of stem.Flag relay MUST have ALL of
+        exclude_flags: Set of stem.Flag relay must have NONE of
+        min_bandwidth_kb: Minimum consensus bandwidth in KB/s
+        require_measured_bw: If True, only include authority-measured bandwidth
+        include_country: 2-letter country code (only relays IN this country)
+
+    All new parameters default to None/False for backward compatibility.
     """
-
     fingerprints = []
 
+    # Load country relay set once if needed
+    country_relays = None
+    if include_country:
+        country_relays = frozenset(util.get_relays_in_country(include_country))
+
     for desc in stem.descriptor.parse_file(cached_consensus_path):
-        if desc.fingerprint not in exclude:
-            fingerprints.append(desc.fingerprint)
+        if desc.fingerprint in exclude:
+            continue
+        if include_flags and not include_flags.issubset(desc.flags):
+            continue
+        if exclude_flags and exclude_flags.intersection(desc.flags):
+            continue
+        if min_bandwidth_kb and desc.bandwidth < min_bandwidth_kb:
+            continue
+        if require_measured_bw and getattr(desc, 'is_unmeasured', False):
+            continue
+        if country_relays and desc.fingerprint not in country_relays:
+            continue
+        fingerprints.append(desc.fingerprint)
 
     return fingerprints
 

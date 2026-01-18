@@ -53,6 +53,9 @@ log = logging.getLogger(__name__)
 # Can be overridden via MAX_PENDING_CIRCUITS environment variable
 MAX_PENDING_CIRCUITS = int(os.environ.get("MAX_PENDING_CIRCUITS", "128"))
 
+# Use reliable guards for first-hop selection (GUARD+STABLE+FAST flags, ≥5MB/s)
+RELIABLE_FIRST_HOP = os.environ.get("RELIABLE_FIRST_HOP", "").lower() in ("1", "true", "yes", "y")
+
 
 def _validate_directory(path, name="directory", check_parent=False):
     """
@@ -515,7 +518,18 @@ def iter_exit_relays(exit_relays, controller, stats, args):
     # Pre-compute fingerprints list once if using random first hops
     if not args.first_hop:
         cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
-        fingerprints = relayselector.get_fingerprints(cached_consensus_path)
+        if RELIABLE_FIRST_HOP:
+            fingerprints = relayselector.get_fingerprints(
+                cached_consensus_path,
+                include_flags={stem.Flag.GUARD, stem.Flag.STABLE, stem.Flag.FAST,
+                              stem.Flag.RUNNING, stem.Flag.VALID},
+                exclude_flags={stem.Flag.BADEXIT},
+                min_bandwidth_kb=5000,
+                require_measured_bw=True,
+            )
+            log.info("Using %d reliable guards for first hop.", len(fingerprints))
+        else:
+            fingerprints = relayselector.get_fingerprints(cached_consensus_path)
         fingerprint_set = set(fingerprints)
     
     for i, exit_relay in enumerate(exit_relays):
