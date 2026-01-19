@@ -278,7 +278,12 @@ class EventHandler(object):
 
                 if hasattr(self.module, "teardown"):
                     log.debug("Calling module's teardown() function.")
-                    self.module.teardown()
+                    # Pass stats and controller for modules that need circuit failure data
+                    try:
+                        self.module.teardown(stats=self.stats, controller=self.controller)
+                    except TypeError:
+                        # Module doesn't accept kwargs - call without arguments
+                        self.module.teardown()
 
                 log.info(self.stats)
                 sys.exit(0)
@@ -287,17 +292,20 @@ class EventHandler(object):
         """
         Invoke a new probing module when a new circuit becomes ready.
         """
-
+        # stats.update_circs() uses the circuit registry to look up the intended path
+        # (registered in exitmap.py when we call controller.new_circuit())
         self.stats.update_circs(circ_event)
         self.check_finished()
 
         if circ_event.status not in [CircStatus.BUILT]:
             return
 
+        # Extract fingerprints from the built circuit path
         first_hop = circ_event.path[0]
         first_hop_fpr = first_hop[0]
         last_hop = circ_event.path[-1]
         exit_fpr = last_hop[0]
+        
         log.debug("Circuit for exit relay \"%s\" is built (first hop: %s).  "
                   "Now invoking probing module." % (exit_fpr, first_hop_fpr))
 
