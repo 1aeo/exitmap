@@ -548,9 +548,12 @@ def iter_exit_relays(exit_relays, controller, stats, args):
             hops = [first_hop, exit_relay]
 
         try:
-            controller.new_circuit(hops)
+            circuit_id = controller.new_circuit(hops)
+            # Register the circuit so we can track failures by circuit_id
+            stats.register_circuit(circuit_id, hops[0], hops[1])
         except stem.ControllerError as err:
-            stats.failed_circuits += 1
+            # Immediate failure - record with both fingerprints
+            stats.record_immediate_failure(hops[0], hops[1], str(err))
             log.debug("Circuit with exit relay %s could not be created: %s",
                       exit_relay, err)
 

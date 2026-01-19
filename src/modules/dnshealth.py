@@ -82,15 +82,16 @@ _SOCKS_ERROR_MAP = {
 }
 
 # Descriptive error messages per plan (https://github.com/1aeo/exitmap/blob/cursor/tor-exit-relay-dns-plan-bd42/PLAN_TOR_EXIT_DNS_VALIDATOR.md)
+# All DNS-layer errors are prefixed with "DNS Error:" to distinguish from Tor Circuit Errors
 _SOCKS_ERROR_MESSAGES = {
-    1: "SOCKS 1: General failure",
-    2: "SOCKS 2: Not allowed by ruleset",
-    3: "SOCKS 3: Network unreachable",
-    4: "SOCKS 4: Domain not found (NXDOMAIN)",
-    5: "SOCKS 5: Connection refused",
-    6: "SOCKS 6: TTL expired",
-    7: "SOCKS 7: Command not supported",
-    8: "SOCKS 8: Address type not supported",
+    1: "DNS Error: SOCKS 1 - General failure",
+    2: "DNS Error: SOCKS 2 - Not allowed by ruleset",
+    3: "DNS Error: SOCKS 3 - Network unreachable",
+    4: "DNS Error: SOCKS 4 - Domain not found (NXDOMAIN)",
+    5: "DNS Error: SOCKS 5 - Connection refused",
+    6: "DNS Error: SOCKS 6 - TTL expired",
+    7: "DNS Error: SOCKS 7 - Command not supported",
+    8: "DNS Error: SOCKS 8 - Address type not supported",
 }
 
 # Regex to extract SOCKS error code (compiled once)
@@ -98,13 +99,15 @@ _SOCKS_ERROR_RE = re.compile(r"(?:error\s*|0x0)([1-8])", re.IGNORECASE)
 
 
 def _fmt_first_hop(first_hop):
-    """Format first hop suffix for error messages. Returns 'via FP' or empty string."""
-    return "via %s" % first_hop if first_hop else ""
+    """Format first hop for error messages. Returns full 40-char fingerprint or '<random>'."""
+    if first_hop:
+        return first_hop  # Full 40-char fingerprint
+    return "<random>"
 
 
-def _fmt_with_hop(msg, first_hop_info):
-    """Append first hop info to message if present."""
-    return "%s %s" % (msg, first_hop_info) if first_hop_info else msg
+def _fmt_with_hop(msg, first_hop):
+    """Append first hop fingerprint to message. Always shows first hop (specific or random)."""
+    return "%s (first_hop=%s)" % (msg, _fmt_first_hop(first_hop))
 
 
 def _fmt_exception(err):
@@ -188,7 +191,7 @@ def _make_result(exit_desc, domain, expected_ip, status="unknown",
         "first_hop": first_hop,  # Full 40-char fingerprint of first hop relay
         "status": status,
         "resolved_ip": resolved_ip,
-        "timing": timing,  # {total_ms} - see _make_timing()
+        "timing": timing,  # {total_ms, socket_ms, dns_ms}
         "error": error_msg,
         "attempt": attempt,
     }
@@ -199,7 +202,7 @@ def _elapsed_ms(start_time):
     return int((time.time() - start_time) * 1000)
 
 
-def _make_timing(total_start=None, total_ms=None):
+def _make_timing(total_start):
     """
     Create timing dict with total elapsed time.
     
@@ -208,14 +211,13 @@ def _make_timing(total_start=None, total_ms=None):
     The total_ms includes: socket creation + Tor circuit + DNS resolution.
     
     Args:
-        total_start: Time when measurement began (calculates elapsed time)
-        total_ms: Direct total_ms value (overrides calculation, for hard timeouts)
+        total_start: Time when measurement began
     
     Returns:
-        dict with total_ms (socket_ms and dns_ms reserved for future use)
+        dict with total_ms
     """
-    if total_ms is None:
-        total_ms = _elapsed_ms(total_start) if total_start else None
+    now = time.time()
+    total_ms = int((now - total_start) * 1000) if total_start else None
     return {"total_ms": total_ms}
 
 
@@ -259,7 +261,6 @@ def generate_unique_query(fingerprint, base_domain):
 def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES, first_hop=None):
     """Resolve domain through exit relay with retry logic."""
     exit_url = exiturl(exit_desc.fingerprint)
-    hop_info = _fmt_first_hop(first_hop)
     result = _make_result(exit_desc, domain, expected_ip, first_hop=first_hop)
 
     for attempt in range(1, retries + 1):
@@ -282,7 +283,7 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
                     log.info("%s resolved to %s (correct)", exit_url, ip)
                 else:
                     result["status"] = "wrong_ip"
-                    result["error"] = "Expected %s, got %s" % (expected_ip, ip)
+                    result["error"] = "DNS Error: Expected %s, got %s" % (expected_ip, ip)
                     log.warning("%s wrong IP: %s != %s", exit_url, ip, expected_ip)
             else:
                 result["status"] = "success"
@@ -299,7 +300,7 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             if err_code == 4:
                 if expected_ip:
                     result["status"] = "dns_fail"
-                    result["error"] = "SOCKS 4: Domain not found (NXDOMAIN)"
+                    result["error"] = "DNS Error: SOCKS 4 - Domain not found (NXDOMAIN)"
                     log.warning("%s NXDOMAIN for wildcard", exit_url)
                 else:
                     result["status"] = "success"
@@ -309,30 +310,34 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
             # Other SOCKS errors - use descriptive messages with first hop
             status = _SOCKS_ERROR_MAP.get(err_code, "socks_error")
-            base_msg = _SOCKS_ERROR_MESSAGES.get(err_code, "SOCKS %s: Unknown error" % err_code)
-            error_msg = _fmt_with_hop(base_msg, hop_info)
+            base_msg = _SOCKS_ERROR_MESSAGES.get(err_code, f"DNS Error: SOCKS {err_code} - Unknown error")
+            error_msg = _fmt_with_hop(base_msg, first_hop)
 
         except socket.timeout:
             status = "timeout"
-            error_msg = _fmt_with_hop("Timeout after %ds" % QUERY_TIMEOUT, hop_info)
+            error_msg = _fmt_with_hop("DNS Error: Timeout after %ds" % QUERY_TIMEOUT, first_hop)
 
         except EOFError:
             status = "eof_error"
-            error_msg = _fmt_with_hop("Connection closed unexpectedly", hop_info)
+            error_msg = _fmt_with_hop("DNS Error: Connection closed unexpectedly", first_hop)
 
         except FileNotFoundError:
             # Tor SOCKS socket gone - process likely crashed
             status = "tor_connection_lost"
             error_msg = _fmt_with_hop(
-                "Lost connection to Tor (socket gone) while testing exit %s" % exit_desc.fingerprint[:8],
-                hop_info)
+                "DNS Error: Lost connection to Tor (socket gone) while testing exit %s" % exit_desc.fingerprint[:8],
+                first_hop)
 
         except ConnectionRefusedError:
             # Tor not accepting connections
             status = "tor_connection_refused"
             error_msg = _fmt_with_hop(
-                "Tor refused connection (may be restarting) while testing exit %s" % exit_desc.fingerprint[:8],
-                hop_info)
+                "DNS Error: Tor refused connection (may be restarting) while testing exit %s" % exit_desc.fingerprint[:8],
+                first_hop)
+
+        except HardTimeoutError:
+            # Let hard timeout propagate to do_validation handler
+            raise
 
         except Exception as err:
             status = "exception"
@@ -362,22 +367,25 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 def do_validation(exit_desc, query_domain, expected_ip, first_hop=None):
     """Perform DNS validation with hard timeout protection."""
     fp = exit_desc.fingerprint
-    hop_info = _fmt_first_hop(first_hop)
 
     with _AlarmContext(HARD_TIMEOUT):
         try:
             result = resolve_with_retry(exit_desc, query_domain, expected_ip, first_hop=first_hop)
         except HardTimeoutError:
-            log.error("HARD_TIMEOUT %s exceeded %ds", exiturl(fp), HARD_TIMEOUT)
+            log.error("HARD_TIMEOUT %s exceeded %ds (first_hop=%s)", 
+                      exiturl(fp), HARD_TIMEOUT, _fmt_first_hop(first_hop))
+            # Hard timeout - we don't know where time was spent
+            hard_timing = {"total_ms": HARD_TIMEOUT * 1000, "socket_ms": None, "dns_ms": None}
             result = _make_result(exit_desc, query_domain, expected_ip,
                                   status="hard_timeout",
-                                  timing=_make_timing(total_ms=HARD_TIMEOUT * 1000),
-                                  error_msg=_fmt_with_hop("Hard timeout after %ds" % HARD_TIMEOUT, hop_info),
+                                  timing=hard_timing,
+                                  error_msg=_fmt_with_hop("DNS Error: Hard timeout after %ds" % HARD_TIMEOUT, first_hop),
                                   attempt=MAX_RETRIES,
                                   first_hop=first_hop)
         except Exception as e:
             error_msg = _fmt_exception(e)
-            log.error("EXCEPTION %s: %s", exiturl(fp), error_msg)
+            log.error("EXCEPTION %s: %s (first_hop=%s)", 
+                      exiturl(fp), error_msg, _fmt_first_hop(first_hop))
             result = _make_result(exit_desc, query_domain, expected_ip,
                                   status="exception", error_msg=error_msg, first_hop=first_hop)
 
@@ -396,11 +404,78 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
     run_python_over_tor(do_validation, exit_desc, query_domain, expected_ip, first_hop_fpr)
 
 
-def teardown():
+def _write_circuit_failures(stats):
+    """Write circuit failure data to JSON files for aggregation."""
+    if not util.analysis_dir or not stats:
+        return 0
+    
+    # Write scan_stats.json - source of truth for circuit counts
+    scan_stats = {
+        "total_circuits": stats.total_circuits,
+        "successful_circuits": stats.successful_circuits,
+        "failed_circuits": stats.failed_circuits,
+        "run_id": _run_id,
+        "timestamp": time.time(),
+    }
+    
+    try:
+        with open(os.path.join(util.analysis_dir, "scan_stats.json"), "w") as f:
+            json.dump(scan_stats, f)
+        log.info("Scan stats: %d total, %d successful, %d failed",
+                 stats.total_circuits, stats.successful_circuits, stats.failed_circuits)
+    except Exception as e:
+        log.error("Failed to write scan stats: %s", e)
+    
+    # Write individual circuit failures if we have fingerprints
+    failed_relays = stats.get_failed_circuit_relays()
+    if not failed_relays:
+        log.debug("No circuit failure fingerprints captured")
+        return stats.failed_circuits
+    
+    # Build failure entries (skip metadata lookup for speed)
+    failures = [
+        {
+            "exit_fingerprint": fp,
+            "exit_nickname": "unknown",
+            "exit_address": "unknown",
+            "tor_metrics_url": TOR_METRICS_URL.format(fp),
+            "status": "relay_unreachable",
+            "circuit_reason": info["reason_key"],
+            "error": info["error"],
+            "tor_reason": info["tor_reason"],
+            "timestamp": info["timestamp"],
+            "query_domain": None,
+            "expected_ip": None,
+            "resolved_ip": None,
+            "timing": None,
+            "run_id": _run_id,
+            "mode": None,
+            "first_hop": info.get("first_hop"),
+            "first_hop_nickname": "unknown",
+            "first_hop_address": "unknown",
+            "attempt": None,
+        }
+        for fp, info in failed_relays.items()
+    ]
+    
+    try:
+        with open(os.path.join(util.analysis_dir, "circuit_failures.json"), "w") as f:
+            json.dump(failures, f)
+        log.info("Wrote %d circuit failures to circuit_failures.json", len(failures))
+    except Exception as e:
+        log.error("Failed to write circuit failures: %s", e)
+    
+    return stats.failed_circuits
+
+
+def teardown(stats=None, controller=None, **kwargs):
     """Called after all probes complete."""
     total = sum(_status_counts.values())
     success = _status_counts.get("success", 0)
     success_rate = (success / total * 100) if total > 0 else 0
+
+    # Write circuit failures if stats available
+    circuit_failures = _write_circuit_failures(stats) if stats else 0
 
     log.info("=" * 60)
     log.info("DNS HEALTH SCAN COMPLETE")
@@ -409,6 +484,8 @@ def teardown():
     log.info("Total: %d | Success: %d (%.2f%%) | Failed: %d",
              total, success, success_rate, total - success)
     log.info("Status breakdown: %s", dict(_status_counts))
+    if circuit_failures:
+        log.info("Circuit failures (relay_unreachable): %d", circuit_failures)
     if util.analysis_dir:
         log.info("Results: %s", util.analysis_dir)
     log.info("=" * 60)
