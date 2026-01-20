@@ -409,11 +409,18 @@ def _write_circuit_failures(stats):
     if not util.analysis_dir or not stats:
         return 0
     
+    # Count unresolved failures (circuits that failed but couldn't be mapped to a relay)
+    failed_relays = stats.get_failed_circuit_relays()
+    unresolved_failures = sum(1 for fp in failed_relays if fp.startswith("UNRESOLVED_"))
+    resolved_failures = len(failed_relays) - unresolved_failures
+    
     # Write scan_stats.json - source of truth for circuit counts
     scan_stats = {
         "total_circuits": stats.total_circuits,
         "successful_circuits": stats.successful_circuits,
         "failed_circuits": stats.failed_circuits,
+        "resolved_failures": resolved_failures,
+        "unresolved_failures": unresolved_failures,
         "run_id": _run_id,
         "timestamp": time.time(),
     }
@@ -432,9 +439,16 @@ def _write_circuit_failures(stats):
         log.debug("No circuit failure fingerprints captured")
         return stats.failed_circuits
     
-    # Build failure entries (skip metadata lookup for speed)
-    failures = [
-        {
+    # Build failure entries (skip unresolved circuits without valid fingerprints)
+    unresolved_count = 0
+    failures = []
+    for fp, info in failed_relays.items():
+        # Skip unresolved failures (placeholder fingerprints starting with UNRESOLVED_)
+        if fp.startswith("UNRESOLVED_"):
+            unresolved_count += 1
+            continue
+        
+        failures.append({
             "exit_fingerprint": fp,
             "exit_nickname": "unknown",
             "exit_address": "unknown",
@@ -454,9 +468,10 @@ def _write_circuit_failures(stats):
             "first_hop_nickname": "unknown",
             "first_hop_address": "unknown",
             "attempt": None,
-        }
-        for fp, info in failed_relays.items()
-    ]
+        })
+    
+    if unresolved_count > 0:
+        log.warning("Skipped %d unresolved circuit failures (no fingerprint)" % unresolved_count)
     
     try:
         with open(os.path.join(util.analysis_dir, "circuit_failures.json"), "w") as f:
@@ -468,26 +483,34 @@ def _write_circuit_failures(stats):
     return stats.failed_circuits
 
 
-def teardown(stats=None, controller=None, **kwargs):
+def _write_terminated_relays(relays):
+    """Write terminated relays as timeout errors."""
+    if not util.analysis_dir or not relays:
+        return 0
+    for fp in relays:
+        _write_result({
+            "exit_fingerprint": fp, "status": "timeout", "run_id": _run_id,
+            "error": "DNS Error: Timeout (terminated during retry)",
+            "timestamp": time.time(), "tor_metrics_url": TOR_METRICS_URL.format(fp),
+        }, fp)
+    return len(relays)
+
+
+def teardown(stats=None, controller=None, terminated_relays=None, **kwargs):
     """Called after all probes complete."""
-    total = sum(_status_counts.values())
-    success = _status_counts.get("success", 0)
-    success_rate = (success / total * 100) if total > 0 else 0
-
-    # Write circuit failures if stats available
     circuit_failures = _write_circuit_failures(stats) if stats else 0
-
+    terminated = _write_terminated_relays(terminated_relays)
+    if terminated:
+        _status_counts["timeout"] = _status_counts.get("timeout", 0) + terminated
+    
+    total, success = sum(_status_counts.values()), _status_counts.get("success", 0)
     log.info("=" * 60)
-    log.info("DNS HEALTH SCAN COMPLETE")
-    log.info("=" * 60)
-    log.info("Run ID: %s", _run_id)
-    log.info("Total: %d | Success: %d (%.2f%%) | Failed: %d",
-             total, success, success_rate, total - success)
-    log.info("Status breakdown: %s", dict(_status_counts))
-    if circuit_failures:
-        log.info("Circuit failures (relay_unreachable): %d", circuit_failures)
-    if util.analysis_dir:
-        log.info("Results: %s", util.analysis_dir)
+    log.info("DNS HEALTH SCAN COMPLETE | %s | %d total | %d success (%.1f%%)",
+             _run_id, total, success, (success / total * 100) if total else 0)
+    log.info("Breakdown: %s", dict(_status_counts))
+    if circuit_failures: log.info("Circuit failures: %d", circuit_failures)
+    if terminated: log.info("Terminated during retry: %d", terminated)
+    if util.analysis_dir: log.info("Results: %s", util.analysis_dir)
     log.info("=" * 60)
 
 
