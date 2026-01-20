@@ -155,8 +155,9 @@ class Statistics(object):
             self.failed_circuits += 1
             
             first_hop, exit_relay = self.resolve_circuit(cid)
+            reason_key, error_msg = get_circuit_failure_info(circ_event.reason)
+            
             if exit_relay:
-                reason_key, error_msg = get_circuit_failure_info(circ_event.reason)
                 self.failed_circuit_relays[exit_relay] = {
                     "reason_key": reason_key,
                     "error": error_msg,
@@ -169,7 +170,18 @@ class Statistics(object):
                 if len(self.failed_circuit_relays) % 50 == 0:
                     log.info("Captured %d circuit failures" % len(self.failed_circuit_relays))
             else:
-                log.debug("Circuit %s not in registry (Tor internal?)" % cid)
+                # Circuit not in registry - record as unresolved failure
+                # Use circuit ID as placeholder fingerprint to maintain count consistency
+                unresolved_key = "UNRESOLVED_%s" % cid
+                self.failed_circuit_relays[unresolved_key] = {
+                    "reason_key": reason_key,
+                    "error": error_msg,
+                    "tor_reason": str(circ_event.reason) if circ_event.reason else "UNKNOWN",
+                    "first_hop": None,
+                    "timestamp": datetime.now().timestamp(),
+                    "unresolved": True
+                }
+                log.debug("Circuit %s not in registry - recorded as unresolved failure" % cid)
             
             self.complete_circuit(cid)
 
