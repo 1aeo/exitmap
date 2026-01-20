@@ -20,6 +20,7 @@
 Handles Tor controller events.
 """
 
+import os
 import sys
 import functools
 import threading
@@ -199,6 +200,7 @@ class EventHandler(object):
         self.target_port = target_port
         self.check_finished_lock = threading.Lock()
         self.already_finished = False
+        self.pid_to_fingerprint = {}  # {pid: fingerprint} for grace period
 
         queue_thread = threading.Thread(target=self.queue_reader)
         queue_thread.daemon = False
@@ -272,13 +274,28 @@ class EventHandler(object):
             if circs_done and streams_done:
                 self.already_finished = True
 
-                for proc in multiprocessing.active_children():
-                    log.debug("Terminating remaining PID %d." % proc.pid)
-                    proc.terminate()
+                # Grace period for straggling processes (split timeout across all)
+                terminated, active = [], multiprocessing.active_children()
+                if active:
+                    per_proc = max(1, int(os.environ.get("EXITMAP_GRACE_TIMEOUT", "10")) // len(active))
+                    for proc in active:
+                        proc.join(timeout=per_proc)
+                        if proc.is_alive():
+                            if fpr := self.pid_to_fingerprint.get(proc.pid):
+                                terminated.append(fpr)
+                            proc.terminate()
+                if terminated:
+                    log.info("Terminated %d stalled relays" % len(terminated))
 
                 if hasattr(self.module, "teardown"):
-                    log.debug("Calling module's teardown() function.")
-                    self.module.teardown()
+                    try:
+                        self.module.teardown(
+                            stats=self.stats, controller=self.controller,
+                            terminated_relays=terminated
+                        )
+                    except TypeError:
+                        # Module doesn't accept kwargs - call without arguments
+                        self.module.teardown()
 
                 log.info(self.stats)
                 sys.exit(0)
@@ -287,17 +304,20 @@ class EventHandler(object):
         """
         Invoke a new probing module when a new circuit becomes ready.
         """
-
+        # stats.update_circs() uses the circuit registry to look up the intended path
+        # (registered in exitmap.py when we call controller.new_circuit())
         self.stats.update_circs(circ_event)
         self.check_finished()
 
         if circ_event.status not in [CircStatus.BUILT]:
             return
 
+        # Extract fingerprints from the built circuit path
         first_hop = circ_event.path[0]
         first_hop_fpr = first_hop[0]
         last_hop = circ_event.path[-1]
         exit_fpr = last_hop[0]
+        
         log.debug("Circuit for exit relay \"%s\" is built (first hop: %s).  "
                   "Now invoking probing module." % (exit_fpr, first_hop_fpr))
 
@@ -324,6 +344,7 @@ class EventHandler(object):
         ))
         proc.daemon = True
         proc.start()
+        self.pid_to_fingerprint[proc.pid] = exit_fpr
 
     def new_stream(self, stream_event):
         """
