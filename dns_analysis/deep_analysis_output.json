@@ -1,0 +1,1371 @@
+{
+  "summary": {
+    "total_relays": 3164,
+    "healthy": 1812,
+    "transient_prone": 11,
+    "dns_broken": 8,
+    "dns_malicious": 1,
+    "mixed": 1323,
+    "insufficient_data": 9
+  },
+  "dns_broken_relays": [
+    {
+      "fingerprint": "FBFB8D5B092DC89BFDA9180779EC692E3FA7C3D2",
+      "nickname": "obzgs5tbmn4q",
+      "total_tests": 41,
+      "success_count": 0,
+      "success_rate": 0.0,
+      "transient_count": 4,
+      "transient_rate": 9.76,
+      "dns_fail_count": 37,
+      "dns_fail_rate": 90.24,
+      "dns_wrong_ip": 0,
+      "categories": {
+        "DNS_FAIL": 37,
+        "TRANSIENT_CIRCUIT": 3,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "A1CADDF32A59FE7E53A2809558366C7C8148E633",
+      "nickname": "bronkintheusa",
+      "total_tests": 42,
+      "success_count": 4,
+      "success_rate": 9.52,
+      "transient_count": 4,
+      "transient_rate": 9.52,
+      "dns_fail_count": 34,
+      "dns_fail_rate": 80.95,
+      "dns_wrong_ip": 0,
+      "categories": {
+        "DNS_FAIL": 34,
+        "TRANSIENT_CIRCUIT": 4,
+        "SUCCESS": 4
+      }
+    },
+    {
+      "fingerprint": "A7C7C73E27420DFF9BB3BA3AE395CDEAC3171FA3",
+      "nickname": "hellotor",
+      "total_tests": 42,
+      "success_count": 0,
+      "success_rate": 0.0,
+      "transient_count": 4,
+      "transient_rate": 9.52,
+      "dns_fail_count": 38,
+      "dns_fail_rate": 90.48,
+      "dns_wrong_ip": 0,
+      "categories": {
+        "DNS_FAIL": 38,
+        "TRANSIENT_CIRCUIT": 4
+      }
+    },
+    {
+      "fingerprint": "31F26280E5FD4C757E10B5B195FBB2F60DE18EE6",
+      "nickname": "obzgs5tbmn4q",
+      "total_tests": 41,
+      "success_count": 0,
+      "success_rate": 0.0,
+      "transient_count": 10,
+      "transient_rate": 24.39,
+      "dns_fail_count": 31,
+      "dns_fail_rate": 75.61,
+      "dns_wrong_ip": 0,
+      "categories": {
+        "DNS_FAIL": 31,
+        "TRANSIENT_CIRCUIT": 10
+      }
+    },
+    {
+      "fingerprint": "59A5F150E4D670325CE55A56999FEA8FE2B3D887",
+      "nickname": "PonyLV",
+      "total_tests": 42,
+      "success_count": 0,
+      "success_rate": 0.0,
+      "transient_count": 6,
+      "transient_rate": 14.29,
+      "dns_fail_count": 36,
+      "dns_fail_rate": 85.71,
+      "dns_wrong_ip": 0,
+      "categories": {
+        "DNS_FAIL": 36,
+        "TRANSIENT_CIRCUIT": 6
+      }
+    },
+    {
+      "fingerprint": "7BDB4BF11FDDEE54F58FE200738E4C83A76A5964",
+      "nickname": "obzgs5tbmn4q",
+      "total_tests": 40,
+      "success_count": 0,
+      "success_rate": 0.0,
+      "transient_count": 10,
+      "transient_rate": 25.0,
+      "dns_fail_count": 30,
+      "dns_fail_rate": 75.0,
+      "dns_wrong_ip": 0,
+      "categories": {
+        "DNS_FAIL": 30,
+        "TRANSIENT_CIRCUIT": 10
+      }
+    },
+    {
+      "fingerprint": "959C5935AA3BBC56E174B2DC30D6ABEA0A9914D4",
+      "nickname": "TheMadHackerNodeV5",
+      "total_tests": 42,
+      "success_count": 0,
+      "success_rate": 0.0,
+      "transient_count": 7,
+      "transient_rate": 16.67,
+      "dns_fail_count": 35,
+      "dns_fail_rate": 83.33,
+      "dns_wrong_ip": 0,
+      "categories": {
+        "DNS_FAIL": 35,
+        "TRANSIENT_CIRCUIT": 7
+      }
+    },
+    {
+      "fingerprint": "BA895AEDFD1C007F8FBF1283E05D13913105E550",
+      "nickname": "Unnamed",
+      "total_tests": 42,
+      "success_count": 0,
+      "success_rate": 0.0,
+      "transient_count": 7,
+      "transient_rate": 16.67,
+      "dns_fail_count": 35,
+      "dns_fail_rate": 83.33,
+      "dns_wrong_ip": 0,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 6,
+        "DNS_FAIL": 35,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    }
+  ],
+  "dns_malicious_relays": [
+    {
+      "fingerprint": "A510D4DFA81FD3CA07391600337BF6BA5A589A5D",
+      "nickname": "ounfnegire",
+      "total_tests": 41,
+      "success_count": 0,
+      "success_rate": 0.0,
+      "transient_count": 7,
+      "transient_rate": 17.07,
+      "dns_fail_count": 3,
+      "dns_fail_rate": 7.32,
+      "dns_wrong_ip": 31,
+      "categories": {
+        "DNS_WRONG_IP": 31,
+        "DNS_FAIL": 3,
+        "TRANSIENT_CIRCUIT": 7
+      }
+    }
+  ],
+  "persistent_failures": [
+    {
+      "fingerprint": "A7C7C73E27420DFF9BB3BA3AE395CDEAC3171FA3",
+      "nickname": "hellotor",
+      "max_fail_streak": 42,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 42,
+      "categories": {
+        "DNS_FAIL": 38,
+        "TRANSIENT_CIRCUIT": 4
+      }
+    },
+    {
+      "fingerprint": "59A5F150E4D670325CE55A56999FEA8FE2B3D887",
+      "nickname": "PonyLV",
+      "max_fail_streak": 42,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 42,
+      "categories": {
+        "DNS_FAIL": 36,
+        "TRANSIENT_CIRCUIT": 6
+      }
+    },
+    {
+      "fingerprint": "959C5935AA3BBC56E174B2DC30D6ABEA0A9914D4",
+      "nickname": "TheMadHackerNodeV5",
+      "max_fail_streak": 42,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 42,
+      "categories": {
+        "DNS_FAIL": 35,
+        "TRANSIENT_CIRCUIT": 7
+      }
+    },
+    {
+      "fingerprint": "BA895AEDFD1C007F8FBF1283E05D13913105E550",
+      "nickname": "Unnamed",
+      "max_fail_streak": 42,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 42,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 6,
+        "DNS_FAIL": 35,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "A510D4DFA81FD3CA07391600337BF6BA5A589A5D",
+      "nickname": "ounfnegire",
+      "max_fail_streak": 41,
+      "streak_type": "DNS_WRONG_IP",
+      "total_tests": 41,
+      "categories": {
+        "DNS_WRONG_IP": 31,
+        "DNS_FAIL": 3,
+        "TRANSIENT_CIRCUIT": 7
+      }
+    },
+    {
+      "fingerprint": "FBFB8D5B092DC89BFDA9180779EC692E3FA7C3D2",
+      "nickname": "obzgs5tbmn4q",
+      "max_fail_streak": 41,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 41,
+      "categories": {
+        "DNS_FAIL": 37,
+        "TRANSIENT_CIRCUIT": 3,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "31F26280E5FD4C757E10B5B195FBB2F60DE18EE6",
+      "nickname": "obzgs5tbmn4q",
+      "max_fail_streak": 41,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 41,
+      "categories": {
+        "DNS_FAIL": 31,
+        "TRANSIENT_CIRCUIT": 10
+      }
+    },
+    {
+      "fingerprint": "7BDB4BF11FDDEE54F58FE200738E4C83A76A5964",
+      "nickname": "obzgs5tbmn4q",
+      "max_fail_streak": 40,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 40,
+      "categories": {
+        "DNS_FAIL": 30,
+        "TRANSIENT_CIRCUIT": 10
+      }
+    },
+    {
+      "fingerprint": "3E4066785EECA6AB58F2238D2E996B0748A04240",
+      "nickname": "WepZone",
+      "max_fail_streak": 37,
+      "streak_type": "TRANSIENT_TIMEOUT",
+      "total_tests": 37,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 27,
+        "TRANSIENT_TIMEOUT": 9,
+        "DNS_FAIL": 1
+      }
+    },
+    {
+      "fingerprint": "77299CB6688C4ACE0FEE06CDC8EC4C922978C7FF",
+      "nickname": "TorExitVIF",
+      "max_fail_streak": 32,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 39,
+      "categories": {
+        "TRANSIENT_TIMEOUT": 2,
+        "SUCCESS": 4,
+        "TRANSIENT_CIRCUIT": 8,
+        "DNS_FAIL": 25
+      }
+    },
+    {
+      "fingerprint": "A1CADDF32A59FE7E53A2809558366C7C8148E633",
+      "nickname": "bronkintheusa",
+      "max_fail_streak": 17,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 42,
+      "categories": {
+        "DNS_FAIL": 34,
+        "TRANSIENT_CIRCUIT": 4,
+        "SUCCESS": 4
+      }
+    },
+    {
+      "fingerprint": "42A05472952923D70DA57D7FA6E8504B124703A0",
+      "nickname": "unknown",
+      "max_fail_streak": 10,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 37,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 24,
+        "SUCCESS": 13
+      }
+    },
+    {
+      "fingerprint": "3A19D784D1DBDE1E7E7FF65977D5D0E03A15867A",
+      "nickname": "UnredactedAlien",
+      "max_fail_streak": 10,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 29,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 20,
+        "TRANSIENT_TIMEOUT": 1,
+        "SUCCESS": 8
+      }
+    },
+    {
+      "fingerprint": "55FFC2C4D01ACEAFE24C4089A615F91B616B865E",
+      "nickname": "Polyphemus12",
+      "max_fail_streak": 9,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 41,
+      "categories": {
+        "SUCCESS": 22,
+        "DNS_FAIL": 8,
+        "TRANSIENT_CIRCUIT": 11
+      }
+    },
+    {
+      "fingerprint": "50C94FC6730FEACAC04CF08B94A971FF7AEBD266",
+      "nickname": "bronkromanian",
+      "max_fail_streak": 9,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 40,
+      "categories": {
+        "DNS_FAIL": 22,
+        "SUCCESS": 11,
+        "TRANSIENT_CIRCUIT": 6,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "35449EB3D025CC24601FB43884F9699367D677CF",
+      "nickname": "GuruKopi",
+      "max_fail_streak": 9,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 34,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 21,
+        "TRANSIENT_TIMEOUT": 5,
+        "SUCCESS": 8
+      }
+    },
+    {
+      "fingerprint": "0B5BC76B3BE7553B229FD3E73F26AED41C31DD19",
+      "nickname": "Quetzalcoatl",
+      "max_fail_streak": 8,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 41,
+      "categories": {
+        "DNS_FAIL": 9,
+        "TRANSIENT_CIRCUIT": 9,
+        "SUCCESS": 23
+      }
+    },
+    {
+      "fingerprint": "147321EDE839D266601E65A7FAAD306749B1EEC5",
+      "nickname": "AlexGraywood",
+      "max_fail_streak": 8,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 41,
+      "categories": {
+        "SUCCESS": 30,
+        "TRANSIENT_CIRCUIT": 8,
+        "DNS_FAIL": 3
+      }
+    },
+    {
+      "fingerprint": "C7A82B462EFEF44651C799CBD30621FE0F48A3EA",
+      "nickname": "unknown",
+      "max_fail_streak": 8,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 30,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 22,
+        "SUCCESS": 8
+      }
+    },
+    {
+      "fingerprint": "114D0851404015C0265F1F4D4BA6A5E1E970E15E",
+      "nickname": "UnredactedDrake",
+      "max_fail_streak": 8,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 35,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 22,
+        "SUCCESS": 13
+      }
+    },
+    {
+      "fingerprint": "C877FABDC3739F972F2E098DE7A66B239A3EDFD4",
+      "nickname": "Quetzalcoatl",
+      "max_fail_streak": 7,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 39,
+      "categories": {
+        "DNS_FAIL": 9,
+        "SUCCESS": 20,
+        "TRANSIENT_CIRCUIT": 10
+      }
+    },
+    {
+      "fingerprint": "DA9ADB1C3B9B9B379278B59FC058FD673F57EF39",
+      "nickname": "Quetzalcoatl",
+      "max_fail_streak": 7,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 40,
+      "categories": {
+        "SUCCESS": 20,
+        "TRANSIENT_CIRCUIT": 10,
+        "DNS_FAIL": 10
+      }
+    },
+    {
+      "fingerprint": "944D41245E892EC71D068EC273D2FDC03E979FE0",
+      "nickname": "k3rn3lpanic",
+      "max_fail_streak": 7,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 37,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 13,
+        "DNS_FAIL": 5,
+        "SUCCESS": 17,
+        "TRANSIENT_TIMEOUT": 2
+      }
+    },
+    {
+      "fingerprint": "43D29158118DC17C1F5C23941D4C3BA9DB582FFC",
+      "nickname": "mentoreth5",
+      "max_fail_streak": 6,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 41,
+      "categories": {
+        "SUCCESS": 23,
+        "DNS_FAIL": 10,
+        "TRANSIENT_TIMEOUT": 1,
+        "TRANSIENT_CIRCUIT": 7
+      }
+    },
+    {
+      "fingerprint": "6055A518F03989F867DF7C435B61D5776D768B10",
+      "nickname": "unknown",
+      "max_fail_streak": 6,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 36,
+      "categories": {
+        "SUCCESS": 20,
+        "TRANSIENT_CIRCUIT": 16
+      }
+    },
+    {
+      "fingerprint": "1532A36172C70012B1057FBBFAFE2734EDBF4A3B",
+      "nickname": "tspio",
+      "max_fail_streak": 6,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 40,
+      "categories": {
+        "SUCCESS": 16,
+        "DNS_FAIL": 18,
+        "TRANSIENT_CIRCUIT": 6
+      }
+    },
+    {
+      "fingerprint": "A1E40F8567982BE122F5B4B263A998BE0133C77A",
+      "nickname": "WindyCity219",
+      "max_fail_streak": 6,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 41,
+      "categories": {
+        "SUCCESS": 28,
+        "TRANSIENT_CIRCUIT": 11,
+        "DNS_FAIL": 2
+      }
+    },
+    {
+      "fingerprint": "55B9BFAA508020108BC15A1678C34C28361FC12D",
+      "nickname": "Polyphemus15",
+      "max_fail_streak": 6,
+      "streak_type": "TRANSIENT_TIMEOUT",
+      "total_tests": 39,
+      "categories": {
+        "DNS_FAIL": 5,
+        "TRANSIENT_CIRCUIT": 14,
+        "TRANSIENT_TIMEOUT": 1,
+        "SUCCESS": 19
+      }
+    },
+    {
+      "fingerprint": "DD283C45FA6952C0E174AE52959CB2AC0B00543F",
+      "nickname": "UnredactedXMR",
+      "max_fail_streak": 6,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 36,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 18,
+        "SUCCESS": 18
+      }
+    },
+    {
+      "fingerprint": "DD68CED74414FF446E52596462CEDAEF7E66BED7",
+      "nickname": "Quetzalcoatl",
+      "max_fail_streak": 6,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 41,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 14,
+        "SUCCESS": 19,
+        "DNS_FAIL": 8
+      }
+    },
+    {
+      "fingerprint": "746FDA7D7F633FF88BF735416A42E472D630D868",
+      "nickname": "marcuse12",
+      "max_fail_streak": 6,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 40,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 6,
+        "SUCCESS": 26,
+        "DNS_FAIL": 7,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "EDB75B4ED148C676B65A2631AC35682687F90BE7",
+      "nickname": "Polyphemus6",
+      "max_fail_streak": 6,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 40,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 13,
+        "SUCCESS": 24,
+        "DNS_FAIL": 3
+      }
+    },
+    {
+      "fingerprint": "C6D882ED250CE7101CFB680249E24AEDF66F6227",
+      "nickname": "Quetzalcoatl",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 39,
+      "categories": {
+        "SUCCESS": 30,
+        "TRANSIENT_CIRCUIT": 8,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "30626238638AE65194814663A4651AFC04BC8D60",
+      "nickname": "mentoreth",
+      "max_fail_streak": 5,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 42,
+      "categories": {
+        "SUCCESS": 18,
+        "TRANSIENT_CIRCUIT": 7,
+        "DNS_FAIL": 16,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "2464456C287E71583A6EADFCF82959722B6E96FF",
+      "nickname": "atacama",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 35,
+      "categories": {
+        "SUCCESS": 29,
+        "TRANSIENT_CIRCUIT": 6
+      }
+    },
+    {
+      "fingerprint": "EFF127FA3E850B17BF9A980AFB010A172F6C6FAF",
+      "nickname": "marcuse7",
+      "max_fail_streak": 5,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 40,
+      "categories": {
+        "SUCCESS": 29,
+        "TRANSIENT_CIRCUIT": 6,
+        "DNS_FAIL": 5
+      }
+    },
+    {
+      "fingerprint": "6DAD7AF818F4E1CDA7909DF2E4018A998BE21113",
+      "nickname": "mentoreth4",
+      "max_fail_streak": 5,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 42,
+      "categories": {
+        "SUCCESS": 25,
+        "DNS_FAIL": 13,
+        "TRANSIENT_CIRCUIT": 4
+      }
+    },
+    {
+      "fingerprint": "5A7DE9083BE6228A433955A4649C9865C909676A",
+      "nickname": "Quetzalcoatl",
+      "max_fail_streak": 5,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 39,
+      "categories": {
+        "SUCCESS": 25,
+        "TRANSIENT_CIRCUIT": 12,
+        "DNS_FAIL": 2
+      }
+    },
+    {
+      "fingerprint": "1BEFC4EBB62BF063F003A403CB56E2AC73332FFE",
+      "nickname": "Tribulation",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_TIMEOUT",
+      "total_tests": 39,
+      "categories": {
+        "TRANSIENT_TIMEOUT": 12,
+        "SUCCESS": 16,
+        "TRANSIENT_CIRCUIT": 9,
+        "DNS_FAIL": 2
+      }
+    },
+    {
+      "fingerprint": "6A60198703A12D650EBB6EC751CDAEB611BBC04D",
+      "nickname": "Quetzalcoatl",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 40,
+      "categories": {
+        "DNS_FAIL": 7,
+        "SUCCESS": 23,
+        "TRANSIENT_CIRCUIT": 10
+      }
+    },
+    {
+      "fingerprint": "11C7F8EEEE7445618DD7DE562F7D1218B5DB4B2E",
+      "nickname": "marcuse11",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 41,
+      "categories": {
+        "DNS_FAIL": 9,
+        "SUCCESS": 19,
+        "TRANSIENT_CIRCUIT": 12,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "FF5D90ED89CED626358E7074132067E157EEBA41",
+      "nickname": "Polyphemus13",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 40,
+      "categories": {
+        "SUCCESS": 26,
+        "DNS_FAIL": 5,
+        "TRANSIENT_CIRCUIT": 9
+      }
+    },
+    {
+      "fingerprint": "07985DD5A8C8EEC65A38EC00143CE109B5D99534",
+      "nickname": "PrincessShroob",
+      "max_fail_streak": 5,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 41,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 12,
+        "SUCCESS": 25,
+        "DNS_FAIL": 4
+      }
+    },
+    {
+      "fingerprint": "07DCECDF04BE5D470C615C8E1CCF086F74FC8CA6",
+      "nickname": "unknown",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 38,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 8,
+        "SUCCESS": 23,
+        "DNS_FAIL": 7
+      }
+    },
+    {
+      "fingerprint": "D950DB39A40B776A6119342CD5807B63B1D8AD60",
+      "nickname": "UnredactedTLS",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 28,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 18,
+        "SUCCESS": 10
+      }
+    },
+    {
+      "fingerprint": "7644B57DD86305F3B8172FEF6CEE85864D088BA7",
+      "nickname": "Quetzalcoatl",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 41,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 19,
+        "SUCCESS": 19,
+        "DNS_FAIL": 3
+      }
+    },
+    {
+      "fingerprint": "41C106EAEB0B968C5E68927596500DC99B840367",
+      "nickname": "Polyphemus4",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 39,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 17,
+        "SUCCESS": 17,
+        "DNS_FAIL": 5
+      }
+    },
+    {
+      "fingerprint": "C8426CC21A1605A0847D25DA175FE33460FF934C",
+      "nickname": "PrincessLipid",
+      "max_fail_streak": 5,
+      "streak_type": "TRANSIENT_CIRCUIT",
+      "total_tests": 40,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 4,
+        "SUCCESS": 33,
+        "DNS_FAIL": 3
+      }
+    },
+    {
+      "fingerprint": "6212040CE7774652B4F727940E6F632E015023DD",
+      "nickname": "Quetzalcoatl",
+      "max_fail_streak": 5,
+      "streak_type": "DNS_FAIL",
+      "total_tests": 41,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 7,
+        "DNS_FAIL": 7,
+        "SUCCESS": 27
+      }
+    }
+  ],
+  "flapping_relays": [
+    {
+      "fingerprint": "7C6686190CE6E8A0A1A5B5B845BF3F14D252D0DF",
+      "nickname": "Quetzalcoatl",
+      "transitions": 25,
+      "total_tests": 40,
+      "transition_rate": 64.1,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 10,
+        "SUCCESS": 23,
+        "DNS_FAIL": 7
+      }
+    },
+    {
+      "fingerprint": "DF68B25F31AF1BAD0448575F1045BB3B4EE6E5D6",
+      "nickname": "Quetzalcoatl",
+      "transitions": 24,
+      "total_tests": 40,
+      "transition_rate": 61.54,
+      "categories": {
+        "SUCCESS": 26,
+        "TRANSIENT_CIRCUIT": 12,
+        "DNS_FAIL": 2
+      }
+    },
+    {
+      "fingerprint": "0E29222CA653CE4F94FDBF8DF16D2597D473EC74",
+      "nickname": "mentoreth2",
+      "transitions": 25,
+      "total_tests": 42,
+      "transition_rate": 60.98,
+      "categories": {
+        "DNS_FAIL": 22,
+        "SUCCESS": 16,
+        "TRANSIENT_CIRCUIT": 4
+      }
+    },
+    {
+      "fingerprint": "1BEFC4EBB62BF063F003A403CB56E2AC73332FFE",
+      "nickname": "Tribulation",
+      "transitions": 23,
+      "total_tests": 39,
+      "transition_rate": 60.53,
+      "categories": {
+        "TRANSIENT_TIMEOUT": 12,
+        "SUCCESS": 16,
+        "TRANSIENT_CIRCUIT": 9,
+        "DNS_FAIL": 2
+      }
+    },
+    {
+      "fingerprint": "5861F729B6D973B1F9FCED2E6E9B27859CBA2823",
+      "nickname": "Quetzalcoatl",
+      "transitions": 23,
+      "total_tests": 39,
+      "transition_rate": 60.53,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 11,
+        "SUCCESS": 27,
+        "DNS_FAIL": 1
+      }
+    },
+    {
+      "fingerprint": "A3093B729A57672AE0717CDF3B09E33826F36582",
+      "nickname": "mentoreth1",
+      "transitions": 24,
+      "total_tests": 41,
+      "transition_rate": 60.0,
+      "categories": {
+        "SUCCESS": 18,
+        "TRANSIENT_CIRCUIT": 5,
+        "DNS_FAIL": 17,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "6A60198703A12D650EBB6EC751CDAEB611BBC04D",
+      "nickname": "Quetzalcoatl",
+      "transitions": 23,
+      "total_tests": 40,
+      "transition_rate": 58.97,
+      "categories": {
+        "DNS_FAIL": 7,
+        "SUCCESS": 23,
+        "TRANSIENT_CIRCUIT": 10
+      }
+    },
+    {
+      "fingerprint": "F34EE673122518873E717C128E35A389B72C7837",
+      "nickname": "unknown",
+      "transitions": 18,
+      "total_tests": 32,
+      "transition_rate": 58.06,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 17,
+        "SUCCESS": 15
+      }
+    },
+    {
+      "fingerprint": "69022EDC564591DDC51FAC44CC6937434754D231",
+      "nickname": "NLTorNiceVPSnet",
+      "transitions": 23,
+      "total_tests": 41,
+      "transition_rate": 57.5,
+      "categories": {
+        "DNS_FAIL": 19,
+        "SUCCESS": 22
+      }
+    },
+    {
+      "fingerprint": "85675E1E97BA427C14D182B643F70677712B62E0",
+      "nickname": "Quetzalcoatl",
+      "transitions": 23,
+      "total_tests": 41,
+      "transition_rate": 57.5,
+      "categories": {
+        "DNS_FAIL": 10,
+        "SUCCESS": 22,
+        "TRANSIENT_CIRCUIT": 8,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "5F854F43AD18FC3E44110A9725C60894F313844F",
+      "nickname": "Quetzalcoatl",
+      "transitions": 23,
+      "total_tests": 41,
+      "transition_rate": 57.5,
+      "categories": {
+        "TRANSIENT_TIMEOUT": 2,
+        "SUCCESS": 26,
+        "TRANSIENT_CIRCUIT": 13
+      }
+    },
+    {
+      "fingerprint": "16E09CB06617A7215885B6C7C8436B1F8D07960F",
+      "nickname": "marcuse10",
+      "transitions": 23,
+      "total_tests": 41,
+      "transition_rate": 57.5,
+      "categories": {
+        "DNS_FAIL": 10,
+        "SUCCESS": 27,
+        "TRANSIENT_CIRCUIT": 4
+      }
+    },
+    {
+      "fingerprint": "A84AD66BC34D283D0F865DC16D4DB62635D1D9B3",
+      "nickname": "Quetzalcoatl",
+      "transitions": 23,
+      "total_tests": 41,
+      "transition_rate": 57.5,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 10,
+        "DNS_FAIL": 7,
+        "SUCCESS": 23,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "A771385B8EAE7683F90050674D1250C3BB7A7B4E",
+      "nickname": "CasjaysDevExit",
+      "transitions": 21,
+      "total_tests": 38,
+      "transition_rate": 56.76,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 16,
+        "SUCCESS": 17,
+        "TRANSIENT_TIMEOUT": 4,
+        "DNS_FAIL": 1
+      }
+    },
+    {
+      "fingerprint": "0F3874C18BE50B83939D09AF2F6C362D1FC6C8CD",
+      "nickname": "Polyphemus5",
+      "transitions": 22,
+      "total_tests": 40,
+      "transition_rate": 56.41,
+      "categories": {
+        "SUCCESS": 25,
+        "TRANSIENT_CIRCUIT": 14,
+        "DNS_FAIL": 1
+      }
+    },
+    {
+      "fingerprint": "728AEDB2DA037D9032F9697FFA7D9E070783A1F6",
+      "nickname": "Quetzalcoatl",
+      "transitions": 22,
+      "total_tests": 40,
+      "transition_rate": 56.41,
+      "categories": {
+        "SUCCESS": 29,
+        "TRANSIENT_CIRCUIT": 11
+      }
+    },
+    {
+      "fingerprint": "A8FCF75BE7A66F8F532B504A7C42F2DA1030C9B1",
+      "nickname": "Aramis",
+      "transitions": 22,
+      "total_tests": 40,
+      "transition_rate": 56.41,
+      "categories": {
+        "SUCCESS": 27,
+        "TRANSIENT_CIRCUIT": 13
+      }
+    },
+    {
+      "fingerprint": "30626238638AE65194814663A4651AFC04BC8D60",
+      "nickname": "mentoreth",
+      "transitions": 23,
+      "total_tests": 42,
+      "transition_rate": 56.1,
+      "categories": {
+        "SUCCESS": 18,
+        "TRANSIENT_CIRCUIT": 7,
+        "DNS_FAIL": 16,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "59F4DCD985864DFF877D5C9887C484F767CD098D",
+      "nickname": "Cassanova",
+      "transitions": 23,
+      "total_tests": 42,
+      "transition_rate": 56.1,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 7,
+        "SUCCESS": 29,
+        "DNS_FAIL": 6
+      }
+    },
+    {
+      "fingerprint": "D950DB39A40B776A6119342CD5807B63B1D8AD60",
+      "nickname": "UnredactedTLS",
+      "transitions": 15,
+      "total_tests": 28,
+      "transition_rate": 55.56,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 18,
+        "SUCCESS": 10
+      }
+    },
+    {
+      "fingerprint": "111BE5F1152016E983945F186064A3B927B2FF0E",
+      "nickname": "bl4ckc4tsec",
+      "transitions": 22,
+      "total_tests": 41,
+      "transition_rate": 55.0,
+      "categories": {
+        "SUCCESS": 23,
+        "DNS_FAIL": 10,
+        "TRANSIENT_CIRCUIT": 7,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "DD68CED74414FF446E52596462CEDAEF7E66BED7",
+      "nickname": "Quetzalcoatl",
+      "transitions": 22,
+      "total_tests": 41,
+      "transition_rate": 55.0,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 14,
+        "SUCCESS": 19,
+        "DNS_FAIL": 8
+      }
+    },
+    {
+      "fingerprint": "DD283C45FA6952C0E174AE52959CB2AC0B00543F",
+      "nickname": "UnredactedXMR",
+      "transitions": 19,
+      "total_tests": 36,
+      "transition_rate": 54.29,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 18,
+        "SUCCESS": 18
+      }
+    },
+    {
+      "fingerprint": "0CABED9159F1E4BE82879F5A34ED8D7349E931BD",
+      "nickname": "Polyphemus",
+      "transitions": 20,
+      "total_tests": 38,
+      "transition_rate": 54.05,
+      "categories": {
+        "SUCCESS": 22,
+        "DNS_FAIL": 5,
+        "TRANSIENT_CIRCUIT": 10,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "CEB20924838A7CCA912BC2E7F83B09982BFD1E9E",
+      "nickname": "Quetzalcoatl",
+      "transitions": 20,
+      "total_tests": 38,
+      "transition_rate": 54.05,
+      "categories": {
+        "SUCCESS": 25,
+        "TRANSIENT_CIRCUIT": 13
+      }
+    },
+    {
+      "fingerprint": "AA69CADA1FEA6378EDD776011C8AE7BD7AAA7159",
+      "nickname": "Quetzalcoatl",
+      "transitions": 21,
+      "total_tests": 40,
+      "transition_rate": 53.85,
+      "categories": {
+        "DNS_FAIL": 5,
+        "SUCCESS": 27,
+        "TRANSIENT_CIRCUIT": 8
+      }
+    },
+    {
+      "fingerprint": "60E0D9EC8AEA065A4C45F0E0DB12587F1B616972",
+      "nickname": "r0cket12i2",
+      "transitions": 21,
+      "total_tests": 40,
+      "transition_rate": 53.85,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 8,
+        "SUCCESS": 27,
+        "DNS_FAIL": 4,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "044428D910C037932A0763BB089769943F6BA648",
+      "nickname": "Polyphemus2",
+      "transitions": 21,
+      "total_tests": 40,
+      "transition_rate": 53.85,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 9,
+        "DNS_FAIL": 4,
+        "SUCCESS": 26,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "25EEC3EA3453BD32811895024BF02E0C8AF3C260",
+      "nickname": "Aramis",
+      "transitions": 21,
+      "total_tests": 40,
+      "transition_rate": 53.85,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 10,
+        "SUCCESS": 27,
+        "DNS_FAIL": 3
+      }
+    },
+    {
+      "fingerprint": "23899620429B1B0E726AC927EF86BEBDE10F1D0C",
+      "nickname": "mentoreth7",
+      "transitions": 22,
+      "total_tests": 42,
+      "transition_rate": 53.66,
+      "categories": {
+        "DNS_FAIL": 12,
+        "SUCCESS": 24,
+        "TRANSIENT_CIRCUIT": 6
+      }
+    },
+    {
+      "fingerprint": "AC30AC43F48F8452566571E73991E020EF3D4437",
+      "nickname": "Quetzalcoatl",
+      "transitions": 22,
+      "total_tests": 42,
+      "transition_rate": 53.66,
+      "categories": {
+        "SUCCESS": 27,
+        "TRANSIENT_CIRCUIT": 10,
+        "TRANSIENT_TIMEOUT": 3,
+        "DNS_FAIL": 2
+      }
+    },
+    {
+      "fingerprint": "A8511103790DE0ED5DEF8A81E80B837D34EAEB08",
+      "nickname": "artikel10ber108",
+      "transitions": 22,
+      "total_tests": 42,
+      "transition_rate": 53.66,
+      "categories": {
+        "SUCCESS": 30,
+        "TRANSIENT_CIRCUIT": 12
+      }
+    },
+    {
+      "fingerprint": "A6FFD101B96E86D95B4CCF1DB99D231BF7CD16CB",
+      "nickname": "UnredactedEllsberg",
+      "transitions": 19,
+      "total_tests": 37,
+      "transition_rate": 52.78,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 17,
+        "SUCCESS": 20
+      }
+    },
+    {
+      "fingerprint": "0DA24422FEDF42407EA931CA831C0C5E926A6278",
+      "nickname": "Quetzalcoatl",
+      "transitions": 20,
+      "total_tests": 39,
+      "transition_rate": 52.63,
+      "categories": {
+        "SUCCESS": 29,
+        "TRANSIENT_CIRCUIT": 9,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "916BAFF4BB3F7C04EDFD008C35808CC2DD561F86",
+      "nickname": "Quetzalcoatl",
+      "transitions": 20,
+      "total_tests": 39,
+      "transition_rate": 52.63,
+      "categories": {
+        "SUCCESS": 29,
+        "TRANSIENT_CIRCUIT": 9,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "4160790C70D345D8308864E7015FAC27EEAA7632",
+      "nickname": "nqA8EYOYZk5WieGI",
+      "transitions": 20,
+      "total_tests": 39,
+      "transition_rate": 52.63,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 13,
+        "SUCCESS": 24,
+        "TRANSIENT_TIMEOUT": 2
+      }
+    },
+    {
+      "fingerprint": "F295657BB7BB74FB8869FA8E7903461B50C98B9D",
+      "nickname": "Quetzalcoatl",
+      "transitions": 21,
+      "total_tests": 41,
+      "transition_rate": 52.5,
+      "categories": {
+        "SUCCESS": 27,
+        "DNS_FAIL": 8,
+        "TRANSIENT_CIRCUIT": 6
+      }
+    },
+    {
+      "fingerprint": "11C7F8EEEE7445618DD7DE562F7D1218B5DB4B2E",
+      "nickname": "marcuse11",
+      "transitions": 21,
+      "total_tests": 41,
+      "transition_rate": 52.5,
+      "categories": {
+        "DNS_FAIL": 9,
+        "SUCCESS": 19,
+        "TRANSIENT_CIRCUIT": 12,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "196C05BF08CC248EE563B49D36CAC89793AFBC5E",
+      "nickname": "marcuse9",
+      "transitions": 21,
+      "total_tests": 41,
+      "transition_rate": 52.5,
+      "categories": {
+        "DNS_FAIL": 9,
+        "SUCCESS": 26,
+        "TRANSIENT_CIRCUIT": 6
+      }
+    },
+    {
+      "fingerprint": "EAFE87655A056F276298CE17A0D8FABEE3B20F49",
+      "nickname": "Quetzalcoatl",
+      "transitions": 21,
+      "total_tests": 41,
+      "transition_rate": 52.5,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 12,
+        "SUCCESS": 29
+      }
+    },
+    {
+      "fingerprint": "94C18F1E0BC8E503FF88C04984E8E19AD42028F2",
+      "nickname": "Unnamed",
+      "transitions": 21,
+      "total_tests": 41,
+      "transition_rate": 52.5,
+      "categories": {
+        "TRANSIENT_CIRCUIT": 13,
+        "SUCCESS": 28
+      }
+    },
+    {
+      "fingerprint": "826C85481CCB8496EC3E67A4A477C24808D74011",
+      "nickname": "Polyphemus3",
+      "transitions": 19,
+      "total_tests": 38,
+      "transition_rate": 51.35,
+      "categories": {
+        "SUCCESS": 19,
+        "DNS_FAIL": 7,
+        "TRANSIENT_CIRCUIT": 12
+      }
+    },
+    {
+      "fingerprint": "18A9D33515E504795927782AE723C234B979BD6A",
+      "nickname": "mentoreth6",
+      "transitions": 20,
+      "total_tests": 40,
+      "transition_rate": 51.28,
+      "categories": {
+        "SUCCESS": 25,
+        "DNS_FAIL": 9,
+        "TRANSIENT_CIRCUIT": 6
+      }
+    },
+    {
+      "fingerprint": "C2125113DB6DBB22E68ECD7427F99FB81A0DC50F",
+      "nickname": "Quetzalcoatl",
+      "transitions": 20,
+      "total_tests": 40,
+      "transition_rate": 51.28,
+      "categories": {
+        "SUCCESS": 27,
+        "TRANSIENT_CIRCUIT": 13
+      }
+    },
+    {
+      "fingerprint": "143308963A905BB8CCDC6C621D5D997773BA751A",
+      "nickname": "prsv",
+      "transitions": 20,
+      "total_tests": 40,
+      "transition_rate": 51.28,
+      "categories": {
+        "SUCCESS": 26,
+        "DNS_FAIL": 5,
+        "TRANSIENT_CIRCUIT": 8,
+        "TRANSIENT_TIMEOUT": 1
+      }
+    },
+    {
+      "fingerprint": "982F261EC5D2D7DB89D7D0320009E02E752DFE69",
+      "nickname": "Quetzalcoatl",
+      "transitions": 20,
+      "total_tests": 40,
+      "transition_rate": 51.28,
+      "categories": {
+        "SUCCESS": 28,
+        "TRANSIENT_CIRCUIT": 12
+      }
+    },
+    {
+      "fingerprint": "546629936518214DCFCF784E875D0EBE52E0552D",
+      "nickname": "Quetzalcoatl",
+      "transitions": 20,
+      "total_tests": 40,
+      "transition_rate": 51.28,
+      "categories": {
+        "SUCCESS": 29,
+        "TRANSIENT_CIRCUIT": 9,
+        "DNS_FAIL": 2
+      }
+    },
+    {
+      "fingerprint": "4D4B2695D6D02DFDCDE390ED5DF4A6798924CBBB",
+      "nickname": "Polyphemus8",
+      "transitions": 20,
+      "total_tests": 40,
+      "transition_rate": 51.28,
+      "categories": {
+        "SUCCESS": 23,
+        "TRANSIENT_CIRCUIT": 10,
+        "DNS_FAIL": 7
+      }
+    },
+    {
+      "fingerprint": "9C788AA15E187873417CDBC1A4A369C307CE8AF3",
+      "nickname": "Aramis",
+      "transitions": 20,
+      "total_tests": 40,
+      "transition_rate": 51.28,
+      "categories": {
+        "SUCCESS": 26,
+        "DNS_FAIL": 4,
+        "TRANSIENT_CIRCUIT": 10
+      }
+    },
+    {
+      "fingerprint": "BA2AB4075B2D1F431DE74B2C22D23D430E1B2688",
+      "nickname": "HiMom",
+      "transitions": 20,
+      "total_tests": 40,
+      "transition_rate": 51.28,
+      "categories": {
+        "SUCCESS": 29,
+        "TRANSIENT_CIRCUIT": 10,
+        "DNS_FAIL": 1
+      }
+    }
+  ],
+  "recovery_streak_distribution": {
+    "2": 2093,
+    "3": 357,
+    "4": 78,
+    "6": 10,
+    "8": 4,
+    "5": 21,
+    "17": 1,
+    "9": 3,
+    "7": 3,
+    "10": 2
+  },
+  "failure_breakdown": {
+    "total": 19674,
+    "transient": 18229,
+    "transient_pct": 92.66,
+    "dns": 1445,
+    "dns_pct": 7.34
+  }
+}
