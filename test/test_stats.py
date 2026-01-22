@@ -41,6 +41,7 @@ class TestStats(unittest.TestCase):
         self.assertTrue(str(self.stats))
 
         circ_event = stem.response.events.CircuitEvent("foo", "bar")
+        circ_event.id = "123"
         circ_event.status = CircStatus.FAILED
         circ_event.reason = "foo"
 

@@ -49,6 +49,49 @@ from stats import Statistics
 
 log = logging.getLogger(__name__)
 
+# Tor configuration for parallel circuit building (optimal from experiments)
+# Can be overridden via MAX_PENDING_CIRCUITS environment variable
+MAX_PENDING_CIRCUITS = int(os.environ.get("MAX_PENDING_CIRCUITS", "128"))
+
+
+def _validate_directory(path, name="directory", check_parent=False):
+    """
+    Validate that a directory is secure: owned by current user, mode 700, not a symlink.
+    
+    For parent directories (check_parent=True), we're more lenient since /tmp is 
+    typically world-writable with sticky bit (1777).
+    
+    Returns True if valid, False otherwise.
+    """
+    if not os.path.exists(path):
+        return True  # Non-existent is OK (will be created)
+    
+    try:
+        stat_info = os.stat(path)
+        
+        # For parent directories like /tmp, only check it's not a symlink
+        if check_parent:
+            if os.path.islink(path):
+                log.critical("%s %s is a symlink.", name, path)
+                return False
+            return True
+        
+        # For the actual tor directory, strict checks
+        if stat_info.st_uid != os.getuid():
+            log.critical("%s %s is not owned by current user.", name, path)
+            return False
+        if oct(stat_info.st_mode)[-3:] != "700":
+            log.critical("%s %s does not have mode 700.", name, path)
+            return False
+        if os.path.islink(path):
+            log.critical("%s %s is a symlink.", name, path)
+            return False
+    except OSError as err:
+        log.critical("Cannot stat %s %s: %s", name, path, err)
+        return False
+    
+    return True
+
 
 def bootstrap_tor(args):
     """
@@ -73,7 +116,7 @@ def bootstrap_tor(args):
                 "DataDirectory": args.tor_dir,
                 "CookieAuthentication": "1",
                 "LearnCircuitBuildTimeout": "0",
-                "CircuitBuildTimeout": "40",
+                "CircuitBuildTimeout": "20",
                 # #36: Set this option at runtime, otherwise it doesn't
                 # bootstrap with an existing DataDirectory
                 # "__DisablePredictedCircuits": "1",
@@ -82,7 +125,7 @@ def bootstrap_tor(args):
                 "UseMicroDescriptors": "0",
                 "PathsNeededToBuildCircuits": "0.95",
             },
-            timeout=300,
+            timeout=90,  # 90s bootstrap timeout (was 300s)
             take_ownership=True,
             completion_percent=75,
             init_msg_handler=partial_parse_log_lines,
@@ -148,9 +191,9 @@ def parse_cmd_args():
                        help="File containing the 20-byte fingerprints "
                             "of exit relays to probe, one per line.")
 
-    parser.add_argument("-d", "--build-delay", type=float, default=3,
+    parser.add_argument("-d", "--build-delay", type=float, default=0,
                         help="Wait for the given delay (in seconds) between "
-                             "circuit builds.  The default is 3.")
+                             "circuit builds.  The default is 0.")
 
     parser.add_argument("-n", "--delay-noise", type=float, default=0,
                         help="Sample random value in [0, DELAY_NOISE) and "
@@ -240,36 +283,17 @@ def main():
     # Create and set the given directories.
 
     if args.tor_dir:
-        # Set umask so that parents directories are also created with
-        # permissions only for the user, though they are unchanged if they
-        # already exists.
+        # Set umask so that parent directories are also created with
+        # permissions only for the user.
         os.umask(0o077)
-        # First, create the directory(ies) if they don't exists
         os.makedirs(args.tor_dir, mode=0o700, exist_ok=True)
-        # Then check that both the parent and the dir are owned only by the
-        # user and aren't symlinks.
+        
+        # Validate both parent and target directory security
         parent = os.path.dirname(os.path.realpath(args.tor_dir))
-        if (
-            not os.stat(parent).st_uid == os.getuid() or
-            not oct(os.stat(parent).st_mode)[-3:] == "700" or
-            os.path.islink(parent)
-        ):
-            log.critical(
-                "Directory %s is not owned by the user or hasn't mask 700 "
-                "or it's a symlink.", parent
-            )
+        if not _validate_directory(parent, "Parent directory", check_parent=True):
             return 1
-        if os.path.exists(args.tor_dir):
-            if (
-                not os.stat(args.tor_dir).st_uid == os.getuid() or
-                not oct(os.stat(args.tor_dir).st_mode)[-3:] == "700" or
-                os.path.islink(args.tor_dir)
-            ):
-                log.critical(
-                    "Directory %s is not owned by the user or hasn't mask 700 "
-                    "or it's a symlink.", args.tor_dir
-                )
-                return 1
+        if not _validate_directory(args.tor_dir, "Tor data directory"):
+            return 1
 
     logging.getLogger("stem").setLevel(logging.__dict__[args.verbosity.upper()])
     log_format = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
@@ -286,6 +310,10 @@ def main():
     # #36: Set this option at runtime, otherwise it doesn't bootstrap with
     # an existing DataDirectory
     controller.set_conf("__DisablePredictedCircuits", "1")
+
+    # Increase max pending circuits for parallel scanning (default is 32)
+    controller.set_conf("MaxClientCircuitsPending", str(MAX_PENDING_CIRCUITS))
+    log.debug("Set MaxClientCircuitsPending to %d", MAX_PENDING_CIRCUITS)
 
     # Redirect Tor's logging to work around the following problem:
     # https://bugs.torproject.org/9862
@@ -480,43 +508,44 @@ def iter_exit_relays(exit_relays, controller, stats, args):
     """
     Invoke circuits for all selected exit relays.
     """
-
     before = datetime.datetime.now()
-    cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
-    fingerprints = relayselector.get_fingerprints(cached_consensus_path)
     count = len(exit_relays)
-
-    # Start building a circuit for every exit relay we got.
-
+    use_delay = args.build_delay > 0 or args.delay_noise > 0
+    
+    # Pre-compute fingerprints list once if using random first hops
+    if not args.first_hop:
+        cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
+        fingerprints = relayselector.get_fingerprints(cached_consensus_path)
+        fingerprint_set = set(fingerprints)
+    
     for i, exit_relay in enumerate(exit_relays):
-
-        # Determine the hops in our next circuit.
-
+        # Determine the hops in our circuit
         if args.first_hop:
             hops = [args.first_hop, exit_relay]
         else:
-            all_hops = list(fingerprints)
-
-            try:
-                all_hops.remove(exit_relay)
-            except ValueError:
-                # Catch exception when exit is not in the cached_consensus
-                pass
-            first_hop = random.choice(all_hops)
-            log.debug("Using random first hop %s for circuit." % first_hop)
+            # Efficient random selection avoiding exit relay
+            # Use rejection sampling: pick random, retry if it matches exit
+            # This is O(1) expected time since collision is rare (~1/n)
+            while True:
+                first_hop = random.choice(fingerprints)
+                if first_hop != exit_relay:
+                    break
+            log.debug("Using random first hop %s for circuit.", first_hop)
             hops = [first_hop, exit_relay]
 
-        assert len(hops) > 1
-
         try:
-            controller.new_circuit(hops)
+            circuit_id = controller.new_circuit(hops)
+            # Register the circuit so we can track failures by circuit_id
+            stats.register_circuit(circuit_id, hops[0], hops[1])
         except stem.ControllerError as err:
-            stats.failed_circuits += 1
-            log.debug("Circuit with exit relay \"%s\" could not be "
-                      "created: %s" % (exit_relay, err))
+            # Immediate failure - record with both fingerprints
+            stats.record_immediate_failure(hops[0], hops[1], str(err))
+            log.debug("Circuit with exit relay %s could not be created: %s",
+                      exit_relay, err)
 
-        if i != (count - 1):
+        # Only sleep if delay is configured and not the last relay
+        if use_delay and i < count - 1:
             sleep(args.build_delay, args.delay_noise)
 
-    log.info("Done triggering circuit creations after %s." %
-             str(datetime.datetime.now() - before))
+    log.info("Done triggering circuit creations after %s.",
+             datetime.datetime.now() - before)

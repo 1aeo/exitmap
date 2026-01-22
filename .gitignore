@@ -1,4 +1,21 @@
 *.pyc
 .coverage
 venv/
+.venv/
 __pycache__
+src/exitmap.egg-info/
+
+# Runtime data (may contain local paths/hostnames)
+logs/
+results/
+benchmark_results/
+
+# Config with secrets
+deploy/config.env
+config.env
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
