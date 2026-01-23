@@ -65,7 +65,7 @@ def create_histogram_data(relay_stats):
     """Create histogram buckets for failure counts."""
     failure_counts = [stats['failures'] for stats in relay_stats.values()]
     
-    # Create buckets
+    # Create buckets - breaking out 6-10 individually
     buckets = [
         (0, 0, "0 (no failures)"),
         (1, 1, "1"),
@@ -73,7 +73,11 @@ def create_histogram_data(relay_stats):
         (3, 3, "3"),
         (4, 4, "4"),
         (5, 5, "5"),
-        (6, 10, "6-10"),
+        (6, 6, "6"),
+        (7, 7, "7"),
+        (8, 8, "8"),
+        (9, 9, "9"),
+        (10, 10, "10"),
         (11, 15, "11-15"),
         (16, 20, "16-20"),
         (21, 25, "21-25"),

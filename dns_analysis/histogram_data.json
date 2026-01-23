@@ -37,10 +37,34 @@
       "count": 472
     },
     {
-      "range": "6-10",
+      "range": "6",
       "min": 6,
+      "max": 6,
+      "count": 455
+    },
+    {
+      "range": "7",
+      "min": 7,
+      "max": 7,
+      "count": 374
+    },
+    {
+      "range": "8",
+      "min": 8,
+      "max": 8,
+      "count": 244
+    },
+    {
+      "range": "9",
+      "min": 9,
+      "max": 9,
+      "count": 193
+    },
+    {
+      "range": "10",
+      "min": 10,
       "max": 10,
-      "count": 1378
+      "count": 112
     },
     {
       "range": "11-15",
