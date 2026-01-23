@@ -30,6 +30,7 @@ Usage:
     exitmap dnshealth                          # Wildcard mode (default)
     exitmap dnshealth -H example.com           # NXDOMAIN mode (fallback)
 """
+import glob
 import json
 import logging
 import os
@@ -222,11 +223,13 @@ def _make_timing(total_start):
 
 
 def _write_result(result, fingerprint):
-    """Write result to JSON file."""
+    """Write partial result to JSON file with unique suffix."""
     if not util.analysis_dir:
         return
     try:
-        path = os.path.join(util.analysis_dir, "dnshealth_%s.json" % fingerprint)
+        # Use a unique suffix (UUID) to avoid race conditions with parallel circuits
+        suffix = uuid.uuid4().hex
+        path = os.path.join(util.analysis_dir, "dnshealth_partial_%s_%s.json" % (fingerprint, suffix))
         with open(path, "w") as f:
             json.dump(result, f)  # No indent for speed
     except Exception as e:
@@ -497,11 +500,80 @@ def _write_terminated_relays(relays):
 
 
 def teardown(stats=None, controller=None, terminated_relays=None, **kwargs):
-    """Called after all probes complete."""
+    """Called after all probes complete. Aggregates partial results."""
+    
     circuit_failures = _write_circuit_failures(stats) if stats else 0
     terminated = _write_terminated_relays(terminated_relays)
     if terminated:
         _status_counts["timeout"] = _status_counts.get("timeout", 0) + terminated
+
+    # Aggregate partial results (including those from terminated relays)
+    if util.analysis_dir:
+        log.info("Aggregating partial results...")
+        pattern = os.path.join(util.analysis_dir, "dnshealth_partial_*.json")
+        partials = glob.glob(pattern)
+        
+        # Group by fingerprint
+        relay_results = {} # fp -> list of results
+        for p in partials:
+            try:
+                with open(p, 'r') as f:
+                    data = json.load(f)
+                    fp = data.get("exit_fingerprint")
+                    if fp:
+                        if fp not in relay_results:
+                            relay_results[fp] = []
+                        relay_results[fp].append(data)
+            except Exception as e:
+                log.warning("Failed to read partial result %s: %s", p, e)
+        
+        # Process each relay
+        for fp, results in relay_results.items():
+            final_result = None
+            
+            # Check for any success
+            successes = [r for r in results if r["status"] == "success"]
+            if successes:
+                # If any succeeded, the relay is good. Use the first success.
+                final_result = successes[0]
+                # Update attempt count to show it succeeded eventually
+                final_result["attempts_across_circuits"] = len(results)
+                final_result["successful_circuits"] = len(successes)
+            else:
+                # All failed. Pick the most significant error.
+                # Priority: wrong_ip > dns_fail > timeout > relay_unreachable
+                # Actually, we want to show the error that is NOT network noise if possible.
+                
+                # Sort by severity (custom sort key)
+                def error_severity(res):
+                    s = res.get("status", "")
+                    if s == "wrong_ip": return 4
+                    if s == "dns_fail": return 3 # NXDOMAIN
+                    if s == "timeout": return 2
+                    return 1 # relay_unreachable, circuit error, etc.
+                
+                results.sort(key=error_severity, reverse=True)
+                final_result = results[0]
+                final_result["attempts_across_circuits"] = len(results)
+                final_result["successful_circuits"] = 0
+            
+            # Write final consolidated result
+            try:
+                path = os.path.join(util.analysis_dir, "dnshealth_%s.json" % fp)
+                with open(path, "w") as f:
+                    json.dump(final_result, f)
+            except Exception as e:
+                log.error("Failed to write final result for %s: %s", fp, e)
+        
+        # Cleanup partials
+        for p in partials:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        
+        log.info("Aggregated %d partial results into %d final relay reports", 
+                 len(partials), len(relay_results))
     
     total, success = sum(_status_counts.values()), _status_counts.get("success", 0)
     log.info("=" * 60)

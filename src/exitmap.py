@@ -253,6 +253,11 @@ def parse_cmd_args():
     parser.add_argument("-p", "--port", type=int, default=None,
                         help="A port to be targeted by the chosen module.")
 
+    parser.add_argument("-R", "--redundancy", type=int, default=1,
+                        help="Number of concurrent circuits to build per relay "
+                             "to reduce false positives from network volatility. "
+                             "Default is 1.")
+
     parser.add_argument("-V", "--version", action="version",
                         version="%(prog)s 2020.11.23")
 
@@ -460,7 +465,7 @@ def run_module(module_name, args, controller, socks_port, stats):
 
     log.debug("Running actually the module.")
     count = len(exit_relays)
-    stats.total_circuits += count
+    stats.total_circuits += count * args.redundancy
 
     if count < 1:
         raise error.ExitSelectionError("Exit selection yielded %d exits "
@@ -533,29 +538,30 @@ def iter_exit_relays(exit_relays, controller, stats, args):
         fingerprint_set = set(fingerprints)
     
     for i, exit_relay in enumerate(exit_relays):
-        # Determine the hops in our circuit
-        if args.first_hop:
-            hops = [args.first_hop, exit_relay]
-        else:
-            # Efficient random selection avoiding exit relay
-            # Use rejection sampling: pick random, retry if it matches exit
-            # This is O(1) expected time since collision is rare (~1/n)
-            while True:
-                first_hop = random.choice(fingerprints)
-                if first_hop != exit_relay:
-                    break
-            log.debug("Using random first hop %s for circuit.", first_hop)
-            hops = [first_hop, exit_relay]
+        for _ in range(args.redundancy):
+            # Determine the hops in our circuit
+            if args.first_hop:
+                hops = [args.first_hop, exit_relay]
+            else:
+                # Efficient random selection avoiding exit relay
+                # Use rejection sampling: pick random, retry if it matches exit
+                # This is O(1) expected time since collision is rare (~1/n)
+                while True:
+                    first_hop = random.choice(fingerprints)
+                    if first_hop != exit_relay:
+                        break
+                log.debug("Using random first hop %s for circuit.", first_hop)
+                hops = [first_hop, exit_relay]
 
-        try:
-            circuit_id = controller.new_circuit(hops)
-            # Register the circuit so we can track failures by circuit_id
-            stats.register_circuit(circuit_id, hops[0], hops[1])
-        except stem.ControllerError as err:
-            # Immediate failure - record with both fingerprints
-            stats.record_immediate_failure(hops[0], hops[1], str(err))
-            log.debug("Circuit with exit relay %s could not be created: %s",
-                      exit_relay, err)
+            try:
+                circuit_id = controller.new_circuit(hops)
+                # Register the circuit so we can track failures by circuit_id
+                stats.register_circuit(circuit_id, hops[0], hops[1])
+            except stem.ControllerError as err:
+                # Immediate failure - record with both fingerprints
+                stats.record_immediate_failure(hops[0], hops[1], str(err))
+                log.debug("Circuit with exit relay %s could not be created: %s",
+                          exit_relay, err)
 
         # Only sleep if delay is configured and not the last relay
         if use_delay and i < count - 1:
