@@ -21,7 +21,6 @@ Handles Tor controller events.
 """
 
 import os
-import sys
 import functools
 import threading
 import multiprocessing
@@ -196,19 +195,21 @@ class EventHandler(object):
         self.controller = controller
         self.attacher = Attacher(controller)
         self.module = module
-        self.manager = multiprocessing.Manager()
-        self.queue = self.manager.Queue()
+        # Use plain Queue instead of Manager().Queue() to avoid spawning
+        # a Manager subprocess that must be explicitly shut down.
+        self.queue = multiprocessing.Queue()
         self.socks_port = socks_port
         self.exit_destinations = exit_destinations
         self.target_host = target_host
         self.target_port = target_port
         self.check_finished_lock = threading.Lock()
         self.already_finished = False
+        self.finished_event = threading.Event()
         self.pid_to_fingerprint = {}  # {pid: fingerprint} for grace period
 
-        queue_thread = threading.Thread(target=self.queue_reader)
-        queue_thread.daemon = False
-        queue_thread.start()
+        self.queue_thread = threading.Thread(target=self.queue_reader)
+        self.queue_thread.daemon = False
+        self.queue_thread.start()
 
     def queue_reader(self):
         """
@@ -222,8 +223,13 @@ class EventHandler(object):
 
         while True:
             try:
-                circ_id, sockname = self.queue.get()
-            except EOFError:
+                item = self.queue.get()
+                # Sentinel value (None, None) signals shutdown
+                if item is None or item == (None, None):
+                    log.debug("IPC queue received shutdown signal.")
+                    break
+                circ_id, sockname = item
+            except (EOFError, OSError):
                 log.debug("IPC queue terminated.")
                 break
 
@@ -246,10 +252,12 @@ class EventHandler(object):
                 port = int(sockname[1])
                 self.attacher.prepare(port, circuit_id=circ_id)
                 self.check_finished()
+        
+        self._close_queue()
 
     def check_finished(self):
         """
-        Check if the scan is finished and if it is, shut down exitmap.
+        Check if the scan is finished and if it is, signal completion.
         """
 
         # This is called from both the queue reader thread and the
@@ -257,7 +265,7 @@ class EventHandler(object):
         # must only happen once.
         with self.check_finished_lock:
             if self.already_finished:
-                sys.exit(0)
+                return
 
             # Did all circuits either build or fail?
             circs_done = ((self.stats.failed_circuits +
@@ -277,32 +285,69 @@ class EventHandler(object):
 
             if circs_done and streams_done:
                 self.already_finished = True
+                self.finished_event.set()
 
-                # Grace period for straggling processes (split timeout across all)
-                terminated, active = [], multiprocessing.active_children()
-                if active:
-                    per_proc = max(1, int(os.environ.get("EXITMAP_GRACE_TIMEOUT", "10")) // len(active))
-                    for proc in active:
-                        proc.join(timeout=per_proc)
-                        if proc.is_alive():
-                            if fpr := self.pid_to_fingerprint.get(proc.pid):
-                                terminated.append(fpr)
-                            proc.terminate()
-                if terminated:
-                    log.info("Terminated %d stalled relays" % len(terminated))
+    def wait(self):
+        """
+        Wait for the scan to finish.
+        """
+        self.finished_event.wait()
 
-                if hasattr(self.module, "teardown"):
-                    try:
-                        self.module.teardown(
-                            stats=self.stats, controller=self.controller,
-                            terminated_relays=terminated
-                        )
-                    except TypeError:
-                        # Module doesn't accept kwargs - call without arguments
-                        self.module.teardown()
+    def shutdown(self):
+        """
+        Clean up resources and shut down.
+        """
+        # Grace period for straggling processes (split timeout across all)
+        terminated, active = [], multiprocessing.active_children()
+        if active:
+            per_proc = max(1, int(os.environ.get("EXITMAP_GRACE_TIMEOUT", "10")) // len(active))
+            for proc in active:
+                proc.join(timeout=per_proc)
+                if proc.is_alive():
+                    if fpr := self.pid_to_fingerprint.get(proc.pid):
+                        terminated.append(fpr)
+                    proc.terminate()
+        if terminated:
+            log.info("Terminated %d stalled relays" % len(terminated))
 
-                log.info(self.stats)
-                sys.exit(0)
+        if hasattr(self.module, "teardown"):
+            try:
+                self.module.teardown(
+                    stats=self.stats, controller=self.controller,
+                    terminated_relays=terminated
+                )
+            except TypeError:
+                # Module doesn't accept kwargs - call without arguments
+                self.module.teardown()
+
+        log.info(self.stats)
+        
+        # Signal queue reader to stop
+        try:
+            self.queue.put(None)
+        except Exception:
+            pass
+            
+        self.queue_thread.join()
+        
+        # Remove event listener
+        try:
+            self.controller.remove_event_listener(self.new_event)
+        except Exception:
+            pass
+
+    def _close_queue(self):
+        """
+        Close the multiprocessing queue to release resources.
+        """
+        try:
+            self.queue.close()
+        except Exception:
+            pass
+        try:
+            self.queue.join_thread()
+        except Exception:
+            pass
 
     def new_circuit(self, circ_event):
         """

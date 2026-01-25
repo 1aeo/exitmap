@@ -336,16 +336,22 @@ def main():
                      " offline?" % args.first_hop)
         return 1
 
-    for module_name in args.module:
+    try:
+        for module_name in args.module:
 
-        if args.analysis_dir is not None:
-            datestr = time.strftime("%Y-%m-%d_%H:%M:%S%z") + "_" + module_name
-            util.analysis_dir = os.path.join(args.analysis_dir, datestr)
+            if args.analysis_dir is not None:
+                datestr = time.strftime("%Y-%m-%d_%H:%M:%S%z") + "_" + module_name
+                util.analysis_dir = os.path.join(args.analysis_dir, datestr)
 
+            try:
+                run_module(module_name, args, controller, socks_port, stats)
+            except error.ExitSelectionError as err:
+                log.error("Failed to run because : %s" % err)
+    finally:
         try:
-            run_module(module_name, args, controller, socks_port, stats)
-        except error.ExitSelectionError as err:
-            log.error("Failed to run because : %s" % err)
+            controller.close()
+        except Exception as err:
+            log.debug("Failed to close controller: %s", err)
     return 0
 
 
@@ -480,7 +486,12 @@ def run_module(module_name, args, controller, socks_port, stats):
 
     log.info("Beginning to trigger %d circuit creation(s)." % count)
 
-    iter_exit_relays(exit_relays, controller, stats, args)
+    try:
+        iter_exit_relays(exit_relays, controller, stats, args)
+        handler.check_finished()
+        handler.wait()
+    finally:
+        handler.shutdown()
 
 
 def sleep(delay, delay_noise):
