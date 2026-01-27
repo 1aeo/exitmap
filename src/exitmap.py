@@ -270,9 +270,15 @@ def main():
                     "or it's a symlink.", args.tor_dir
                 )
                 return 1
-
-    logging.getLogger("stem").setLevel(logging.__dict__[args.verbosity.upper()])
-    log_format = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
+    level = logging.__dict__[args.verbosity.upper()]
+    logging.getLogger("stem").setLevel(level)
+    if level == "DEBUG":
+        log_format = (
+            "%(asctime)s [%(levelname)s] (%(threadName)s) ",
+            "%(filename)s:%(lineno)s - %(funcName)s - %(message)s"
+        )
+    else:
+        log_format = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
     logging.basicConfig(format=log_format,
                         level=logging.__dict__[args.verbosity.upper()],
                         filename=args.logfile)

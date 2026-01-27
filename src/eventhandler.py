@@ -26,7 +26,6 @@ import threading
 import multiprocessing
 import logging
 import socket
-
 import stem
 from stem import StreamStatus
 from stem import CircStatus
@@ -119,10 +118,19 @@ class Attacher(object):
         log.debug("Attempting to attach stream %s to circuit %s." %
                   (stream_id, circuit_id))
 
+        if not self.controller.is_alive():
+            log.error("Terminating because the controller is not alive.")
+            return
         try:
             self.controller.attach_stream(stream_id, circuit_id)
-        except stem.OperationFailed as err:
+        # All possible errors by `attach_stream`:
+        except (
+            stem.InvalidRequest, stem.UnsatisfiableRequest,
+            stem.OperationFailed
+        ) as err:
             log.warning("Failed to attach stream because: %s" % err)
+        except Exception as err:
+            log.warning("Failed to attach stream because: %s", err)
 
 
 def module_call(queue, module, circ_id, socks_port,
@@ -153,9 +161,11 @@ def module_call(queue, module, circ_id, socks_port,
                 with torsocks.MonkeyPatchedSocket(queue, circ_id, socks_port):
                     func(*args)
             except (error.SOCKSv5Error, socket.error) as err:
-                log.info(err)
+                log.error("Error in `module_call` closure: %s", err)
                 return
-
+            except Exception as err:
+                log.error("Error in `module_call` closure: %s", err)
+                return
         return closure
 
     try:
@@ -167,10 +177,13 @@ def module_call(queue, module, circ_id, socks_port,
             target_host=target_host,
             target_port=target_port
         )
+    except KeyboardInterrupt:
+        log.debug("Ignoring `KeyboardInterrupt`")
+    except Exception as exc:
+        log.error("Exception %s", exc)
+    else:
         log.debug("Informing event handler that module finished.")
         queue.put((circ_id, None))
-    except KeyboardInterrupt:
-        pass
 
 
 class EventHandler(object):
@@ -213,8 +226,14 @@ class EventHandler(object):
         log.debug("Starting thread to read from IPC queue.")
 
         while True:
+            if not self.controller.is_alive():
+                log.error("Terminating because the controller is not alive.")
+                self.stats.print_progress()
+                self.check_finished()
+                break
+
             try:
-                circ_id, sockname = self.queue.get()
+                circ_id, sockname = self.queue.get(timeout=5)
             except EOFError:
                 log.debug("IPC queue terminated.")
                 break
@@ -225,10 +244,22 @@ class EventHandler(object):
 
             if sockname is None:
                 log.debug("Closing finished circuit %s." % circ_id)
+                if not self.controller.is_alive():
+                    log.error("Terminating because the controller is not alive.")
+                    self.stats.print_progress()
+                    self.check_finished()
+                    break
                 try:
-                    self.controller.close_circuit(circ_id)
-                except stem.InvalidArguments as err:
+                    circ = self.controller.get_circuit(circ_id)
+                    if (circ):
+                        log.debug("Circuit %s is still active, closing..." % circ_id)
+                        self.controller.close_circuit(circ_id)
+                except (stem.InvalidArguments, stem.InvalidRequest) as err:
                     log.debug("Could not close circuit because: %s" % err)
+                except (ValueError, stem.ControllerError) as err:
+                    log.debug("Could not get circuit because: %s", err)
+                except Exception as err:
+                    log.debug("Exception while getting/closing circuit: %s!" % err)
 
                 self.stats.finished_streams += 1
                 self.stats.print_progress()
@@ -271,7 +302,10 @@ class EventHandler(object):
                 self.already_finished = True
 
                 for proc in multiprocessing.active_children():
-                    log.debug("Terminating remaining PID %d." % proc.pid)
+                    log.debug(
+                        "Terminating remaining PID %d with name %s.",
+                        proc.pid, proc.name
+                    )
                     proc.terminate()
 
                 if hasattr(self.module, "teardown"):
@@ -280,6 +314,19 @@ class EventHandler(object):
 
                 log.info(self.stats)
                 sys.exit(0)
+
+            if not self.controller.is_alive():
+                log.error("Terminating threads because controller isn't alive.")
+                self.already_finished = True
+                for proc in multiprocessing.active_children():
+                    log.debug(
+                        "Terminating remaining PID %d, with name %s.",
+                        proc.pid, proc.name
+                    )
+                    proc.terminate()
+                    proc.join(5)
+                log.info(self.stats)
+                sys.exit(1)
 
     def new_circuit(self, circ_event):
         """
@@ -300,10 +347,17 @@ class EventHandler(object):
         run_cmd_over_tor = command.Command(self.queue,
                                            circ_event.id,
                                            self.socks_port)
-
+        if not self.controller.is_alive():
+            log.error("Error creating new circuit: controller not alive.")
+            return
         exit_desc = get_relay_desc(self.controller, exit_fpr)
         if exit_desc is None:
-            self.controller.close_circuit(circ_event.id)
+            try:
+                self.controller.close_circuit(circ_event.id)
+            except (stem.InvalidArguments, stem.InvalidRequest) as err:
+                log.debug("Could not close circuit because: %s" % err)
+            except Exception as err:
+                log.error("Error while closing circuit: %s!" % err)
             return
 
         proc = multiprocessing.Process(target=module_call, args=(
