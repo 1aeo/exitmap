@@ -111,8 +111,8 @@ def get_exit_policies(cached_descriptors_path):
         return have_exit_policy
 
     except IOError as err:
-        log.critical("File \"%s\" could not be read: %s" %
-                     (cached_descriptors_path, err))
+        log.critical("File \"%s\" could not be read: %s",
+                     cached_descriptors_path, err)
         sys.exit(1)
 
 
@@ -136,8 +136,8 @@ def get_cached_consensus(cached_consensus_path):
         return cached_consensus
 
     except IOError as err:
-        log.critical("File \"%s\" could not be read: %s" %
-                     (cached_consensus_path, err))
+        log.critical("File \"%s\" could not be read: %s",
+                     cached_consensus_path, err)
         sys.exit(1)
 
 
@@ -192,7 +192,7 @@ def get_exits(data_dir,
     cached_consensus = get_cached_consensus(cached_consensus_path)
     # It's sometimes useful to know which consensus we used for scanning.
     # Log that info even though extracting it is a bit awkward.
-    log.info("The consensus is valid after: %s" %
+    log.info("The consensus is valid after: %s",
              next(iter(cached_consensus.values())).document.valid_after)
     have_exit_policy = get_exit_policies(cached_descriptors_path)
     log.debug("Number of relays with exit policy: %s", len(have_exit_policy))
@@ -297,7 +297,7 @@ def get_exits(data_dir,
         try:
             relay_fprs = frozenset(util.get_relays_in_country(country_code))
         except Exception as err:
-            log.warning("get_relays_in_country() failed: %s" % err)
+            log.warning("get_relays_in_country() failed: %s", err)
             relay_fprs = []
 
         exit_candidates = [
