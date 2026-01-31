@@ -404,27 +404,47 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor,
     run_python_over_tor(do_validation, exit_desc, query_domain, expected_ip, first_hop_fpr)
 
 
-def _write_circuit_failures(stats):
+# Default relay info when lookup fails
+_UNKNOWN_RELAY = ("unknown", "unknown")
+
+
+def _get_relay_info(controller, fingerprint):
+    """Look up relay (nickname, address) from controller. Returns _UNKNOWN_RELAY on failure."""
+    if not controller or not fingerprint:
+        return _UNKNOWN_RELAY
+    try:
+        desc = controller.get_server_descriptor(relay=fingerprint)
+        if desc:
+            return (getattr(desc, "nickname", None) or "unknown",
+                    getattr(desc, "address", None) or "unknown")
+    except Exception:
+        pass  # Relay offline or controller closing
+    return _UNKNOWN_RELAY
+
+
+def _write_circuit_failures(stats, controller=None):
     """Write circuit failure data to JSON files for aggregation."""
     if not util.analysis_dir or not stats:
         return 0
     
-    # Count unresolved failures (circuits that failed but couldn't be mapped to a relay)
+    # Get failed relays once (was called twice before)
     failed_relays = stats.get_failed_circuit_relays()
-    unresolved_failures = sum(1 for fp in failed_relays if fp.startswith("UNRESOLVED_"))
-    resolved_failures = len(failed_relays) - unresolved_failures
     
-    # Write scan_stats.json - source of truth for circuit counts
+    # Partition into resolved vs unresolved in single pass
+    resolved, unresolved = [], []
+    for fp, info in failed_relays.items():
+        (unresolved if fp.startswith("UNRESOLVED_") else resolved).append((fp, info))
+    
+    # Write scan_stats.json
     scan_stats = {
         "total_circuits": stats.total_circuits,
         "successful_circuits": stats.successful_circuits,
         "failed_circuits": stats.failed_circuits,
-        "resolved_failures": resolved_failures,
-        "unresolved_failures": unresolved_failures,
+        "resolved_failures": len(resolved),
+        "unresolved_failures": len(unresolved),
         "run_id": _run_id,
         "timestamp": time.time(),
     }
-    
     try:
         with open(os.path.join(util.analysis_dir, "scan_stats.json"), "w") as f:
             json.dump(scan_stats, f)
@@ -433,45 +453,29 @@ def _write_circuit_failures(stats):
     except Exception as e:
         log.error("Failed to write scan stats: %s", e)
     
-    # Write individual circuit failures if we have fingerprints
-    failed_relays = stats.get_failed_circuit_relays()
-    if not failed_relays:
+    if not resolved:
         log.debug("No circuit failure fingerprints captured")
         return stats.failed_circuits
     
-    # Build failure entries (skip unresolved circuits without valid fingerprints)
-    unresolved_count = 0
+    # Build failure entries with relay lookups
     failures = []
-    for fp, info in failed_relays.items():
-        # Skip unresolved failures (placeholder fingerprints starting with UNRESOLVED_)
-        if fp.startswith("UNRESOLVED_"):
-            unresolved_count += 1
-            continue
-        
+    for fp, info in resolved:
+        nickname, address = _get_relay_info(controller, fp)
+        first_hop_fp = info.get("first_hop")
+        fh_nick, fh_addr = _get_relay_info(controller, first_hop_fp)
         failures.append({
-            "exit_fingerprint": fp,
-            "exit_nickname": "unknown",
-            "exit_address": "unknown",
+            "exit_fingerprint": fp, "exit_nickname": nickname, "exit_address": address,
             "tor_metrics_url": TOR_METRICS_URL.format(fp),
-            "status": "relay_unreachable",
-            "circuit_reason": info["reason_key"],
-            "error": info["error"],
-            "tor_reason": info["tor_reason"],
-            "timestamp": info["timestamp"],
-            "query_domain": None,
-            "expected_ip": None,
-            "resolved_ip": None,
-            "timing": None,
-            "run_id": _run_id,
-            "mode": None,
-            "first_hop": info.get("first_hop"),
-            "first_hop_nickname": "unknown",
-            "first_hop_address": "unknown",
-            "attempt": None,
+            "status": "relay_unreachable", "circuit_reason": info["reason_key"],
+            "error": info["error"], "tor_reason": info["tor_reason"],
+            "timestamp": info["timestamp"], "run_id": _run_id,
+            "first_hop": first_hop_fp, "first_hop_nickname": fh_nick, "first_hop_address": fh_addr,
+            "query_domain": None, "expected_ip": None, "resolved_ip": None,
+            "timing": None, "mode": None, "attempt": None,
         })
     
-    if unresolved_count > 0:
-        log.warning("Skipped %d unresolved circuit failures (no fingerprint)" % unresolved_count)
+    if unresolved:
+        log.warning("Skipped %d unresolved circuit failures (no fingerprint)", len(unresolved))
     
     try:
         with open(os.path.join(util.analysis_dir, "circuit_failures.json"), "w") as f:
@@ -483,23 +487,28 @@ def _write_circuit_failures(stats):
     return stats.failed_circuits
 
 
-def _write_terminated_relays(relays):
-    """Write terminated relays as timeout errors."""
+def _write_terminated_relays(relays, controller=None):
+    """Write terminated relays as timeout errors (forcibly killed mid-scan)."""
     if not util.analysis_dir or not relays:
         return 0
+    now = time.time()
     for fp in relays:
+        nickname, address = _get_relay_info(controller, fp)
         _write_result({
-            "exit_fingerprint": fp, "status": "timeout", "run_id": _run_id,
+            "exit_fingerprint": fp, "exit_nickname": nickname, "exit_address": address,
+            "status": "timeout", "run_id": _run_id, "timestamp": now,
             "error": "DNS Error: Timeout (terminated during retry)",
-            "timestamp": time.time(), "tor_metrics_url": TOR_METRICS_URL.format(fp),
+            "tor_metrics_url": TOR_METRICS_URL.format(fp),
+            "query_domain": None, "expected_ip": None, "resolved_ip": None,
+            "timing": None, "mode": None, "first_hop": None, "attempt": None,
         }, fp)
     return len(relays)
 
 
 def teardown(stats=None, controller=None, terminated_relays=None, **kwargs):
     """Called after all probes complete."""
-    circuit_failures = _write_circuit_failures(stats) if stats else 0
-    terminated = _write_terminated_relays(terminated_relays)
+    circuit_failures = _write_circuit_failures(stats, controller) if stats else 0
+    terminated = _write_terminated_relays(terminated_relays, controller)
     if terminated:
         _status_counts["timeout"] = _status_counts.get("timeout", 0) + terminated
     
