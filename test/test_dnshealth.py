@@ -816,5 +816,426 @@ class TestMainGuard:
         assert "can only be run via exitmap" in source
 
 
+# === Test: Error Taxonomy (_SOCKS_ERROR_INFO) ===
+
+class TestErrorTaxonomy:
+    """Tests for the unified SOCKS error classification taxonomy."""
+
+    def test_all_codes_present(self):
+        """_SOCKS_ERROR_INFO should have entries for all SOCKS codes 1-8."""
+        for code in range(1, 9):
+            assert code in dnshealth._SOCKS_ERROR_INFO, f"Missing code {code}"
+
+    def test_entry_structure(self):
+        """Each entry should be a 5-tuple: (status, category, subcategory, message, retryable)."""
+        for code, info in dnshealth._SOCKS_ERROR_INFO.items():
+            assert len(info) == 5, f"Code {code}: expected 5-tuple, got {len(info)}"
+            status, category, subcategory, message, retryable = info
+            assert isinstance(status, str), f"Code {code}: status should be str"
+            assert isinstance(category, str), f"Code {code}: category should be str"
+            assert isinstance(subcategory, str), f"Code {code}: subcategory should be str"
+            assert isinstance(message, str), f"Code {code}: message should be str"
+            assert isinstance(retryable, bool), f"Code {code}: retryable should be bool"
+
+    def test_valid_categories(self):
+        """Categories should be from the allowed set."""
+        allowed = {"dns", "tor", "exitmap"}
+        for code, info in dnshealth._SOCKS_ERROR_INFO.items():
+            assert info[1] in allowed, f"Code {code}: invalid category '{info[1]}'"
+
+    def test_category_assignments(self):
+        """Each code should have the correct category per the taxonomy."""
+        expected = {
+            1: "tor",     # General failure — Tor infrastructure
+            2: "dns",     # Exit policy — relay blocks DNS
+            3: "dns",     # Network unreachable — relay can't reach DNS
+            4: "dns",     # NXDOMAIN — genuine DNS failure
+            5: "tor",     # Connection refused — circuit died
+            6: "dns",     # TTL expired — DNS resolver timed out
+            7: "tor",     # Command not supported — Tor issue
+            8: "tor",     # Address type unsupported — Tor issue
+        }
+        for code, exp_cat in expected.items():
+            actual = dnshealth._SOCKS_ERROR_INFO[code][1]
+            assert actual == exp_cat, f"Code {code}: expected '{exp_cat}', got '{actual}'"
+
+    def test_subcategory_assignments(self):
+        """Each code should have the correct subcategory."""
+        expected = {
+            1: "tor_error",
+            2: "relay_configuration",
+            3: "dns_unreachable",
+            4: "resolution_failed",
+            5: "connection_reset",
+            6: "resolution_timeout",
+            7: "resolve_unsupported",
+            8: "address_type_unsupported",
+        }
+        for code, exp_sub in expected.items():
+            actual = dnshealth._SOCKS_ERROR_INFO[code][2]
+            assert actual == exp_sub, f"Code {code}: expected '{exp_sub}', got '{actual}'"
+
+    def test_retryable_flags(self):
+        """Codes 1, 3, 5, 6 should be retryable; codes 2, 4, 7, 8 should not."""
+        retryable = {1, 3, 5, 6}
+        not_retryable = {2, 4, 7, 8}
+        for code in retryable:
+            assert dnshealth._SOCKS_ERROR_INFO[code][4] is True, \
+                f"Code {code} should be retryable"
+        for code in not_retryable:
+            assert dnshealth._SOCKS_ERROR_INFO[code][4] is False, \
+                f"Code {code} should NOT be retryable"
+
+    def test_error_map_derived_correctly(self):
+        """_SOCKS_ERROR_MAP should be derived from _SOCKS_ERROR_INFO."""
+        for code in range(1, 9):
+            assert dnshealth._SOCKS_ERROR_MAP[code] == dnshealth._SOCKS_ERROR_INFO[code][0]
+
+    def test_error_messages_derived_correctly(self):
+        """_SOCKS_ERROR_MESSAGES should be derived from _SOCKS_ERROR_INFO."""
+        for code in range(1, 9):
+            assert dnshealth._SOCKS_ERROR_MESSAGES[code] == dnshealth._SOCKS_ERROR_INFO[code][3]
+
+    def test_message_prefixes(self):
+        """Messages should have correct prefix based on category."""
+        prefix_map = {"dns": "DNS Error:", "tor": "Tor Error:", "exitmap": "Exitmap Error:"}
+        for code, info in dnshealth._SOCKS_ERROR_INFO.items():
+            category = info[1]
+            message = info[3]
+            expected_prefix = prefix_map[category]
+            assert message.startswith(expected_prefix), \
+                f"Code {code}: message '{message}' should start with '{expected_prefix}'"
+
+
+# === Test: Error Categories in resolve_with_retry ===
+
+class TestResolveWithRetryCategories:
+    """Tests that resolve_with_retry sets correct error_category/error_subcategory."""
+
+    def test_success_categories(self, mock_exit_desc, mock_torsocket):
+        """Successful resolution should have null category/subcategory."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.return_value = "64.65.4.1"
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
+
+        assert result["error_category"] is None
+        assert result["error_subcategory"] is None
+
+    def test_wrong_ip_categories(self, mock_exit_desc, mock_torsocket):
+        """Wrong IP should be dns/wrong_ip."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.return_value = "1.2.3.4"
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
+
+        assert result["error_category"] == "dns"
+        assert result["error_subcategory"] == "wrong_ip"
+
+    def test_nxdomain_wildcard_categories(self, mock_exit_desc, mock_torsocket):
+        """NXDOMAIN in wildcard mode should be dns/resolution_failed."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = error.SOCKSv5Error("error 4")
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
+
+        assert result["status"] == "dns_fail"
+        assert result["error_category"] == "dns"
+        assert result["error_subcategory"] == "resolution_failed"
+
+    def test_nxdomain_nxdomain_mode_categories(self, mock_exit_desc, mock_torsocket):
+        """NXDOMAIN in nxdomain mode should be success with null categories."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = error.SOCKSv5Error("error 4")
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip=None, retries=1)
+
+        assert result["status"] == "success"
+        assert result["error_category"] is None
+        assert result["error_subcategory"] is None
+
+    def test_socket_timeout_categories(self, mock_exit_desc, mock_torsocket):
+        """Socket timeout should be dns/socket_timeout."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = socket.timeout()
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
+
+        assert result["error_category"] == "dns"
+        assert result["error_subcategory"] == "socket_timeout"
+
+    def test_eof_error_categories(self, mock_exit_desc, mock_torsocket):
+        """EOFError should be tor/connection_dropped."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = EOFError()
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
+
+        assert result["error_category"] == "tor"
+        assert result["error_subcategory"] == "connection_dropped"
+
+    def test_file_not_found_categories(self, mock_exit_desc, mock_torsocket):
+        """FileNotFoundError should be exitmap/socket_gone."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = FileNotFoundError()
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
+
+        assert result["error_category"] == "exitmap"
+        assert result["error_subcategory"] == "socket_gone"
+
+    def test_connection_refused_categories(self, mock_exit_desc, mock_torsocket):
+        """ConnectionRefusedError should be exitmap/connection_refused."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = ConnectionRefusedError()
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
+
+        assert result["error_category"] == "exitmap"
+        assert result["error_subcategory"] == "connection_refused"
+
+    def test_generic_exception_categories(self, mock_exit_desc, mock_torsocket):
+        """Generic Exception should be exitmap/exception."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = RuntimeError("test error")
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
+
+        assert result["error_category"] == "exitmap"
+        assert result["error_subcategory"] == "exception"
+
+    @pytest.mark.parametrize("socks_code,exp_category,exp_subcategory", [
+        (1, "tor", "tor_error"),
+        (2, "dns", "relay_configuration"),
+        (3, "dns", "dns_unreachable"),
+        (5, "tor", "connection_reset"),
+        (6, "dns", "resolution_timeout"),
+        (7, "tor", "resolve_unsupported"),
+        (8, "tor", "address_type_unsupported"),
+    ])
+    def test_socks_error_categories(self, mock_exit_desc, mock_torsocket,
+                                     socks_code, exp_category, exp_subcategory):
+        """Each SOCKS error code should map to correct category/subcategory."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = error.SOCKSv5Error(
+            "SOCKS Server error %d" % socks_code)
+
+        with use_socket(), patch.object(dnshealth.time, 'sleep'):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert result["error_category"] == exp_category, \
+            f"SOCKS {socks_code}: expected category '{exp_category}', got '{result['error_category']}'"
+        assert result["error_subcategory"] == exp_subcategory, \
+            f"SOCKS {socks_code}: expected subcategory '{exp_subcategory}', got '{result['error_subcategory']}'"
+
+
+# === Test: Retry Behavior ===
+
+class TestRetryBehavior:
+    """Tests that non-retryable errors skip retries and retryable errors retry."""
+
+    @pytest.mark.parametrize("socks_code", [2, 7, 8])
+    def test_non_retryable_socks_no_retry(self, mock_exit_desc, mock_torsocket, socks_code):
+        """SOCKS codes 2, 7, 8 should return after 1 attempt (no retries)."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = error.SOCKSv5Error(
+            "SOCKS Server error %d" % socks_code)
+
+        with use_socket(), patch.object(dnshealth.time, 'sleep') as mock_sleep:
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert mock_socket.resolve.call_count == 1, \
+            f"SOCKS {socks_code}: should have called resolve once, got {mock_socket.resolve.call_count}"
+        assert result["attempt"] == 1
+        mock_sleep.assert_not_called()
+
+    def test_code_4_no_retry(self, mock_exit_desc, mock_torsocket):
+        """SOCKS code 4 (NXDOMAIN) should return after 1 attempt."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = error.SOCKSv5Error("error 4")
+
+        with use_socket(), patch.object(dnshealth.time, 'sleep') as mock_sleep:
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert mock_socket.resolve.call_count == 1
+        assert result["attempt"] == 1
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.parametrize("socks_code", [1, 3, 5, 6])
+    def test_retryable_socks_retries(self, mock_exit_desc, mock_torsocket, socks_code):
+        """SOCKS codes 1, 3, 5, 6 should retry up to MAX_RETRIES."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = error.SOCKSv5Error(
+            "SOCKS Server error %d" % socks_code)
+
+        with use_socket(), patch.object(dnshealth.time, 'sleep'):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert mock_socket.resolve.call_count == 3, \
+            f"SOCKS {socks_code}: should have retried 3 times, got {mock_socket.resolve.call_count}"
+        assert result["attempt"] == 3
+
+    def test_timeout_retries(self, mock_exit_desc, mock_torsocket):
+        """socket.timeout should retry up to MAX_RETRIES."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = socket.timeout()
+
+        with use_socket(), patch.object(dnshealth.time, 'sleep'):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert mock_socket.resolve.call_count == 3
+        assert result["attempt"] == 3
+
+    def test_wrong_ip_no_retry(self, mock_exit_desc, mock_torsocket):
+        """wrong_ip should return immediately (not retryable)."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.return_value = "1.2.3.4"  # Wrong IP
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert result["status"] == "wrong_ip"
+        assert mock_socket.resolve.call_count == 1
+        assert result["attempt"] == 1
+
+    def test_exception_no_retry(self, mock_exit_desc, mock_torsocket):
+        """Generic exceptions should not retry."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = RuntimeError("unexpected")
+
+        with use_socket(), patch.object(dnshealth.time, 'sleep') as mock_sleep:
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert result["status"] == "exception"
+        assert mock_socket.resolve.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_retryable_then_success(self, mock_exit_desc, mock_torsocket):
+        """Retryable error followed by success should succeed on retry."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        # First attempt: retryable SOCKS error; second attempt: success
+        mock_socket.resolve.side_effect = [
+            error.SOCKSv5Error("SOCKS Server error 1"),
+            "64.65.4.1"
+        ]
+
+        with use_socket(), patch.object(dnshealth.time, 'sleep'):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert result["status"] == "success"
+        assert result["attempt"] == 2
+        assert result["error_category"] is None
+        assert result["error_subcategory"] is None
+
+
+# === Test: Process Timeout ===
+
+class TestProcessTimeout:
+    """Tests for process_timeout status separation."""
+
+    def test_write_terminated_relays_status(self, temp_analysis_dir):
+        """_write_terminated_relays should write status='process_timeout'."""
+        dnshealth.setup()
+        dnshealth._run_id = "test_run"
+
+        count = dnshealth._write_terminated_relays(
+            ["AAAA1234567890123456789012345678AAAA1234"])
+
+        assert count == 1
+        path = temp_analysis_dir / "dnshealth_AAAA1234567890123456789012345678AAAA1234.json"
+        assert path.exists()
+
+        with open(path) as f:
+            result = json.load(f)
+
+        assert result["status"] == "process_timeout"
+        assert result["error"] == "Tor Error: Process terminated due to timeout"
+        assert result["error_category"] == "tor"
+        assert result["error_subcategory"] == "process_terminated"
+
+    def test_teardown_counts_process_timeout(self):
+        """teardown should count terminated relays under 'process_timeout', not 'timeout'."""
+        dnshealth.setup()
+        dnshealth._status_counts["success"] = 100
+        dnshealth._status_counts["timeout"] = 5
+
+        with patch.object(dnshealth, '_write_terminated_relays', return_value=3), \
+             patch.object(dnshealth, '_write_circuit_failures', return_value=0):
+            dnshealth.teardown(terminated_relays=["a", "b", "c"])
+
+        # process_timeout should be counted separately
+        assert dnshealth._status_counts.get("process_timeout") == 3
+        # timeout count should be unchanged
+        assert dnshealth._status_counts.get("timeout") == 5
+
+
+# === Test: _make_result includes new fields ===
+
+class TestMakeResultNewFields:
+    """Tests that _make_result includes error_category and error_subcategory."""
+
+    def test_default_categories_none(self, mock_exit_desc):
+        """Default error_category and error_subcategory should be None."""
+        result = dnshealth._make_result(
+            mock_exit_desc, "test.com", "1.2.3.4")
+
+        assert "error_category" in result
+        assert "error_subcategory" in result
+        assert result["error_category"] is None
+        assert result["error_subcategory"] is None
+
+    def test_categories_set_when_provided(self, mock_exit_desc):
+        """error_category and error_subcategory should be set when provided."""
+        result = dnshealth._make_result(
+            mock_exit_desc, "test.com", "1.2.3.4",
+            error_category="dns", error_subcategory="resolution_failed")
+
+        assert result["error_category"] == "dns"
+        assert result["error_subcategory"] == "resolution_failed"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
