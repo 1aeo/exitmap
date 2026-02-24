@@ -109,9 +109,9 @@ class Statistics(object):
             "exit_relay": exit_relay,
             "timestamp": datetime.now().timestamp()
         }
-        log.debug("Registered circuit %s: %s -> %s" % (cid, first_hop[:8], exit_relay[:8]))
+        log.debug("Registered circuit %s: %s -> %s", cid, first_hop[:8], exit_relay[:8])
         if len(self.pending_circuits) % 100 == 0:
-            log.info("Circuit registry: %d circuits registered" % len(self.pending_circuits))
+            log.info("Circuit registry: %d circuits registered", len(self.pending_circuits))
 
     def resolve_circuit(self, circuit_id):
         """
@@ -140,7 +140,7 @@ class Statistics(object):
             "first_hop": first_hop,
             "timestamp": datetime.now().timestamp()
         }
-        log.debug("Recorded immediate circuit failure for %s: %s" % (exit_relay[:8], error_str))
+        log.debug("Recorded immediate circuit failure for %s: %s", exit_relay[:8], error_str)
 
     def update_circs(self, circ_event):
         """
@@ -151,7 +151,7 @@ class Statistics(object):
         status = circ_event.status
 
         if status == CircStatus.FAILED:
-            log.debug("Circuit %s failed: %s" % (cid, circ_event.reason))
+            log.debug("Circuit %s failed: %s", cid, circ_event.reason)
             self.failed_circuits += 1
             
             first_hop, exit_relay = self.resolve_circuit(cid)
@@ -165,10 +165,10 @@ class Statistics(object):
                     "first_hop": first_hop,
                     "timestamp": datetime.now().timestamp()
                 }
-                log.debug("Recorded failure for %s via %s: %s" % (
-                    exit_relay[:8], first_hop[:8] if first_hop else "?", reason_key))
+                log.debug("Recorded failure for %s via %s: %s",
+                    exit_relay[:8], first_hop[:8] if first_hop else "?", reason_key)
                 if len(self.failed_circuit_relays) % 50 == 0:
-                    log.info("Captured %d circuit failures" % len(self.failed_circuit_relays))
+                    log.info("Captured %d circuit failures", len(self.failed_circuit_relays))
             else:
                 # Circuit not in registry - record as unresolved failure
                 # Use circuit ID as placeholder fingerprint to maintain count consistency
@@ -181,7 +181,7 @@ class Statistics(object):
                     "timestamp": datetime.now().timestamp(),
                     "unresolved": True
                 }
-                log.debug("Circuit %s not in registry - recorded as unresolved failure" % cid)
+                log.debug("Circuit %s not in registry - recorded as unresolved failure", cid)
             
             self.complete_circuit(cid)
 
@@ -209,8 +209,8 @@ class Statistics(object):
         percent_done = (self.successful_circuits /
                         float(self.total_circuits)) * 100
 
-        log.info("Probed %d out of %d exit relays, so we are %.2f%% done." %
-                 (self.successful_circuits, self.total_circuits, percent_done))
+        log.info("Probed %d out of %d exit relays, so we are %.2f%% done.",
+                 self.successful_circuits, self.total_circuits, percent_done)
 
     def __str__(self):
         """

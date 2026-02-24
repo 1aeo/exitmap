@@ -52,17 +52,17 @@ def resolve(exit_desc, domain):
         ip = sock.resolve(domain)
     except error.SOCKSv5Error as err:
         log.error("Exit relay %s could not resolve IP address for "
-                  "\"%s\" because: %s" % (exit, domain, err))
+                  "\"%s\" because: %s", exit, domain, err)
         return
     except socket.timeout as err:
-        log.error("Socket over exit relay %s resolving \"%s\" timed out (%s)" %
-                  (exit, domain, err))
+        log.error("Socket over exit relay %s resolving \"%s\" timed out (%s)",
+                  exit, domain, err)
         return
     except EOFError as err:
-        log.error("EOF error: %s" % err)
+        log.error("EOF error: %s", err)
         return
 
-    log.debug("%s resolved domain %s to %s" % (exit, domain, ip))
+    log.debug("%s resolved domain %s to %s", exit, domain, ip)
 
 
 def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor, **kwargs):

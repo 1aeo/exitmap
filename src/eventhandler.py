@@ -26,7 +26,7 @@ import threading
 import multiprocessing
 import logging
 import socket
-
+from queue import Empty
 import stem
 from stem import StreamStatus
 from stem import CircStatus
@@ -49,11 +49,11 @@ def get_relay_desc(controller, fpr):
     try:
         desc = controller.get_server_descriptor(relay=fpr)
     except stem.DescriptorUnavailable as err:
-        log.warning("Descriptor for %s not available: %s" % (fpr, err))
+        log.warning("Descriptor for %s not available: %s", fpr, err)
     except stem.ControllerError as err:
-        log.warning("Unable to query for %d: %s" % (fpr, err))
+        log.warning("Unable to query for %d: %s", fpr, err)
     except ValueError:
-        log.warning("%s is malformed.  Is it a relay fingerprint?" % fpr)
+        log.warning("%s is malformed.  Is it a relay fingerprint?", fpr)
 
     return desc
 
@@ -113,20 +113,29 @@ class Attacher(object):
                                                            stream_id=stream_id)
                     self.unattached[port] = partially_attached
 
-            log.debug("Pending attachers: %d." % len(self.unattached))
+            log.debug("Pending attachers: %d.", len(self.unattached))
 
     def _attach(self, stream_id=None, circuit_id=None):
         """
         Attach a stream to a circuit.
         """
 
-        log.debug("Attempting to attach stream %s to circuit %s." %
-                  (stream_id, circuit_id))
+        log.debug("Attempting to attach stream %s to circuit %s.",
+                  stream_id, circuit_id)
 
+        if not self.controller.is_alive():
+            log.error("Terminating because the controller is not alive.")
+            return
         try:
             self.controller.attach_stream(stream_id, circuit_id)
-        except stem.OperationFailed as err:
-            log.warning("Failed to attach stream because: %s" % err)
+        # All possible errors by `attach_stream`:
+        except (
+            stem.InvalidRequest, stem.UnsatisfiableRequest,
+            stem.OperationFailed
+        ) as err:
+            log.warning("Failed to attach stream because: %s", err)
+        except Exception as err:
+            log.warning("Failed to attach stream because: %s", err)
 
 
 def module_call(queue, module, circ_id, socks_port,
@@ -158,9 +167,11 @@ def module_call(queue, module, circ_id, socks_port,
                 with torsocks.MonkeyPatchedSocket(queue, circ_id, socks_port):
                     func(*args)
             except (error.SOCKSv5Error, socket.error) as err:
-                log.info(err)
+                log.error("Error in `module_call` closure: %s", err)
                 return
-
+            except Exception as err:
+                log.error("Error in `module_call` closure: %s", err)
+                return
         return closure
 
     try:
@@ -173,10 +184,13 @@ def module_call(queue, module, circ_id, socks_port,
             target_port=target_port,
             first_hop=first_hop_fpr
         )
+    except KeyboardInterrupt:
+        log.debug("Ignoring `KeyboardInterrupt`")
+    except Exception as exc:
+        log.error("Exception %s", exc)
+    else:
         log.debug("Informing event handler that module finished.")
         queue.put((circ_id, None))
-    except KeyboardInterrupt:
-        pass
 
 
 class EventHandler(object):
@@ -222,13 +236,21 @@ class EventHandler(object):
         log.debug("Starting thread to read from IPC queue.")
 
         while True:
+            if not self.controller.is_alive():
+                log.error("Terminating because the controller is not alive.")
+                self.stats.print_progress()
+                self.check_finished()
+                break
+
             try:
-                item = self.queue.get()
+                item = self.queue.get(timeout=5)
                 # Sentinel value (None, None) signals shutdown
                 if item is None or item == (None, None):
                     log.debug("IPC queue received shutdown signal.")
                     break
                 circ_id, sockname = item
+            except Empty:
+                continue
             except (EOFError, OSError):
                 log.debug("IPC queue terminated.")
                 break
@@ -238,21 +260,33 @@ class EventHandler(object):
             # its stream attached to a circuit (by sending (circ_id,sockname)).
 
             if sockname is None:
-                log.debug("Closing finished circuit %s." % circ_id)
+                log.debug("Closing finished circuit %s.", circ_id)
+                if not self.controller.is_alive():
+                    log.error("Terminating because the controller is not alive.")
+                    self.stats.print_progress()
+                    self.check_finished()
+                    break
                 try:
-                    self.controller.close_circuit(circ_id)
-                except stem.InvalidArguments as err:
-                    log.debug("Could not close circuit because: %s" % err)
+                    circ = self.controller.get_circuit(circ_id)
+                    if (circ):
+                        log.debug("Circuit %s is still active, closing...", circ_id)
+                        self.controller.close_circuit(circ_id)
+                except (stem.InvalidArguments, stem.InvalidRequest) as err:
+                    log.debug("Could not close circuit because: %s", err)
+                except (ValueError, stem.ControllerError) as err:
+                    log.debug("Could not get circuit because: %s", err)
+                except Exception as err:
+                    log.debug("Exception while getting/closing circuit: %s!", err)
 
                 self.stats.finished_streams += 1
                 self.stats.print_progress()
                 self.check_finished()
             else:
-                log.debug("Read from queue: %s, %s" % (circ_id, str(sockname)))
+                log.debug("Read from queue: %s, %s", circ_id, str(sockname))
                 port = int(sockname[1])
                 self.attacher.prepare(port, circuit_id=circ_id)
                 self.check_finished()
-        
+
         self._close_queue()
 
     def check_finished(self):
@@ -278,12 +312,17 @@ class EventHandler(object):
                              self.stats.failed_circuits))
 
             log.debug("failedCircs=%d, builtCircs=%d, totalCircs=%d, "
-                      "finishedStreams=%d" % (self.stats.failed_circuits,
+                      "finishedStreams=%d", self.stats.failed_circuits,
                                               self.stats.successful_circuits,
                                               self.stats.total_circuits,
-                                              self.stats.finished_streams))
+                                              self.stats.finished_streams)
 
             if circs_done and streams_done:
+                self.already_finished = True
+                self.finished_event.set()
+
+            if not self.controller.is_alive():
+                log.error("Terminating because controller is not alive.")
                 self.already_finished = True
                 self.finished_event.set()
 
@@ -306,9 +345,13 @@ class EventHandler(object):
                 if proc.is_alive():
                     if fpr := self.pid_to_fingerprint.get(proc.pid):
                         terminated.append(fpr)
+                    log.debug(
+                        "Terminating remaining PID %d with name %s.",
+                        proc.pid, proc.name
+                    )
                     proc.terminate()
         if terminated:
-            log.info("Terminated %d stalled relays" % len(terminated))
+            log.info("Terminated %d stalled relays", len(terminated))
 
         if hasattr(self.module, "teardown"):
             try:
@@ -321,15 +364,15 @@ class EventHandler(object):
                 self.module.teardown()
 
         log.info(self.stats)
-        
+
         # Signal queue reader to stop
         try:
             self.queue.put(None)
         except Exception:
             pass
-            
+
         self.queue_thread.join()
-        
+
         # Remove event listener
         try:
             self.controller.remove_event_listener(self.new_event)
@@ -366,17 +409,24 @@ class EventHandler(object):
         first_hop_fpr = first_hop[0]
         last_hop = circ_event.path[-1]
         exit_fpr = last_hop[0]
-        
+
         log.debug("Circuit for exit relay \"%s\" is built (first hop: %s).  "
-                  "Now invoking probing module." % (exit_fpr, first_hop_fpr))
+                  "Now invoking probing module.", exit_fpr, first_hop_fpr)
 
         run_cmd_over_tor = command.Command(self.queue,
                                            circ_event.id,
                                            self.socks_port)
-
+        if not self.controller.is_alive():
+            log.error("Error creating new circuit: controller not alive.")
+            return
         exit_desc = get_relay_desc(self.controller, exit_fpr)
         if exit_desc is None:
-            self.controller.close_circuit(circ_event.id)
+            try:
+                self.controller.close_circuit(circ_event.id)
+            except (stem.InvalidArguments, stem.InvalidRequest) as err:
+                log.debug("Could not close circuit because: %s", err)
+            except Exception as err:
+                log.error("Error while closing circuit: %s!", err)
             return
 
         proc = multiprocessing.Process(target=module_call, args=(
@@ -411,10 +461,10 @@ class EventHandler(object):
         port = util.get_source_port(str(stream_event))
         if not port:
             log.warning("Couldn't extract source port from stream "
-                        "event: %s" % str(stream_event))
+                        "event: %s", str(stream_event))
             return
 
-        log.debug("Adding attacher for new stream %s." % stream_event.id)
+        log.debug("Adding attacher for new stream %s.", stream_event.id)
         self.attacher.prepare(port, stream_id=stream_event.id)
         self.check_finished()
 
@@ -430,4 +480,4 @@ class EventHandler(object):
             self.new_stream(event)
 
         else:
-            log.warning("Received unexpected event %s." % str(event))
+            log.warning("Received unexpected event %s.", str(event))
