@@ -102,7 +102,7 @@ def bootstrap_tor(args):
     """
 
     log.info("Attempting to invoke Tor process in directory \"%s\".  This "
-             "might take a while." % args.tor_dir)
+             "might take a while.", args.tor_dir)
 
     if not args.first_hop:
         log.info("No first hop given.  Using randomly determined first "
@@ -133,9 +133,9 @@ def bootstrap_tor(args):
             completion_percent=75,
             init_msg_handler=partial_parse_log_lines,
         )
-        log.info("Successfully started Tor process (PID=%d)." % proc.pid)
+        log.info("Successfully started Tor process (PID=%d).", proc.pid)
     except OSError as err:
-        log.error("Couldn't launch Tor: %s.  Maybe try again?" % err)
+        log.error("Couldn't launch Tor: %s.  Maybe try again?", err)
         sys.exit(1)
 
     return ports["socks"], ports["control"]
@@ -169,8 +169,8 @@ def parse_cmd_args():
         try:
             defaults = dict(config_parser.items("Defaults"))
         except ConfigParser.NoSectionError as err:
-            log.warning("Could not parse config file \"%s\": %s" %
-                        (config_file, err))
+            log.warning("Could not parse config file \"%s\": %s",
+                        config_file, err)
             defaults = {}
     else:
         defaults = {}
@@ -298,13 +298,20 @@ def main():
         if not _validate_directory(args.tor_dir, "Tor data directory"):
             return 1
 
-    logging.getLogger("stem").setLevel(logging.__dict__[args.verbosity.upper()])
-    log_format = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
+    level = logging.__dict__[args.verbosity.upper()]
+    logging.getLogger("stem").setLevel(level)
+    if level == logging.DEBUG:
+        log_format = (
+            "%(asctime)s [%(levelname)s] (%(threadName)s) "
+            "%(filename)s:%(lineno)s - %(funcName)s - %(message)s"
+        )
+    else:
+        log_format = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
     logging.basicConfig(format=log_format,
                         level=logging.__dict__[args.verbosity.upper()],
                         filename=args.logfile)
 
-    log.debug("Command line arguments: %s" % str(args))
+    log.debug("Command line arguments: %s", str(args))
 
     socks_port, control_port = bootstrap_tor(args)
     controller = Controller.from_port(port=control_port)
@@ -333,7 +340,7 @@ def main():
     if args.first_hop and (not util.relay_in_consensus(args.first_hop,
                                                        cached_consensus_path)):
         log.critical("Given first hop \"%s\" not found in consensus.  Is it"
-                     " offline?" % args.first_hop)
+                     " offline?", args.first_hop)
         return 1
 
     try:
@@ -346,7 +353,7 @@ def main():
             try:
                 run_module(module_name, args, controller, socks_port, stats)
             except error.ExitSelectionError as err:
-                log.error("Failed to run because : %s" % err)
+                log.error("Failed to run because : %s", err)
     finally:
         try:
             controller.close()
@@ -366,17 +373,17 @@ def lookup_destinations(args, module):
     if hasattr(module, 'destinations') and module.destinations is None:
         log.info("Destination is built from the module default *None* attribute")
         raw_destinations = module.destinations
-        log.info("raw_destination= %s" % raw_destinations)
+        log.info("raw_destination= %s", raw_destinations)
 
     elif args.host is not None and args.port is not None:
-        log.info("Destination is built from the command line host attribute: %s" % args.host)
+        log.info("Destination is built from the command line host attribute: %s", args.host)
         raw_destinations = [(args.host, args.port)]
-        log.info("raw_destination= %s" % raw_destinations)
+        log.info("raw_destination= %s", raw_destinations)
 
     elif hasattr(module, 'destinations'):
-        log.info("Destination is built from the module default attribute : %s" % module.destinations)
+        log.info("Destination is built from the module default attribute : %s", module.destinations)
         raw_destinations = module.destinations
-        log.info("raw_destination= %s" % raw_destinations)
+        log.info("raw_destination= %s", raw_destinations)
 
     if raw_destinations is not None:
         for (host, port) in raw_destinations:
@@ -423,7 +430,7 @@ def select_exits(args, module):
         requested_exits = requested_exits,
         destinations    = destinations)
 
-    log.debug("Successfully selected exit relays after %s." %
+    log.debug("Successfully selected exit relays after %s.",
               str(datetime.datetime.now() - before))
 
     return exit_destinations
@@ -434,14 +441,14 @@ def run_module(module_name, args, controller, socks_port, stats):
     Run an exitmap module over all available exit relays.
     """
 
-    log.info("Running module '%s'." % module_name)
-    log.info("with host '%s'." % args.host)
+    log.info("Running module '%s'.", module_name)
+    log.info("with host '%s'.", args.host)
     stats.modules_run += 1
 
     try:
         module = __import__("modules.%s" % module_name, fromlist=[module_name])
     except ImportError as err:
-        log.error("Failed to load module because: %s" % err)
+        log.error("Failed to load module because: %s", err)
         return
 
     # Let module perform one-off setup tasks.
@@ -481,10 +488,10 @@ def run_module(module_name, args, controller, socks_port, stats):
                                   EventType.CIRC, EventType.STREAM)
 
     duration = count * args.build_delay
-    log.info("Scan is estimated to take around %s." %
+    log.info("Scan is estimated to take around %s.",
              datetime.timedelta(seconds=duration))
 
-    log.info("Beginning to trigger %d circuit creation(s)." % count)
+    log.info("Beginning to trigger %d circuit creation(s).", count)
 
     try:
         iter_exit_relays(exit_relays, controller, stats, args)
@@ -514,7 +521,7 @@ def sleep(delay, delay_noise):
     if delay < 0:
         delay = 0
 
-    log.debug("Sleeping for %.1fs, then building next circuit." % delay)
+    log.debug("Sleeping for %.1fs, then building next circuit.", delay)
     time.sleep(delay)
 
 
