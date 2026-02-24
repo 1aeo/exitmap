@@ -272,9 +272,9 @@ def main():
                 return 1
     level = logging.__dict__[args.verbosity.upper()]
     logging.getLogger("stem").setLevel(level)
-    if level == "DEBUG":
+    if level == logging.DEBUG:
         log_format = (
-            "%(asctime)s [%(levelname)s] (%(threadName)s) ",
+            "%(asctime)s [%(levelname)s] (%(threadName)s) "
             "%(filename)s:%(lineno)s - %(funcName)s - %(message)s"
         )
     else:
