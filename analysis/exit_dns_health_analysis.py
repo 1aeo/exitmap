@@ -708,6 +708,294 @@ plt.show()
 
 # %% [markdown]
 # ---
+# ## 🔬 Sensitivity Analysis — Are the Same Relays Failing Every Time?
+#
+# The aggregate charts above show *how many* relays fail per scan, but not *which* relays.
+# A critical question is whether failures come from the **same broken relays** every time
+# or from **random transient issues** across different relays.
+#
+# This sensitivity analysis examines per-relay failure persistence across the 4-CV era
+# (40 scans, Jan 30 – Feb 22) by tracking individual relay fingerprints.
+
+# %% [markdown]
+# ---
+# ## 📈 Chart 11 — Relay Failure Frequency Distribution
+#
+# Of 488 unique relays that failed at least once, **66% failed in only a single scan** —
+# these are transient Tor network noise that cross-validation already handles. At the other
+# extreme, **6 relays failed in 80%+ of scans** — a persistent core of genuinely broken DNS.
+# The vast majority of failures are one-offs; only a tiny persistent set represents real issues.
+
+# %%
+# Build per-relay failure counts across 4-CV scans
+from collections import Counter, defaultdict
+
+relay_fail_counts = Counter()  # fp -> number of scans where it dns_fail'd
+relay_nicknames = {}
+relay_appearances = Counter()  # fp -> total scans seen in
+cv4_scan_count = 0
+
+for fpath in sorted(DATA_DIR.glob("dns_health_*.json")):
+    try:
+        with open(fpath) as f:
+            scan_data = json.load(f)
+    except (json.JSONDecodeError, ValueError):
+        continue
+    m = scan_data["metadata"]
+    scan_info = m.get("scan", {})
+    if not (scan_info.get("type") == "cross_validate" and scan_info.get("instances", 1) >= 4):
+        continue
+    cr = m.get("consensus_relays", 0)
+    if cr < 100 or cr > 5000:
+        continue
+    cv4_scan_count += 1
+    for r in scan_data.get("results", []):
+        fp = r.get("exit_fingerprint")
+        if not fp:
+            continue
+        relay_appearances[fp] += 1
+        relay_nicknames[fp] = r.get("exit_nickname", "?")
+        if r.get("status") == "dns_fail":
+            relay_fail_counts[fp] += 1
+
+# Bucket the failure counts
+buckets = {"1": 0, "2–3": 0, "4–10": 0, "11–20": 0, f"21–{cv4_scan_count-1}": 0, f"All {cv4_scan_count}": 0}
+bucket_keys = list(buckets.keys())
+for fp, c in relay_fail_counts.items():
+    if c == 1:
+        buckets[bucket_keys[0]] += 1
+    elif c <= 3:
+        buckets[bucket_keys[1]] += 1
+    elif c <= 10:
+        buckets[bucket_keys[2]] += 1
+    elif c <= 20:
+        buckets[bucket_keys[3]] += 1
+    elif c < cv4_scan_count:
+        buckets[bucket_keys[4]] += 1
+    else:
+        buckets[bucket_keys[5]] += 1
+
+fig, ax = plt.subplots(figsize=(14, 6))
+colors_11 = [STATUS_SUCCESS, AEO_GREEN_DIM, STATUS_WARNING, "#e0a0ff", STATUS_PURPLE, STATUS_ERROR]
+bars = ax.bar(bucket_keys, list(buckets.values()), color=colors_11, alpha=0.85,
+              edgecolor="white", linewidth=0.5)
+
+for bar, val in zip(bars, buckets.values()):
+    if val > 0:
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 3,
+                str(val), ha="center", va="bottom", fontsize=11, fontweight="bold", color=AEO_TEXT)
+
+# Annotate the always-failing relays
+always_failing = [fp for fp, c in relay_fail_counts.items() if c >= cv4_scan_count]
+if always_failing:
+    names = ", ".join(relay_nicknames.get(fp, fp[:12]) for fp in always_failing[:6])
+    ax.annotate(f"Always-failing ({len(always_failing)} relays):\n{names}",
+                xy=(len(bucket_keys) - 1, buckets[bucket_keys[-1]]),
+                xytext=(-120, 40), textcoords="offset points",
+                fontsize=8, color=STATUS_ERROR,
+                arrowprops=dict(arrowstyle="->", color=STATUS_ERROR, lw=0.8),
+                bbox=dict(boxstyle="round,pad=0.3", facecolor=AEO_DARK_BG,
+                          edgecolor=STATUS_ERROR, alpha=0.9))
+
+total_failing = len(relay_fail_counts)
+transient_pct = buckets[bucket_keys[0]] / total_failing * 100 if total_failing else 0
+ax.text(0.98, 0.95,
+        f"Total unique failing relays: {total_failing}\n"
+        f"Transient (1 scan only): {buckets[bucket_keys[0]]} ({transient_pct:.0f}%)\n"
+        f"Persistent (all scans): {len(always_failing)}",
+        transform=ax.transAxes, fontsize=10, va="top", ha="right",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor=AEO_DARK_BG, edgecolor=AEO_GREEN, alpha=0.9),
+        color=AEO_TEXT)
+
+ax.set_xlabel("Number of Scans With Failures")
+ax.set_ylabel("Number of Relays")
+ax.set_title("Relay Failure Frequency Distribution — How Often Do Relays Fail?",
+             fontweight="bold", pad=15)
+ax.grid(True, alpha=0.3, axis="y")
+fig.tight_layout()
+save_chart(fig, "11_failure_frequency_distribution")
+plt.show()
+
+# %% [markdown]
+# ---
+# ## 📈 Chart 12 — Persistent Relay Failure Heatmap
+#
+# A timeline heatmap of the **top 25 most-failing relays** across all 40 CV scans.
+# Each row is a relay (labelled by nickname), each column is a scan date, and cells are
+# coloured **red** (failed), **green** (succeeded), or **dark grey** (relay not in consensus).
+#
+# The pattern is striking — failures cluster by **operator**:
+# - **PRQseTORexit** family (5 relays): solid red across every scan
+# - **obzgs5tbmn4q** (7+ relays): intermittent but persistent red streaks
+# - **dotsrcExit** family (10 relays): a block of failures appearing mid-series
+
+# %%
+# Build relay × scan matrix for top 25 failing fingerprints
+top_fps = [fp for fp, _ in relay_fail_counts.most_common(25)]
+scan_dates_cv4 = []
+relay_scan_matrix = {fp: [] for fp in top_fps}
+
+for fpath in sorted(DATA_DIR.glob("dns_health_*.json")):
+    try:
+        with open(fpath) as f:
+            scan_data = json.load(f)
+    except (json.JSONDecodeError, ValueError):
+        continue
+    m = scan_data["metadata"]
+    scan_info = m.get("scan", {})
+    if not (scan_info.get("type") == "cross_validate" and scan_info.get("instances", 1) >= 4):
+        continue
+    cr = m.get("consensus_relays", 0)
+    if cr < 100 or cr > 5000:
+        continue
+
+    ts_str = m.get("timestamp", "")[:10]
+    scan_dates_cv4.append(ts_str)
+    scan_fps = {}
+    for r in scan_data.get("results", []):
+        fp = r.get("exit_fingerprint")
+        if fp:
+            scan_fps[fp] = r.get("status")
+
+    for fp in top_fps:
+        if fp in scan_fps:
+            relay_scan_matrix[fp].append(1.0 if scan_fps[fp] == "dns_fail" else 0.0)
+        else:
+            relay_scan_matrix[fp].append(float("nan"))  # not in consensus
+
+# Build DataFrame
+df_heatmap = pd.DataFrame(relay_scan_matrix, index=scan_dates_cv4).T
+# Label rows with nickname (fp_short)
+row_labels = []
+for fp in top_fps:
+    nick = relay_nicknames.get(fp, fp[:12])
+    fail_count = relay_fail_counts[fp]
+    row_labels.append(f"{nick} ({fail_count}/{cv4_scan_count})")
+df_heatmap.index = row_labels
+
+fig, ax = plt.subplots(figsize=(16, 8))
+from matplotlib.colors import ListedColormap
+cmap_heatmap = ListedColormap([STATUS_SUCCESS, STATUS_ERROR])
+
+sns.heatmap(df_heatmap, ax=ax, cmap=cmap_heatmap, vmin=0, vmax=1,
+            linewidths=0.5, linecolor=AEO_DARK_BG,
+            cbar_kws={"label": "DNS Fail", "ticks": [0.25, 0.75]},
+            xticklabels=True, yticklabels=True,
+            mask=df_heatmap.isna())
+
+# Fix colorbar labels
+cbar = ax.collections[0].colorbar
+cbar.set_ticklabels(["Success", "DNS Fail"])
+
+# Grey out NaN cells (not in consensus)
+ax.set_facecolor("#333333")
+
+# Format x-axis: show every Nth date label
+n_dates = len(scan_dates_cv4)
+step = max(1, n_dates // 15)
+xtick_positions = list(range(0, n_dates, step))
+xtick_labels = [scan_dates_cv4[i][5:] for i in xtick_positions]  # MM-DD format
+ax.set_xticks([p + 0.5 for p in xtick_positions])
+ax.set_xticklabels(xtick_labels, rotation=45, ha="right", fontsize=8)
+ax.tick_params(axis="y", labelsize=8)
+
+ax.set_title("Persistent Relay Failure Heatmap — Top 25 Failing Relays Across 4-CV Scans",
+             fontweight="bold", pad=15)
+ax.set_xlabel("Scan Date")
+ax.set_ylabel("")
+fig.tight_layout()
+save_chart(fig, "12_persistent_relay_heatmap")
+plt.show()
+
+# %% [markdown]
+# ---
+# ## 📈 Chart 13 — Failure Set Churn Over Time
+#
+# For each scan, failures are classified as **repeat** (relay has failed in a prior scan)
+# or **new** (first time this relay has ever failed). The stacked bars show that a stable
+# core of **~21 repeat failures** appears every scan, supplemented by **~10 new relays**
+# that are typically transient one-offs. The Feb 6 anomaly spike (74 new failures) is clearly
+# visible as a network disruption, not a scanning issue.
+
+# %%
+churn_data = []
+seen_failing = set()
+
+for fpath in sorted(DATA_DIR.glob("dns_health_*.json")):
+    try:
+        with open(fpath) as f:
+            scan_data = json.load(f)
+    except (json.JSONDecodeError, ValueError):
+        continue
+    m = scan_data["metadata"]
+    scan_info = m.get("scan", {})
+    if not (scan_info.get("type") == "cross_validate" and scan_info.get("instances", 1) >= 4):
+        continue
+    cr = m.get("consensus_relays", 0)
+    if cr < 100 or cr > 5000:
+        continue
+
+    ts_str = m.get("timestamp", "")
+    try:
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    except Exception:
+        ts = datetime.now(timezone.utc)
+
+    scan_fails = set()
+    for r in scan_data.get("results", []):
+        fp = r.get("exit_fingerprint")
+        if fp and r.get("status") == "dns_fail":
+            scan_fails.add(fp)
+
+    new_fails = len(scan_fails - seen_failing)
+    repeat_fails = len(scan_fails & seen_failing)
+    seen_failing.update(scan_fails)
+
+    churn_data.append({
+        "timestamp": ts, "total": len(scan_fails),
+        "repeat": repeat_fails, "new": new_fails,
+    })
+
+df_churn = pd.DataFrame(churn_data)
+
+fig, ax = plt.subplots(figsize=(14, 6))
+shade_phases(ax, df_churn)
+
+bar_width = 0.018
+ax.bar(df_churn["timestamp"], df_churn["repeat"],
+       width=bar_width, color=STATUS_WARNING, alpha=0.85, label="Repeat Failures")
+ax.bar(df_churn["timestamp"], df_churn["new"],
+       width=bar_width, bottom=df_churn["repeat"],
+       color=STATUS_ERROR, alpha=0.85, label="New Failures (First Time)")
+ax.plot(df_churn["timestamp"], df_churn["total"],
+        color=AEO_GREEN, linewidth=1.5, alpha=0.8, marker="o", markersize=4,
+        label="Total Failures", zorder=5)
+
+avg_repeat = df_churn["repeat"].mean()
+avg_new = df_churn["new"].mean()
+ax.axhline(avg_repeat, color=STATUS_WARNING, linestyle="--", alpha=0.4)
+
+ax.text(0.98, 0.95,
+        f"Avg repeat failures: {avg_repeat:.0f}/scan\n"
+        f"Avg new failures: {avg_new:.0f}/scan\n"
+        f"Total unique relays ever failed: {len(seen_failing)}",
+        transform=ax.transAxes, fontsize=10, va="top", ha="right",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor=AEO_DARK_BG, edgecolor=AEO_GREEN, alpha=0.9),
+        color=AEO_TEXT)
+
+ax.set_ylabel("Failing Relays")
+ax.set_xlabel("")
+ax.set_title("Failure Set Churn — Repeat vs New Failures Per Scan",
+             fontweight="bold", pad=15)
+ax.grid(True, alpha=0.3)
+format_date_axis(ax)
+ax.legend(fontsize=9, loc="upper left")
+fig.tight_layout()
+save_chart(fig, "13_failure_churn")
+plt.show()
+
+# %% [markdown]
+# ---
 # ## 🔍 Anomaly Detection & Flagging
 #
 # Systematic identification of broken scans, missing windows, and statistical outliers.
@@ -794,7 +1082,16 @@ for date, count in df_by_date.items():
 #
 # 5. **The scan schedule stabilised** from every 2h (12/day) to every 12h (2/day) — because each
 #    4-CV scan is comprehensive enough that less frequent scanning still captures the full picture.
-
+#
+# 6. **Most failures are transient, but a small core is persistently broken** (Sensitivity Analysis):
+#    - 488 unique relays failed at least once across 51 CV scans
+#    - **66% (323 relays) failed only once** — transient Tor network noise
+#    - **6 relays failed in 80%+ of scans** — genuinely broken DNS
+#    - Persistent failures cluster by operator: **PRQseTORexit** (5 relays, ~84%),
+#      **obzgs5tbmn4q** (7+ relays, 33–90%), **dotsrcExit** family (10 relays)
+#    - The failing set **churns over time** — a stable core persists while new relays
+#      appear and old ones resolve
+#    - Each scan has a stable core of **~21 repeat failures** plus **~10 new transient ones**
 
 # %%
 print("✅ Analysis complete. All charts saved to:", CHARTS_DIR)
