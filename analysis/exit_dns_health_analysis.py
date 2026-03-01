@@ -489,8 +489,9 @@ for fpath in sorted(DATA_DIR.glob("dns_health_*.json")):
     scan = m.get("scan", {})
     if scan.get("instances", 1) < 4:
         continue
-    if m.get("consensus_relays", 0) > 5000:
-        continue  # skip anomalous scans (e.g. duplicated relay list)
+    cr = m.get("consensus_relays", 0)
+    if cr < 100 or cr > 5000:
+        continue  # skip anomalous scans
     cv = m.get("cross_validation", {})
     pis = cv.get("per_instance_stats", {})
     ts = m.get("timestamp", "")
