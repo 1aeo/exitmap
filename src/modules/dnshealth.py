@@ -69,30 +69,92 @@ FIRST_HOP = os.environ.get("EXITMAP_FIRST_HOP", None)
 # Tor Metrics URL template
 TOR_METRICS_URL = "https://metrics.torproject.org/rs.html#details/{}"
 
-# SOCKS error code to status mapping
-_SOCKS_ERROR_MAP = {
-    1: "socks_general_failure",
-    2: "socks_ruleset_blocked",
-    3: "network_unreachable",
-    4: "dns_fail",
-    5: "connection_refused",
-    6: "ttl_expired",
-    7: "socks_command_unsupported",
-    8: "socks_address_unsupported",
+# SOCKS5 error code classification for Tor RESOLVE (0xF0) command.
+#
+# When exitmap sends a SOCKS5 RESOLVE command, the exit relay performs a DNS
+# lookup. Tor maps its internal stream-end reasons to SOCKS5 reply codes via
+# stream_end_reason_to_socks5_response() in reasons.c:
+# https://gitlab.torproject.org/tpo/core/tor/-/blob/HEAD/src/core/or/reasons.c
+#
+# SOCKS5 code definitions from socks5_status.h:
+# https://gitlab.torproject.org/tpo/core/tor/-/blob/HEAD/src/lib/net/socks5_status.h
+#
+# Each entry: (status, error_category, error_subcategory, message, retryable)
+#
+# Categories:
+#   dns     — exit relay's DNS resolution failed, is blocked, or is unreachable
+#   tor     — Tor circuit/infrastructure failure, DNS resolver likely never consulted
+#   exitmap — scanner application issue, not the relay's fault
+#
+_SOCKS_ERROR_INFO = {
+    # 0x01 SOCKS5_GENERAL_ERROR
+    # reasons.c: MISC, DESTROY, RESOURCELIMIT, HIBERNATING, INTERNAL, TORPROTOCOL
+    # Tor infrastructure failures — circuit torn down, relay overloaded, relay
+    # hibernating, internal error, protocol violation. None indicate DNS issues.
+    # Retryable: RESOURCELIMIT could be momentary, and dead-circuit retries are fast.
+    1: ("socks_general_failure", "tor", "tor_error",
+        "Tor Error: SOCKS 1 - General failure (circuit/relay issue)", True),
+
+    # 0x02 SOCKS5_NOT_ALLOWED
+    # reasons.c: EXITPOLICY, ENTRYPOLICY
+    # Relay's Tor exit policy blocks DNS resolution. Relay operator configured their
+    # relay to not allow DNS lookups. DNS resolver was never consulted.
+    # Not retryable: policy won't change between attempts.
+    2: ("socks_ruleset_blocked", "dns", "relay_configuration",
+        "DNS Error: SOCKS 2 - Not allowed by relay exit policy", False),
+
+    # 0x03 SOCKS5_NET_UNREACHABLE
+    # reasons.c: NET_UNREACHABLE
+    # Exit relay cannot reach its DNS resolver at the network level. Relay is on
+    # the Tor network but its local path to DNS is broken.
+    # Retryable: could be a transient network blip on the relay side.
+    3: ("network_unreachable", "dns", "dns_unreachable",
+        "DNS Error: SOCKS 3 - Relay cannot reach DNS resolver", True),
+
+    # 0x04 SOCKS5_HOST_UNREACHABLE
+    # reasons.c: RESOLVEFAILED, NOROUTE
+    # DNS resolver on exit relay could not resolve the domain. For RESOLVE commands
+    # NOROUTE is rare (no TCP connection involved). Genuine DNS failure — resolver
+    # was consulted and returned no result.
+    # Not retryable: same query to same resolver = same negative-cached result.
+    4: ("dns_fail", "dns", "resolution_failed",
+        "DNS Error: SOCKS 4 - Domain not found (NXDOMAIN)", False),
+
+    # 0x05 SOCKS5_CONNECTION_REFUSED
+    # reasons.c: CONNECTREFUSED, CONNRESET, DONE
+    # Tor circuit died before DNS answer returned. For RESOLVE there is no TCP
+    # connection to "refuse" — these are circuit-level failures. Exit relay's
+    # DNS resolver was likely never consulted.
+    # Retryable: fast retry on dead circuit is low cost.
+    5: ("connection_refused", "tor", "connection_reset",
+        "Tor Error: SOCKS 5 - Circuit closed before DNS reply", True),
+
+    # 0x06 SOCKS5_TTL_EXPIRED
+    # reasons.c: TIMEOUT
+    # Exit relay accepted the RESOLVE request but DNS lookup timed out. Relay's
+    # DNS resolver is slow, overloaded, or unreachable from relay.
+    # Retryable: resolver may recover between retry attempts.
+    6: ("ttl_expired", "dns", "resolution_timeout",
+        "DNS Error: SOCKS 6 - DNS resolution timed out on relay", True),
+
+    # 0x07 SOCKS5_COMMAND_NOT_SUPPORTED
+    # No stream end reason maps here in reasons.c. Local Tor does not understand
+    # RESOLVE (0xF0). Should never happen with any modern Tor (support since 0.2.x).
+    # Not retryable: same broken Tor binary on every attempt.
+    7: ("socks_command_unsupported", "tor", "resolve_unsupported",
+        "Tor Error: SOCKS 7 - Tor does not support RESOLVE command", False),
+
+    # 0x08 SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED
+    # No stream end reason maps here in reasons.c. Local Tor does not support
+    # domain-name address type (0x03). Should never happen.
+    # Not retryable: same broken Tor binary on every attempt.
+    8: ("socks_address_unsupported", "tor", "address_type_unsupported",
+        "Tor Error: SOCKS 8 - Tor does not support domain address type", False),
 }
 
-# Descriptive error messages per plan (https://github.com/1aeo/exitmap/blob/cursor/tor-exit-relay-dns-plan-bd42/PLAN_TOR_EXIT_DNS_VALIDATOR.md)
-# All DNS-layer errors are prefixed with "DNS Error:" to distinguish from Tor Circuit Errors
-_SOCKS_ERROR_MESSAGES = {
-    1: "DNS Error: SOCKS 1 - General failure",
-    2: "DNS Error: SOCKS 2 - Not allowed by ruleset",
-    3: "DNS Error: SOCKS 3 - Network unreachable",
-    4: "DNS Error: SOCKS 4 - Domain not found (NXDOMAIN)",
-    5: "DNS Error: SOCKS 5 - Connection refused",
-    6: "DNS Error: SOCKS 6 - TTL expired",
-    7: "DNS Error: SOCKS 7 - Command not supported",
-    8: "DNS Error: SOCKS 8 - Address type not supported",
-}
+# Convenience lookups (derived from _SOCKS_ERROR_INFO for backward compatibility)
+_SOCKS_ERROR_MAP = {code: info[0] for code, info in _SOCKS_ERROR_INFO.items()}
+_SOCKS_ERROR_MESSAGES = {code: info[3] for code, info in _SOCKS_ERROR_INFO.items()}
 
 # Regex to extract SOCKS error code (compiled once)
 _SOCKS_ERROR_RE = re.compile(r"(?:error\s*|0x0)([1-8])", re.IGNORECASE)
@@ -175,7 +237,8 @@ def _parse_socks_error_code(err_str):
 
 
 def _make_result(exit_desc, domain, expected_ip, status="unknown",
-                 resolved_ip=None, timing=None, error_msg=None, attempt=0, first_hop=None):
+                 resolved_ip=None, timing=None, error_msg=None, attempt=0, first_hop=None,
+                 error_category=None, error_subcategory=None):
     """Create result dict - single source of truth for result structure."""
     fp = exit_desc.fingerprint
     return {
@@ -193,6 +256,8 @@ def _make_result(exit_desc, domain, expected_ip, status="unknown",
         "resolved_ip": resolved_ip,
         "timing": timing,  # {total_ms, socket_ms, dns_ms}
         "error": error_msg,
+        "error_category": error_category,      # dns, tor, exitmap, or None (success)
+        "error_subcategory": error_subcategory,  # specific failure type within category
         "attempt": attempt,
     }
 
@@ -262,78 +327,107 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
     """Resolve domain through exit relay with retry logic."""
     exit_url = exiturl(exit_desc.fingerprint)
     result = _make_result(exit_desc, domain, expected_ip, first_hop=first_hop)
+    retryable = True  # Default: allow retries unless overridden
 
     for attempt in range(1, retries + 1):
         result["attempt"] = attempt
         sock = None
         total_start = time.time()
         status = error_msg = None
+        retryable = True
 
         try:
             sock = torsocks.torsocket()
             sock.settimeout(QUERY_TIMEOUT)
             ip = _normalize_ip(sock.resolve(domain))
-            
+
             result["resolved_ip"] = ip
             result["timing"] = _make_timing(total_start)
 
             if expected_ip:
                 if ip == expected_ip:
                     result["status"] = "success"
+                    result["error_category"] = None
+                    result["error_subcategory"] = None
                     log.info("%s resolved to %s (correct)", exit_url, ip)
                 else:
                     result["status"] = "wrong_ip"
                     result["error"] = "DNS Error: Expected %s, got %s" % (expected_ip, ip)
+                    result["error_category"] = "dns"
+                    result["error_subcategory"] = "wrong_ip"
                     log.warning("%s wrong IP: %s != %s", exit_url, ip, expected_ip)
             else:
                 result["status"] = "success"
+                result["error_category"] = None
+                result["error_subcategory"] = None
                 log.info("%s resolved to %s", exit_url, ip)
             return result
 
         except error.SOCKSv5Error as err:
-            # SOCKS error - DNS was attempted but failed
+            # SOCKS error — look up category/subcategory from _SOCKS_ERROR_INFO
             result["timing"] = _make_timing(total_start)
             err_str = str(err)
             err_code = _parse_socks_error_code(err_str)
 
-            # NXDOMAIN (error 4) - not a retry-able error
+            # Special handling for code 4 (NXDOMAIN) — mode-dependent
             if err_code == 4:
                 if expected_ip:
                     result["status"] = "dns_fail"
                     result["error"] = "DNS Error: SOCKS 4 - Domain not found (NXDOMAIN)"
+                    result["error_category"] = "dns"
+                    result["error_subcategory"] = "resolution_failed"
                     log.warning("%s NXDOMAIN for wildcard", exit_url)
                 else:
                     result["status"] = "success"
                     result["resolved_ip"] = "NXDOMAIN"
+                    result["error_category"] = None
+                    result["error_subcategory"] = None
                     log.info("%s NXDOMAIN (DNS working)", exit_url)
                 return result
 
-            # Other SOCKS errors - use descriptive messages with first hop
-            status = _SOCKS_ERROR_MAP.get(err_code, "socks_error")
-            base_msg = _SOCKS_ERROR_MESSAGES.get(err_code, f"DNS Error: SOCKS {err_code} - Unknown error")
+            # All other SOCKS errors — use _SOCKS_ERROR_INFO for classification
+            info = _SOCKS_ERROR_INFO.get(err_code)
+            if info:
+                status, category, subcategory, base_msg, retryable = info
+                result["error_category"] = category
+                result["error_subcategory"] = subcategory
+            else:
+                status = "socks_error"
+                base_msg = "Exitmap Error: SOCKS %s - Unknown error code" % err_code
+                result["error_category"] = "exitmap"
+                result["error_subcategory"] = "unknown_socks_code"
+                retryable = False
             error_msg = _fmt_with_hop(base_msg, first_hop)
 
         except socket.timeout:
             status = "timeout"
             error_msg = _fmt_with_hop("DNS Error: Timeout after %ds" % QUERY_TIMEOUT, first_hop)
+            result["error_category"] = "dns"
+            result["error_subcategory"] = "socket_timeout"
 
         except EOFError:
             status = "eof_error"
-            error_msg = _fmt_with_hop("DNS Error: Connection closed unexpectedly", first_hop)
+            error_msg = _fmt_with_hop("Tor Error: Connection closed unexpectedly", first_hop)
+            result["error_category"] = "tor"
+            result["error_subcategory"] = "connection_dropped"
 
         except FileNotFoundError:
             # Tor SOCKS socket gone - process likely crashed
             status = "tor_connection_lost"
             error_msg = _fmt_with_hop(
-                "DNS Error: Lost connection to Tor (socket gone) while testing exit %s" % exit_desc.fingerprint[:8],
+                "Exitmap Error: Lost connection to Tor (socket gone) while testing exit %s" % exit_desc.fingerprint[:8],
                 first_hop)
+            result["error_category"] = "exitmap"
+            result["error_subcategory"] = "socket_gone"
 
         except ConnectionRefusedError:
             # Tor not accepting connections
             status = "tor_connection_refused"
             error_msg = _fmt_with_hop(
-                "DNS Error: Tor refused connection (may be restarting) while testing exit %s" % exit_desc.fingerprint[:8],
+                "Exitmap Error: Tor refused connection (may be restarting) while testing exit %s" % exit_desc.fingerprint[:8],
                 first_hop)
+            result["error_category"] = "exitmap"
+            result["error_subcategory"] = "connection_refused"
 
         except HardTimeoutError:
             # Let hard timeout propagate to do_validation handler
@@ -341,7 +435,10 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
         except Exception as err:
             status = "exception"
-            error_msg = _fmt_exception(err)
+            error_msg = "Exitmap Error: %s" % _fmt_exception(err)
+            result["error_category"] = "exitmap"
+            result["error_subcategory"] = "exception"
+            retryable = False
 
         finally:
             # Ensure socket is closed even on error
@@ -351,12 +448,15 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
                 except Exception:
                     pass
 
-        # Common error handling for non-SOCKS errors (only if status was set)
+        # Set result fields and decide whether to retry
         if status is not None:
             result["timing"] = _make_timing(total_start)
             result["status"] = status
             result["error"] = error_msg
             log.warning("Attempt %d/%d: %s [%s] %s", attempt, retries, exit_url, status, error_msg)
+
+            if not retryable:
+                return result
 
             if attempt < retries:
                 time.sleep(RETRY_DELAY)
@@ -381,13 +481,17 @@ def do_validation(exit_desc, query_domain, expected_ip, first_hop=None):
                                   timing=hard_timing,
                                   error_msg=_fmt_with_hop("DNS Error: Hard timeout after %ds" % HARD_TIMEOUT, first_hop),
                                   attempt=MAX_RETRIES,
-                                  first_hop=first_hop)
+                                  first_hop=first_hop,
+                                  error_category="dns",
+                                  error_subcategory="hard_timeout")
         except Exception as e:
-            error_msg = _fmt_exception(e)
+            error_msg = "Exitmap Error: %s" % _fmt_exception(e)
             log.error("EXCEPTION %s: %s (first_hop=%s)", 
                       exiturl(fp), error_msg, _fmt_first_hop(first_hop))
             result = _make_result(exit_desc, query_domain, expected_ip,
-                                  status="exception", error_msg=error_msg, first_hop=first_hop)
+                                  status="exception", error_msg=error_msg, first_hop=first_hop,
+                                  error_category="exitmap",
+                                  error_subcategory="exception")
 
     _status_counts[result["status"]] += 1
     _write_result(result, fp)
@@ -488,7 +592,13 @@ def _write_circuit_failures(stats, controller=None):
 
 
 def _write_terminated_relays(relays, controller=None):
-    """Write terminated relays as timeout errors (forcibly killed mid-scan)."""
+    """Write terminated relays as process_timeout (forcibly killed mid-scan).
+
+    The entire subprocess — which includes circuit setup, SOCKS negotiation,
+    DNS query, and retries — stalled so badly the parent process killed it.
+    This could be a hung Tor circuit, stuck socket, or deadlock. Not
+    necessarily a DNS issue.
+    """
     if not util.analysis_dir or not relays:
         return 0
     now = time.time()
@@ -496,8 +606,10 @@ def _write_terminated_relays(relays, controller=None):
         nickname, address = _get_relay_info(controller, fp)
         _write_result({
             "exit_fingerprint": fp, "exit_nickname": nickname, "exit_address": address,
-            "status": "timeout", "run_id": _run_id, "timestamp": now,
-            "error": "DNS Error: Timeout (terminated during retry)",
+            "status": "process_timeout", "run_id": _run_id, "timestamp": now,
+            "error": "Tor Error: Process terminated due to timeout",
+            "error_category": "tor",
+            "error_subcategory": "process_terminated",
             "tor_metrics_url": TOR_METRICS_URL.format(fp),
             "query_domain": None, "expected_ip": None, "resolved_ip": None,
             "timing": None, "mode": None, "first_hop": None, "attempt": None,
@@ -510,7 +622,7 @@ def teardown(stats=None, controller=None, terminated_relays=None, **kwargs):
     circuit_failures = _write_circuit_failures(stats, controller) if stats else 0
     terminated = _write_terminated_relays(terminated_relays, controller)
     if terminated:
-        _status_counts["timeout"] = _status_counts.get("timeout", 0) + terminated
+        _status_counts["process_timeout"] = _status_counts.get("process_timeout", 0) + terminated
     
     total, success = sum(_status_counts.values()), _status_counts.get("success", 0)
     log.info("=" * 60)
