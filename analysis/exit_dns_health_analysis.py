@@ -14,7 +14,7 @@
 # %% [markdown]
 # # 🔬 Tor Exit DNS Health — Historical Analysis
 #
-# **Data source:** [exitdnshealth.1aeo.com](https://exitdnshealth.1aeo.com/) — 100 archive scans, Jan 25 – Feb 22 2026
+# **Data source:** [exitdnshealth.1aeo.com](https://exitdnshealth.1aeo.com/) — 100 archive scans, Jan 26 – Feb 28 2026
 #
 # **Goal:** Analyse the full history of exit relay DNS health scan results to:
 # - Identify **repeat patterns** and **anomalies** to ensure nothing is broken in the exitmap scans
@@ -212,9 +212,9 @@ print(f"Phases: {df_clean['phase'].value_counts().to_dict()}")
 #
 # | Phase | Scan Type | Instances | Period | Freq | Scans |
 # |-------|-----------|-----------|--------|------|-------|
-# | **Single Instance** | `single` | 1 | Jan 25–29 | Every 2h | ~52 |
-# | **2-Instance CV** | `cross_validate` | 2 | Jan 25, 29 (experiments) | — | 3 |
-# | **4-Instance CV** | `cross_validate` | 4 | Jan 30 onwards | Every 12h | ~40 |
+# | **Single Instance** | `single` | 1 | Jan 26–29 | Every 2h | ~44 |
+# | **2-Instance CV** | `cross_validate` | 2 | Jan 29 (experiment) | — | 1 |
+# | **4-Instance CV** | `cross_validate` | 4 | Jan 30 onwards | Every 12h | ~51 |
 
 # %%
 # Summary Statistics by Phase (anomalous scans excluded)
@@ -356,7 +356,7 @@ plt.show()
 # ## 📈 Chart 3 — Timeout & Unreachable Relay Counts
 #
 # Two panels showing the dramatic drop in both **unreachable relays** (top) and
-# **total timeouts** (bottom). Single-instance scans left ~537 relays untested every scan
+# **total timeouts** (bottom). Single-instance scans left ~534 relays untested every scan
 # and saw 80–140 timeouts. The 4-instance model reduces these to near-zero.
 
 # %%
@@ -395,8 +395,8 @@ plt.show()
 # ## 📈 Chart 4 — Tested vs Consensus Relays
 #
 # The **red-shaded gap** between the blue consensus line and the green tested line
-# represents relays that the scan _could not reach_. Single-instance: avg gap of **~537 relays**.
-# With 4-instance CV: the gap shrinks to **~67 relays**.
+# represents relays that the scan _could not reach_. Single-instance: avg gap of **~535 relays**.
+# With 4-instance CV: the gap shrinks to **~68 relays**.
 
 # %%
 fig, ax = plt.subplots(figsize=(14, 6))
@@ -434,7 +434,7 @@ plt.show()
 #
 # Every 4-CV scan rescues relay results that _would have been false negatives_ with a single
 # instance. The stacked bars show recovery by category (DNS fail, timeout, error) and the
-# green line shows the total. On average **~84 relays** are rescued per scan.
+# green line shows the total. On average **~85 relays** are rescued per scan.
 
 # %%
 df_cv = df_clean[df_clean["phase"].isin(["cv2", "cv4"]) & df_clean["cv_relays_improved"].notna()].copy()
@@ -576,7 +576,7 @@ plt.show()
 # ## 📈 Chart 8 — DNS & Circuit Failure Categories
 #
 # A stacked breakdown of all failure types per scan. In the single-instance era, the dominant
-# failures were **circuit destroyed** and **circuit channel closed** (~454/scan). These are Tor
+# failures were **circuit destroyed** and **circuit channel closed** (~452/scan). These are Tor
 # network-level issues that the 4-instance model effectively eliminates through redundancy.
 
 # %%
@@ -610,8 +610,8 @@ plt.show()
 # ## 📈 Chart 9 — Cross-Validation Consistency Analysis
 #
 # For each 4-CV scan, every relay gets tested by 2 of the 4 instances. We can classify results as:
-# - **All Success** (96.0%) — both instances agree the relay is healthy
-# - **Mixed / CV Rescued** (2.9%) — instances _disagreed_ — this is exactly what CV saves
+# - **All Success** (95.9%) — both instances agree the relay is healthy
+# - **Mixed / CV Rescued** (3.0%) — instances _disagreed_ — this is exactly what CV saves
 # - **All Failed** (1.1%) — both instances agree the relay has DNS issues (true failure)
 
 # %%
@@ -662,7 +662,7 @@ if len(df_cv4) > 0:
 #
 # A **composite confidence score** = `(tested/consensus) × dns_success_rate` captures both
 # how much of the network was reached and how well DNS resolved. Single-instance: **80.8%**.
-# 4-Instance CV: **96.8%** — a **+16.0pp improvement**.
+# 4-Instance CV: **96.7%** — a **+15.9pp improvement**.
 
 # %%
 df_clean = df_clean.copy()
@@ -718,10 +718,10 @@ plt.show()
 # ---
 # ## 📈 Chart 11 — Relay Failure Frequency Distribution
 #
-# Of 383 unique relays that failed at least once, **61% failed in only a single scan** —
+# Of 488 unique relays that failed at least once, **66% failed in only a single scan** —
 # these are transient Tor network noise that cross-validation already handles. At the other
-# extreme, **6 relays failed in every single scan** (100% failure rate). The vast majority
-# of failures are one-offs; only a tiny persistent core represents genuinely broken DNS.
+# extreme, **6 relays failed in 80%+ of scans** — a persistent core of genuinely broken DNS.
+# The vast majority of failures are one-offs; only a tiny persistent set represents real issues.
 
 # %%
 # Build per-relay failure counts across 4-CV scans
@@ -910,7 +910,7 @@ plt.show()
 #
 # For each scan, failures are classified as **repeat** (relay has failed in a prior scan)
 # or **new** (first time this relay has ever failed). The stacked bars show that a stable
-# core of **~15–20 repeat failures** appears every scan, supplemented by **~3–10 new relays**
+# core of **~21 repeat failures** appears every scan, supplemented by **~10 new relays**
 # that are typically transient one-offs. The Feb 6 anomaly spike (74 new failures) is clearly
 # visible as a network disruption, not a scanning issue.
 
@@ -1050,20 +1050,20 @@ for date, count in df_by_date.items():
 # | Metric | Single Instance | 4-Instance CV | Improvement |
 # |--------|---------------:|-------------:|------------:|
 # | **Reachability** | ~83% | ~98% | **+15pp** |
-# | **DNS Success Rate** | ~97.5% | ~98.9% | **+1.3pp** |
-# | **DNS Timeouts/scan** | ~18 | ~1 | **95% reduction** |
-# | **Unreachable relays/scan** | ~537 | ~16 | **97% reduction** |
+# | **DNS Success Rate** | ~97.5% | ~98.9% | **+1.4pp** |
+# | **DNS Timeouts/scan** | ~19 | ~1 | **95% reduction** |
+# | **Unreachable relays/scan** | ~534 | ~20 | **96% reduction** |
 # | **Confidence score** | ~81% | ~97% | **+16pp** |
-# | **CV relays rescued/scan** | N/A | ~84 | — |
+# | **CV relays rescued/scan** | N/A | ~85 | — |
 #
 # ### Key observations:
 #
 # 1. **Reachability is the biggest win** — single instance missed ~17% of the Tor network simply
 #    because one Tor circuit attempt is unreliable. The 4-instance model tries each relay through
-#    multiple independent circuits and recovers ~84 relays/scan that would have been false negatives.
+#    multiple independent circuits and recovers ~85 relays/scan that would have been false negatives.
 #
 # 2. **Per-instance failures are random** — the heatmap (Chart 6) confirms no single instance is
-#    systematically worse. All 4 instances have failure rates within 0.3pp of each other (2.04–2.32%).
+#    systematically worse. All 4 instances have failure rates within 0.3pp of each other (2.05–2.36%).
 #    This proves failures are from Tor network variability, not infrastructure issues.
 #
 # 3. **Timing improved** — p50 dropped from ~22s to ~9s, p99 from ~44s to ~14s. Parallelism spreads
@@ -1081,14 +1081,14 @@ for date, count in df_by_date.items():
 #    4-CV scan is comprehensive enough that less frequent scanning still captures the full picture.
 #
 # 6. **Most failures are transient, but a small core is persistently broken** (Sensitivity Analysis):
-#    - 383 unique relays failed at least once across 40 CV scans
-#    - **61% (232 relays) failed only once** — transient Tor network noise
-#    - **6 relays failed in every single scan (100%)** — genuinely broken DNS
-#    - Persistent failures cluster by operator: **PRQseTORexit** (5 relays, all 40/40),
-#      **obzgs5tbmn4q** (7+ relays, 28–100%), **dotsrcExit** family (10 relays, ~28%)
-#    - The failing set **churns over time** — comparing first 5 vs last 5 scans: 30 relays
-#      resolved, 64 new ones appeared, only 20 overlap
-#    - Each scan has a stable core of **~15–20 repeat failures** plus **~3–10 new transient ones**
+#    - 488 unique relays failed at least once across 51 CV scans
+#    - **66% (323 relays) failed only once** — transient Tor network noise
+#    - **6 relays failed in 80%+ of scans** — genuinely broken DNS
+#    - Persistent failures cluster by operator: **PRQseTORexit** (5 relays, ~84%),
+#      **obzgs5tbmn4q** (7+ relays, 33–90%), **dotsrcExit** family (10 relays)
+#    - The failing set **churns over time** — a stable core persists while new relays
+#      appear and old ones resolve
+#    - Each scan has a stable core of **~21 repeat failures** plus **~10 new transient ones**
 
 # %%
 print("✅ Analysis complete. All charts saved to:", CHARTS_DIR)
