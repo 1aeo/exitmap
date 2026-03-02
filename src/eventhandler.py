@@ -25,6 +25,7 @@ import functools
 import threading
 import multiprocessing
 import logging
+import queue
 import socket
 import stem
 from stem import StreamStatus
@@ -233,8 +234,8 @@ class EventHandler(object):
                 break
 
             try:
-                circ_id, sockname = self.queue.get(timeout=5)
-            except EOFError:
+                circ_id, sockname = self.queue.get()
+            except (EOFError, queue.Empty):
                 log.debug("IPC queue terminated.")
                 break
 
