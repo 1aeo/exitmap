@@ -3,12 +3,6 @@
 # 3.12 EOL 2028-10, PEP 693
 # 3.11 EOL 2027-10, PEP 664
 # 3.10 EOL 2026-10, PEP 619
-# 3.9 EOL 2025-10, PEP 596
-
-include:
-  - project: tpo/tpa/ci-templates
-    file: [ dependency_proxy.yml ]
-    inputs: { namespace: tpo/network-health }
 
 # Change pip's cache directory to be inside the project directory since we can
 # only cache local items.
@@ -20,16 +14,16 @@ cache:
     - .cache/pip
 
 before_script:
-  - python --version ; pip --version  # For debugging
-  - pip install virtualenv
+  - python3 --version ; pip3 --version  # For debugging
+  - pip3 install virtualenv
   - virtualenv venv
   - source venv/bin/activate
   - pip install .[dev]
 
 test:
-  image: ${DOCKER_REGISTRY_URL}/library/python:$VERSION
+  image: python:$VERSION
   script:
     - tox
   parallel:
     matrix:
-      - VERSION: ['3.9', '3.10', '3.11', '3.12', '3.13']
+      - VERSION: ['3.10', '3.11', '3.12', '3.13']

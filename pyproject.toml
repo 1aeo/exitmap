@@ -7,7 +7,7 @@ name = "exitmap"
 version = "0.1.0"
 description = "fast and modular Python-based scanner for [Tor](https://www.torproject.org) exit relays."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "dnspython",
     "stem",
