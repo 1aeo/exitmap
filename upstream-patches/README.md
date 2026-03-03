@@ -2,9 +2,18 @@
 
 Patch files for submitting to `gitlab.torproject.org/tpo/network-health/exitmap`.
 
-## How to Apply
+All patches are based on upstream `main` at commit `b3bedb8` (juga's "Replace % operator in logging by lazy evaluation", Jan 28 2026). The MRs are stacked: each depends on the ones before it.
 
-These patches are based on upstream `main` at commit `b3bedb8` (juga's "Replace % operator in logging by lazy evaluation", Jan 28 2026).
+## Branches
+
+| Branch | Base | Commits | Status |
+|--------|------|---------|--------|
+| `upstream/mr1-bugfixes` | upstream `main` | 3 | Ready |
+| `upstream/mr2-relay-selection` | MR1 | 1 | Ready |
+| `upstream/mr3-circuit-tracking` | MR2 | 1 | Ready |
+| `upstream/mr4-dnshealth` | MR3 | 1 | Ready |
+
+## How to Apply
 
 ```bash
 # Clone your GitLab fork of exitmap
@@ -13,40 +22,61 @@ cd exitmap
 git remote add upstream https://gitlab.torproject.org/tpo/network-health/exitmap.git
 git fetch upstream
 
-# Create MR branch from upstream main
+# MR 1: Bug fixes
 git checkout -b bugfix/race-condition-memleak-regex upstream/main
-
-# Apply patches
-git am mr1-bugfixes/*.patch
-
-# Push to your fork
+git am mr1-bugfixes/0*.patch
 git push origin bugfix/race-condition-memleak-regex
+
+# MR 2: Relay selection (on top of MR 1)
+git checkout -b feature/relay-selection-filtering
+git am mr2-relay-selection/0*.patch
+git push origin feature/relay-selection-filtering
+
+# MR 3: Circuit tracking (on top of MR 2)
+git checkout -b feature/circuit-failure-tracking
+git am mr3-circuit-tracking/0*.patch
+git push origin feature/circuit-failure-tracking
+
+# MR 4: DNS health module (on top of MR 3)
+git checkout -b feature/dnshealth-module
+git am mr4-dnshealth/0*.patch
+git push origin feature/dnshealth-module
 ```
 
-Then open a Merge Request on GitLab targeting `main`.
+Then open 4 Merge Requests on GitLab, each targeting `main`.
+
+---
 
 ## MR 1: Bug Fixes (`mr1-bugfixes/`)
 
-Three standalone bug fixes for issues found in production:
+Three standalone bug fixes for issues found in production. See `mr1-bugfixes/MR_DESCRIPTION.md`.
 
-### Patch 1: Fix SyntaxWarning for invalid escape sequence in regex
-- **File:** `src/util.py` (1 line)
-- **Issue:** Python 3.12+ raises `SyntaxWarning` for `\.` in non-raw string
-- **Fix:** Use raw string `r"..."` for regex pattern
+| Patch | File(s) | Lines |
+|-------|---------|-------|
+| Fix SyntaxWarning regex | `src/util.py` | +1/-1 |
+| Fix race condition in Attacher.prepare() | `src/eventhandler.py` | +30/-26 |
+| Fix memory leak: Manager().Queue() | `src/eventhandler.py`, `src/exitmap.py` | +93/-41 |
 
-### Patch 2: Fix race condition in Attacher.prepare() causing KeyError crash
-- **File:** `src/eventhandler.py` (~30 lines)
-- **Issue:** `prepare()` is called from two threads (queue_reader + event thread) with no synchronization. Both can enter `if port in self.unattached`, then both try `del self.unattached[port]`, causing KeyError.
-- **Fix:** Add `threading.Lock()` and use atomic `dict.pop()` instead of check-then-delete.
-- **Impact:** Fixes rare production crash where scans terminate early (~800/3000 relays).
+## MR 2: Relay Selection (`mr2-relay-selection/`)
 
-### Patch 3: Fix memory leak — replace Manager().Queue() with multiprocessing.Queue
-- **Files:** `src/eventhandler.py`, `src/exitmap.py` (~90 lines)
-- **Issue:** `multiprocessing.Manager().Queue()` spawns a background Manager subprocess that is never shut down, leaking resources.
-- **Fix:**
-  - Replace with plain `multiprocessing.Queue()`
-  - Add sentinel shutdown pattern for queue reader thread
-  - Replace `sys.exit()` in `check_finished()` with `threading.Event` signaling
-  - Add `wait()` / `shutdown()` lifecycle methods to EventHandler
-  - Add `controller.close()` in `finally` block in `exitmap.py`
-- **Why the restructure:** The `sys.exit()` calls in `check_finished()` could terminate from a background thread, bypassing cleanup. The new approach signals completion via Event and lets the main thread orchestrate orderly shutdown.
+Extends `get_fingerprints()` with optional filtering by flags, bandwidth, and country. See `mr2-relay-selection/MR_DESCRIPTION.md`.
+
+| Patch | File(s) | Lines |
+|-------|---------|-------|
+| Add filtering options to get_fingerprints() | `src/relayselector.py` | +36/-7 |
+
+## MR 3: Circuit Failure Tracking (`mr3-circuit-tracking/`)
+
+Circuit registry, failure tracking, first_hop passing, grace period shutdown. See `mr3-circuit-tracking/MR_DESCRIPTION.md`.
+
+| Patch | File(s) | Lines |
+|-------|---------|-------|
+| Track circuit failures with relay fingerprints | `src/stats.py`, `src/eventhandler.py`, `src/exitmap.py` | +224/-31 |
+
+## MR 4: DNS Health Module (`mr4-dnshealth/`)
+
+New `dnshealth` module with wildcard DNS validation + 60 tests. See `mr4-dnshealth/MR_DESCRIPTION.md`.
+
+| Patch | File(s) | Lines |
+|-------|---------|-------|
+| Add dnshealth module | `src/modules/dnshealth.py`, `test/test_dnshealth.py`, `doc/HACKING.md` | +1364/-1 |
