@@ -162,6 +162,8 @@ def module_call(queue, module, circ_id, socks_port,
                 with torsocks.MonkeyPatchedSocket(queue, circ_id, socks_port):
                     func(*args)
             except (error.SOCKSv5Error, socket.error) as err:
+                # `Torsocket` catchs SOCKS5Error 0x06 (TTL Expired) and logs
+                # it, so isn't catched here.
                 log.error("Error in `module_call` closure: %s", err)
                 return
             except Exception as err:

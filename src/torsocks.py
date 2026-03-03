@@ -88,6 +88,13 @@ class _Torsocket(socks.socksocket):
                 # args[0] is the original socket to the proxy address
                 send_queue(args[0].getsockname())
                 orig_neg(*args, **kwargs)
+            except socks.SOCKS5Error as e:
+                # No e.errno, but can still check the message
+                if e.msg.startswith("0x06: TTL expired"):
+                    # Don't raise this exception, just log it at level warning
+                    log.warning("Error in custom negotiation function: %s", e)
+                else:
+                    raise error.SOCKSv5Error("Error in custom negotiation function: {}".format(e))
             except Exception as e:
                 raise error.SOCKSv5Error("Error in custom negotiation function: {}".format(e))
         self._proxy_negotiators[2] = ourneg
