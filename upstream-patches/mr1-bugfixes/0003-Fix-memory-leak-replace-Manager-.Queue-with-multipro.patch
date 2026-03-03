@@ -1,4 +1,4 @@
-From 7fe6def35a91cdb48ffcd405a9c46b883b3e7224 Mon Sep 17 00:00:00 2001
+From 29a44ad7c2e07ec9575aeae08c471187e7e19bfc Mon Sep 17 00:00:00 2001
 From: 1aeo <github@1aeo.com>
 Date: Tue, 3 Mar 2026 04:48:41 +0000
 Subject: [PATCH 3/3] Fix memory leak: replace Manager().Queue() with
@@ -21,8 +21,6 @@ The sys.exit() calls in check_finished() were problematic because they
 could terminate the process from a background thread, bypassing cleanup.
 The new approach signals completion via an Event and lets the main thread
 orchestrate orderly shutdown.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/eventhandler.py | 107 ++++++++++++++++++++++++++++++--------------
  src/exitmap.py      |  27 +++++++----

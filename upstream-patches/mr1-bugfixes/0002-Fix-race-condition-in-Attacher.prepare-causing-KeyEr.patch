@@ -1,4 +1,4 @@
-From eca29444291065d3c61df00655f4046811ce60d2 Mon Sep 17 00:00:00 2001
+From f976119835dc7be15e860fe6c155df721a3f6b2a Mon Sep 17 00:00:00 2001
 From: 1aeo <github@1aeo.com>
 Date: Tue, 3 Mar 2026 04:46:47 +0000
 Subject: [PATCH 2/3] Fix race condition in Attacher.prepare() causing KeyError
@@ -18,8 +18,6 @@ Fix:
 
 This fixes a rare crash observed in production where the scan would
 terminate early with only ~800 relays instead of ~3000.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/eventhandler.py | 56 ++++++++++++++++++++++++---------------------
  1 file changed, 30 insertions(+), 26 deletions(-)
