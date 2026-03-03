@@ -1,0 +1,87 @@
+From 95602302f28d89df9753a92d7b81c22f8f656f1e Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Tue, 3 Mar 2026 04:53:06 +0000
+Subject: [PATCH] relayselector: Add filtering options to get_fingerprints()
+
+Extend get_fingerprints() with optional keyword parameters for filtering
+relay selection by flags, bandwidth, and country. All new parameters
+default to None/False for full backward compatibility.
+
+New parameters:
+- include_flags: set of stem.Flag the relay MUST have ALL of
+- exclude_flags: set of stem.Flag the relay must have NONE of
+- min_bandwidth_kb: minimum consensus bandwidth in KB/s
+- require_measured_bw: only include authority-measured bandwidth
+- include_country: 2-letter country code filter
+
+This is useful for any scanning module that needs to select relays with
+specific characteristics, e.g. selecting only high-bandwidth guards with
+the STABLE flag for use as first hops.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/relayselector.py | 43 ++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 36 insertions(+), 7 deletions(-)
+
+diff --git a/src/relayselector.py b/src/relayselector.py
+index 122bfb5..c5ec95b 100755
+--- a/src/relayselector.py
++++ b/src/relayselector.py
+@@ -68,18 +68,47 @@ def parse_cmd_args():
+     return parser.parse_args()
+ 
+ 
+-def get_fingerprints(cached_consensus_path, exclude=[]):
++def get_fingerprints(cached_consensus_path, exclude=[],
++                     include_flags=None, exclude_flags=None,
++                     min_bandwidth_kb=None, require_measured_bw=False,
++                     include_country=None):
+     """
+-    Get all relay fingerprints in the provided consensus.
+-
+-    Relay fingerprints which are present in the list `exclude' are ignored.
++    Get relay fingerprints from consensus, optionally filtered.
++
++    All new parameters default to None/False for full backward compatibility
++    with existing callers.
++
++    :param str cached_consensus_path: path to cached-consensus file
++    :param list exclude: fingerprints to exclude
++    :param set include_flags: stem.Flag values the relay MUST have ALL of
++    :param set exclude_flags: stem.Flag values the relay must have NONE of
++    :param int min_bandwidth_kb: minimum consensus bandwidth in KB/s
++    :param bool require_measured_bw: only include authority-measured bandwidth
++    :param str include_country: 2-letter country code (only relays in this country)
++    :returns: list of relay fingerprints matching all criteria
++    :rtype: list
+     """
+-
+     fingerprints = []
+ 
++    # Load country relay set once if needed
++    country_relays = None
++    if include_country:
++        country_relays = frozenset(util.get_relays_in_country(include_country))
++
+     for desc in stem.descriptor.parse_file(cached_consensus_path):
+-        if desc.fingerprint not in exclude:
+-            fingerprints.append(desc.fingerprint)
++        if desc.fingerprint in exclude:
++            continue
++        if include_flags and not include_flags.issubset(desc.flags):
++            continue
++        if exclude_flags and exclude_flags.intersection(desc.flags):
++            continue
++        if min_bandwidth_kb and desc.bandwidth < min_bandwidth_kb:
++            continue
++        if require_measured_bw and getattr(desc, 'is_unmeasured', False):
++            continue
++        if country_relays and desc.fingerprint not in country_relays:
++            continue
++        fingerprints.append(desc.fingerprint)
+ 
+     return fingerprints
+ 
+-- 
+2.43.0
+
