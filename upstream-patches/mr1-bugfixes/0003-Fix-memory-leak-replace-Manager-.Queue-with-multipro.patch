@@ -1,0 +1,249 @@
+From 7fe6def35a91cdb48ffcd405a9c46b883b3e7224 Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Tue, 3 Mar 2026 04:48:41 +0000
+Subject: [PATCH 3/3] Fix memory leak: replace Manager().Queue() with
+ multiprocessing.Queue
+
+multiprocessing.Manager().Queue() spawns a background Manager subprocess
+that was never explicitly shut down, causing a resource leak. Replace it
+with a plain multiprocessing.Queue() which requires no subprocess.
+
+Additional cleanup to support this change:
+- Add sentinel value (None) shutdown pattern for the queue reader thread
+- Replace sys.exit() calls in check_finished() with threading.Event
+  signaling, allowing the main thread to coordinate shutdown properly
+- Add wait() and shutdown() methods to EventHandler for clean lifecycle
+- Add _close_queue() to release queue resources
+- In exitmap.py: use try/finally to ensure controller.close() is called
+  and handler.shutdown() runs after iter_exit_relays() completes
+
+The sys.exit() calls in check_finished() were problematic because they
+could terminate the process from a background thread, bypassing cleanup.
+The new approach signals completion via an Event and lets the main thread
+orchestrate orderly shutdown.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/eventhandler.py | 107 ++++++++++++++++++++++++++++++--------------
+ src/exitmap.py      |  27 +++++++----
+ 2 files changed, 93 insertions(+), 41 deletions(-)
+
+diff --git a/src/eventhandler.py b/src/eventhandler.py
+index 368bfdb..db9e91b 100644
+--- a/src/eventhandler.py
++++ b/src/eventhandler.py
+@@ -20,7 +20,6 @@
+ Handles Tor controller events.
+ """
+ 
+-import sys
+ import functools
+ import threading
+ import multiprocessing
+@@ -206,18 +205,20 @@ class EventHandler(object):
+         self.controller = controller
+         self.attacher = Attacher(controller)
+         self.module = module
+-        self.manager = multiprocessing.Manager()
+-        self.queue = self.manager.Queue()
++        # Use plain Queue instead of Manager().Queue() to avoid spawning
++        # a Manager subprocess that must be explicitly shut down.
++        self.queue = multiprocessing.Queue()
+         self.socks_port = socks_port
+         self.exit_destinations = exit_destinations
+         self.target_host = target_host
+         self.target_port = target_port
+         self.check_finished_lock = threading.Lock()
+         self.already_finished = False
++        self.finished_event = threading.Event()
+ 
+-        queue_thread = threading.Thread(target=self.queue_reader)
+-        queue_thread.daemon = False
+-        queue_thread.start()
++        self.queue_thread = threading.Thread(target=self.queue_reader)
++        self.queue_thread.daemon = False
++        self.queue_thread.start()
+ 
+     def queue_reader(self):
+         """
+@@ -237,10 +238,19 @@ class EventHandler(object):
+                 break
+ 
+             try:
+-                circ_id, sockname = self.queue.get(timeout=5)
+-            except EOFError:
++                item = self.queue.get(timeout=5)
++                # Sentinel value signals shutdown
++                if item is None:
++                    log.debug("IPC queue received shutdown signal.")
++                    break
++                circ_id, sockname = item
++            except (EOFError, OSError):
+                 log.debug("IPC queue terminated.")
+                 break
++            except Exception:
++                # queue.get(timeout=5) raises queue.Empty on timeout,
++                # which we silently retry.
++                continue
+ 
+             # Over the queue, a module can either signal that it finished
+             # execution (by sending (circ_id,None)) or that it is ready to have
+@@ -274,9 +284,11 @@ class EventHandler(object):
+                 self.attacher.prepare(port, circuit_id=circ_id)
+                 self.check_finished()
+ 
++        self._close_queue()
++
+     def check_finished(self):
+         """
+-        Check if the scan is finished and if it is, shut down exitmap.
++        Check if the scan is finished and if it is, signal completion.
+         """
+ 
+         # This is called from both the queue reader thread and the
+@@ -284,7 +296,7 @@ class EventHandler(object):
+         # must only happen once.
+         with self.check_finished_lock:
+             if self.already_finished:
+-                sys.exit(0)
++                return
+ 
+             # Did all circuits either build or fail?
+             circs_done = ((self.stats.failed_circuits +
+@@ -304,33 +316,62 @@ class EventHandler(object):
+ 
+             if circs_done and streams_done:
+                 self.already_finished = True
+-
+-                for proc in multiprocessing.active_children():
+-                    log.debug(
+-                        "Terminating remaining PID %d with name %s.",
+-                        proc.pid, proc.name
+-                    )
+-                    proc.terminate()
+-
+-                if hasattr(self.module, "teardown"):
+-                    log.debug("Calling module's teardown() function.")
+-                    self.module.teardown()
+-
+-                log.info(self.stats)
+-                sys.exit(0)
++                self.finished_event.set()
+ 
+             if not self.controller.is_alive():
+                 log.error("Terminating threads because controller isn't alive.")
+                 self.already_finished = True
+-                for proc in multiprocessing.active_children():
+-                    log.debug(
+-                        "Terminating remaining PID %d, with name %s.",
+-                        proc.pid, proc.name
+-                    )
+-                    proc.terminate()
+-                    proc.join(5)
+-                log.info(self.stats)
+-                sys.exit(1)
++                self.finished_event.set()
++
++    def wait(self):
++        """
++        Wait for the scan to finish.
++        """
++        self.finished_event.wait()
++
++    def shutdown(self):
++        """
++        Clean up resources and shut down.
++        """
++        for proc in multiprocessing.active_children():
++            log.debug(
++                "Terminating remaining PID %d with name %s.",
++                proc.pid, proc.name
++            )
++            proc.terminate()
++
++        if hasattr(self.module, "teardown"):
++            log.debug("Calling module's teardown() function.")
++            self.module.teardown()
++
++        log.info(self.stats)
++
++        # Signal queue reader to stop
++        try:
++            self.queue.put(None)
++        except Exception:
++            pass
++
++        self.queue_thread.join()
++
++        # Remove event listener
++        try:
++            self.controller.remove_event_listener(self.new_event)
++        except Exception:
++            pass
++
++    def _close_queue(self):
++        """
++        Close the multiprocessing queue to release resources.
++        """
++        try:
++            self.queue.close()
++        except Exception:
++            pass
++        try:
++            self.queue.join_thread()
++        except Exception:
++            pass
+ 
+     def new_circuit(self, circ_event):
+         """
+diff --git a/src/exitmap.py b/src/exitmap.py
+index 57e8558..1ee33f4 100644
+--- a/src/exitmap.py
++++ b/src/exitmap.py
+@@ -311,16 +311,22 @@ def main():
+                      " offline?", args.first_hop)
+         return 1
+ 
+-    for module_name in args.module:
++    try:
++        for module_name in args.module:
+ 
+-        if args.analysis_dir is not None:
+-            datestr = time.strftime("%Y-%m-%d_%H:%M:%S%z") + "_" + module_name
+-            util.analysis_dir = os.path.join(args.analysis_dir, datestr)
++            if args.analysis_dir is not None:
++                datestr = time.strftime("%Y-%m-%d_%H:%M:%S%z") + "_" + module_name
++                util.analysis_dir = os.path.join(args.analysis_dir, datestr)
+ 
++            try:
++                run_module(module_name, args, controller, socks_port, stats)
++            except error.ExitSelectionError as err:
++                log.error("Failed to run because : %s", err)
++    finally:
+         try:
+-            run_module(module_name, args, controller, socks_port, stats)
+-        except error.ExitSelectionError as err:
+-            log.error("Failed to run because : %s", err)
++            controller.close()
++        except Exception as err:
++            log.debug("Failed to close controller: %s", err)
+     return 0
+ 
+ 
+@@ -455,7 +461,12 @@ def run_module(module_name, args, controller, socks_port, stats):
+ 
+     log.info("Beginning to trigger %d circuit creation(s).", count)
+ 
+-    iter_exit_relays(exit_relays, controller, stats, args)
++    try:
++        iter_exit_relays(exit_relays, controller, stats, args)
++        handler.check_finished()
++        handler.wait()
++    finally:
++        handler.shutdown()
+ 
+ 
+ def sleep(delay, delay_noise):
+-- 
+2.43.0
+
