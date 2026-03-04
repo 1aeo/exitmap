@@ -19,28 +19,24 @@
 # along with exitmap.  If not, see <http://www.gnu.org/licenses/>.
 """ Unit tests for the relay selector module."""
 
-import unittest
 import sys
 sys.path.insert(0, 'src/')
 import relayselector
 from stem import exit_policy
 
 
-class TestRelaySelector(unittest.TestCase):
-    """Test the torsocks module."""
-
-    def test_get_exits(self):
-        with self.assertRaises(SystemExit) as exits:
-            relayselector.get_exits('/tmp',
+def test_get_exits(tor_dir):
+    exits = relayselector.get_exits(tor_dir,
                                     good_exit=True,
                                     bad_exit=True,
                                     version=None,
                                     nickname=None,
                                     address=None,
-                                    country_code='at',
+                                    country_code=None,
                                     requested_exits=None,
                                     destinations=None)
-        self.assertEqual(exits.exception.code, 1)
+    assert isinstance(exits, dict)
+    assert len(exits) > 0
 
 
 def test_get_exit_policies(cached_descriptors_path):
@@ -71,7 +67,3 @@ def test_router_statuses_with_exit_flag(cached_consensus):
     rs = relayselector.router_statuses_with_exit_flag(cached_consensus)
     assert isinstance(rs, dict)
     assert 2297 == len(rs)
-
-
-if __name__ == '__main__':
-    unittest.main()
