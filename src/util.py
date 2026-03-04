@@ -31,7 +31,7 @@ import json
 import tempfile
 import errno
 
-from stem.descriptor.reader import DescriptorReader
+import stem.descriptor
 
 
 log = logging.getLogger(__name__)
@@ -77,10 +77,9 @@ def relay_in_consensus(fingerprint, cached_consensus_path):
 
     fingerprint = fingerprint.upper()
 
-    with DescriptorReader(cached_consensus_path) as reader:
-        for descriptor in reader:
-            if descriptor.fingerprint == fingerprint:
-                return True
+    for desc in stem.descriptor.parse_file(cached_consensus_path):
+        if desc.fingerprint == fingerprint:
+            return True
 
     return False
 
