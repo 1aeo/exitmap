@@ -1,0 +1,107 @@
+From f976119835dc7be15e860fe6c155df721a3f6b2a Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Tue, 3 Mar 2026 04:46:47 +0000
+Subject: [PATCH 2/3] Fix race condition in Attacher.prepare() causing KeyError
+ crash
+
+The prepare() method is called concurrently from two threads:
+- queue_reader thread (when module signals stream ready)
+- main event thread via new_stream (when Tor sends stream events)
+
+The shared self.unattached dictionary had no thread protection, causing a
+check-then-delete race condition where two threads could both enter the
+'if port in self.unattached' block and try to delete the same key.
+
+Fix:
+- Add threading.Lock() to protect the shared dictionary
+- Replace check-then-delete with atomic dict.pop() to avoid TOCTOU race
+
+This fixes a rare crash observed in production where the scan would
+terminate early with only ~800 relays instead of ~3000.
+---
+ src/eventhandler.py | 56 ++++++++++++++++++++++++---------------------
+ 1 file changed, 30 insertions(+), 26 deletions(-)
+
+diff --git a/src/eventhandler.py b/src/eventhandler.py
+index b0b5f61..368bfdb 100644
+--- a/src/eventhandler.py
++++ b/src/eventhandler.py
+@@ -69,6 +69,7 @@ class Attacher(object):
+ 
+         self.unattached = {}
+         self.controller = controller
++        self._lock = threading.Lock()  # Protect against concurrent access
+ 
+     def prepare(self, port, circuit_id=None, stream_id=None):
+         """
+@@ -77,38 +78,41 @@ class Attacher(object):
+         If we already have the corresponding stream/circuit, we can attach it
+         now.  Otherwise, the method _attach() is partially executed and stored,
+         so it can be attached later.
++
++        Thread-safe: Uses a lock to protect the shared unattached dictionary
++        from concurrent access by the queue_reader thread and main event thread.
+         """
+ 
+         assert ((circuit_id is not None) and (stream_id is None)) or \
+                ((circuit_id is None) and (stream_id is not None))
+ 
+-        # Check if we can already attach.
+-
+-        if port in self.unattached:
+-            attach = self.unattached[port]
+-
+-            if circuit_id:
+-                attach(circuit_id=circuit_id)
++        # Thread-safe access to the shared dictionary
++        with self._lock:
++            # Use pop() to atomically get and remove, avoiding check-then-delete race
++            attach = self.unattached.pop(port, None)
++
++            if attach is not None:
++                # We had a pending attacher - complete it
++                if circuit_id:
++                    attach(circuit_id=circuit_id)
++                else:
++                    attach(stream_id=stream_id)
+             else:
+-                attach(stream_id=stream_id)
+-
+-            del self.unattached[port]
+-        else:
+-            # We maintain a dictionary of source ports that point to their
+-            # respective attaching function.  At this point we only know either
+-            # the stream or the circuit ID, so we store a partially executed
+-            # function.
+-
+-            if circuit_id:
+-                partially_attached = functools.partial(self._attach,
+-                                                       circuit_id=circuit_id)
+-                self.unattached[port] = partially_attached
+-            else:
+-                partially_attached = functools.partial(self._attach,
+-                                                       stream_id=stream_id)
+-                self.unattached[port] = partially_attached
+-
+-        log.debug("Pending attachers: %d.", len(self.unattached))
++                # We maintain a dictionary of source ports that point to their
++                # respective attaching function.  At this point we only know either
++                # the stream or the circuit ID, so we store a partially executed
++                # function.
++
++                if circuit_id:
++                    partially_attached = functools.partial(self._attach,
++                                                           circuit_id=circuit_id)
++                    self.unattached[port] = partially_attached
++                else:
++                    partially_attached = functools.partial(self._attach,
++                                                           stream_id=stream_id)
++                    self.unattached[port] = partially_attached
++
++            log.debug("Pending attachers: %d.", len(self.unattached))
+ 
+     def _attach(self, stream_id=None, circuit_id=None):
+         """
+-- 
+2.43.0
+
