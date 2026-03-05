@@ -19,3 +19,4 @@ config.env
 .vscode/
 *.swp
 *.swo
+.tor_data/
