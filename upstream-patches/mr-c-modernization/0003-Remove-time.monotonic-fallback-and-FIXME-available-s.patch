@@ -1,5 +1,5 @@
-From a08eebe5cc8ebcb644aecd28434dedf9663199c9 Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 149b54ef96d0aef6a19d1c65c2cef817b166fca4 Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 05:07:10 +0000
 Subject: [PATCH 3/7] Remove time.monotonic fallback and FIXME (available since
  Python 3.3)
@@ -7,8 +7,6 @@ Subject: [PATCH 3/7] Remove time.monotonic fallback and FIXME (available since
 The try/except fallback to time.time and the FIXME comment about using
 ctypes are no longer needed. time.monotonic has been available since
 Python 3.3, which is well below the minimum supported version.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/modules/rtt.py | 6 +-----
  1 file changed, 1 insertion(+), 5 deletions(-)

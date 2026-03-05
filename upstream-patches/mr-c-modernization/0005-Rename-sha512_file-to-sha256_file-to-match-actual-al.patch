@@ -1,5 +1,5 @@
-From edccd77b550ccc9e768d3d92af7e7b67027147d6 Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 3e4f230d6494368d9d8fcc945db37cc021ddc7bc Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 05:10:16 +0000
 Subject: [PATCH 5/7] Rename sha512_file to sha256_file to match actual
  algorithm
@@ -7,8 +7,6 @@ Subject: [PATCH 5/7] Rename sha512_file to sha256_file to match actual
 The function is named sha512_file but uses hashlib.sha256(). The name
 has been wrong since the function was first written. Renamed to match
 the actual algorithm used. No behavioral change.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/modules/patchingCheck.py | 8 ++++----
  1 file changed, 4 insertions(+), 4 deletions(-)

@@ -1,5 +1,5 @@
-From bf0143bdc23cd09a5bc8a301fc0da707d5621b4c Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 74ffef656216ae75e2855c4118ba077e4ad17f3e Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 05:13:01 +0000
 Subject: [PATCH 7/7] Optimize first hop selection with rejection sampling
 
@@ -10,8 +10,6 @@ every exit relay and called .remove() on it. With ~2000 exits and
 Replaced with rejection sampling: pick a random fingerprint, retry if
 it matches the exit relay. Expected O(1) per relay since the collision
 probability is ~1/7000.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/exitmap.py | 15 +++++++--------
  1 file changed, 7 insertions(+), 8 deletions(-)

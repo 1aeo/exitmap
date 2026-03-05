@@ -1,12 +1,10 @@
-From 26f730b04e955ecec6fb8bb86f7335d9a6579007 Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 6675d1244fa50f23d1c57a02f2e48e294778fd2a Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 04:50:16 +0000
 Subject: [PATCH 2/5] Fix TypeError in get_relay_desc() log formatting
 
 log.warning uses %d but fpr is a hex string fingerprint, not an integer.
 Raises TypeError on the ControllerError code path. Fixed: %d to %s.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/eventhandler.py | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)

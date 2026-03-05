@@ -1,12 +1,10 @@
-From aca2d510cc1545bda164c75289f2381651cfced3 Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 42919d46d08d78c875a9063304e4a4e4d63cb41b Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 05:00:30 +0000
 Subject: [PATCH 3/3] Use context manager for reading exit relay file
 
 open(args.exit_file) was not wrapped in a context manager, leaking the
 file handle. Fixed with 'with open(...) as f:'.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/exitmap.py | 3 ++-
  1 file changed, 2 insertions(+), 1 deletion(-)

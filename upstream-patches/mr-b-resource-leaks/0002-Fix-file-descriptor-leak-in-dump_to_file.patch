@@ -1,5 +1,5 @@
-From 9531790162c8cdb6590837ee57bc037c04ddc6e2 Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 543b4f7cda4c388b9db6d9101cd75659733b7ec6 Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 04:59:40 +0000
 Subject: [PATCH 2/3] Fix file descriptor leak in dump_to_file
 
@@ -9,8 +9,6 @@ file descriptor. The code then opens the file again with
 without closing it. Each call leaks one file descriptor.
 
 Fixed by adding os.close(fd) after mkstemp().
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/util.py | 3 ++-
  1 file changed, 2 insertions(+), 1 deletion(-)

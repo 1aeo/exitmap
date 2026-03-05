@@ -1,5 +1,5 @@
-From 6061b3ed3f3e01709064c61013956d76abf1dfdc Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 573e20c5da3209158b457ce4981ed86efc3e70a7 Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 04:50:56 +0000
 Subject: [PATCH 3/5] Fix gzip decompression to use BytesIO instead of StringIO
 
@@ -7,8 +7,6 @@ HTTP response data is bytes in Python 3. io.StringIO(data) raises
 TypeError, which is silently caught by the except clause. This causes
 decompress() to return raw compressed data, so CAPTCHA detection never
 matches. Fixed by using io.BytesIO.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/modules/cloudflared.py | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)

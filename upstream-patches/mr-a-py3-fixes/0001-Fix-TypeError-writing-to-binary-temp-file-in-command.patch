@@ -1,5 +1,5 @@
-From 0a1630317a69458ad4655c7193a29514dcd52df6 Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 9d320f83b28fb1ddbac8e5150cdd6c61d5325e95 Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 04:49:37 +0000
 Subject: [PATCH 1/5] Fix TypeError writing to binary temp file in command.py
 
@@ -7,8 +7,6 @@ NamedTemporaryFile opens in binary mode by default. The string writes
 on lines 116-117 raise TypeError in Python 3. Fixed by encoding to bytes.
 
 Triggers when a module calls run_cmd_over_tor().
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/command.py | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)

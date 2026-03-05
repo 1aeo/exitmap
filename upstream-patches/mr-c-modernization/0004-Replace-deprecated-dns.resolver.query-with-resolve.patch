@@ -1,12 +1,10 @@
-From ab7fd99ddd5bd0edc9e91d9997fbb9ecd910ec31 Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 6ac6c8ac4e853cbc2f92603b30bb5b71f4eb38d7 Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 05:08:40 +0000
 Subject: [PATCH 4/7] Replace deprecated dns.resolver.query() with resolve()
 
 dns.resolver.query() was deprecated in dnspython 2.0 (2020) and emits
 DeprecationWarning. dns.resolver.resolve() is a drop-in replacement.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/modules/dnspoison.py | 4 ++--
  1 file changed, 2 insertions(+), 2 deletions(-)

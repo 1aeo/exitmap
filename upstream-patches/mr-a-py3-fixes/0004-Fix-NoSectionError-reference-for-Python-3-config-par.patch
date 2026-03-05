@@ -1,5 +1,5 @@
-From 5eca6d9e53a32e1af4a30ffd4c9910e724f09784 Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 4d8d7ff38fd788a26cc5cdfe6e8ed60b8f4e159a Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 04:51:50 +0000
 Subject: [PATCH 4/5] Fix NoSectionError reference for Python 3 config parsing
 
@@ -8,8 +8,6 @@ attribute. It lives on the configparser module. The except clause raises
 AttributeError instead of catching the missing section error.
 
 Triggers when ~/.exitmaprc exists but lacks a [Defaults] section.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/exitmap.py | 3 ++-
  1 file changed, 2 insertions(+), 1 deletion(-)

@@ -1,5 +1,5 @@
-From 9263f63374a50634f207ff7748b534d10b43de87 Mon Sep 17 00:00:00 2001
-From: 1aeo <github@1aeo.com>
+From 563cbbe7f0b2721833e2240b20c51a1c719b495f Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
 Date: Thu, 5 Mar 2026 05:05:28 +0000
 Subject: [PATCH 1/7] Replace DescriptorReader with
  stem.descriptor.parse_file()
@@ -9,8 +9,6 @@ deprecated setDaemon() method (deprecated since Python 3.10). This
 produces DeprecationWarnings on every test run.
 
 stem.descriptor.parse_file() is simpler and avoids the deprecated call.
-
-Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
 ---
  src/util.py | 9 ++++-----
  1 file changed, 4 insertions(+), 5 deletions(-)
