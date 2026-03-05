@@ -23,10 +23,7 @@ Provides utility functions.
 import os
 import re
 import logging
-try:
-    import urllib2
-except ImportError:
-    import urllib.request as urllib2
+import urllib.request as urllib2
 import json
 import tempfile
 import errno
