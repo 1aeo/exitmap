@@ -1,0 +1,27 @@
+# Tor state file last generated on 2026-03-05 08:36:54 local time
+# Other times below are in UTC
+# You *do not* need to edit this file.
+
+Dormant 0
+Guard in=default rsa_id=E31B3E63F132961C70C5FCEE2187F4F935391234 nickname=Servum sampled_on=2026-02-25T22:54:12 sampled_idx=0 sampled_by=0.4.8.10 listed=1 confirmed_on=2026-02-23T01:12:00 confirmed_idx=0
+Guard in=default rsa_id=ACBF3D504CFF3D74D1991AFDF6AC070606232B10 nickname=centorLyon sampled_on=2026-02-21T19:47:27 sampled_idx=1 sampled_by=0.4.8.10 listed=1 confirmed_on=2026-02-21T16:42:20 confirmed_idx=1
+Guard in=default rsa_id=CD7A803F1B3711715438753E6B287925E3D039AD nickname=prsv sampled_on=2026-03-03T06:39:28 sampled_idx=2 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=5790B62AD6C79A1092B30993A8F0F7F23A969FD6 nickname=StreamsofLifeSpa sampled_on=2026-02-21T17:23:22 sampled_idx=3 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=AF45D4F578F1A3E20F8C77D5C89F9152657F8FAF nickname=pyrorelay sampled_on=2026-02-23T10:40:24 sampled_idx=4 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=494E5000BA79F0078DFA05E610911C2AC525572F nickname=StuRav sampled_on=2026-02-26T20:08:47 sampled_idx=5 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=749642E07B1A33D167C771302E05104B6F12121F nickname=SlackSucks sampled_on=2026-03-04T04:14:49 sampled_idx=6 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=2E289A14B649F500C194BD56DEE28F0A0D75533C nickname=YukisTorRelay sampled_on=2026-02-21T19:25:19 sampled_idx=7 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=48EBED655F080DEA249944DDAD22F02C70DCD403 nickname=bauruine sampled_on=2026-02-27T21:42:52 sampled_idx=8 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=A23771EF48EF0F2B992D3A6D95DC1C8449AF51C0 nickname=pdq sampled_on=2026-03-02T01:13:24 sampled_idx=9 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=00240ECB2B535AA4C1E1874D744DFA6AF2E5E941 nickname=skylarkRelay sampled_on=2026-02-27T10:03:13 sampled_idx=10 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=C3C1D321CFAE8F51043D23A476EFDE028D6D8AD8 nickname=NovaCoreX sampled_on=2026-02-25T18:35:33 sampled_idx=11 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=E1AF5373E3240566B598FA481AD3860549F6168B nickname=ForPrivacyNET sampled_on=2026-02-23T12:39:25 sampled_idx=12 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=B7B35AFD69A1F8C0453A45FDC92B28824F34F402 nickname=TorScale sampled_on=2026-02-22T06:09:47 sampled_idx=13 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=F70B7C5CD72D74C7F9F2DC84FA9D20D51BA13610 nickname=wedostor sampled_on=2026-02-25T23:59:05 sampled_idx=14 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=791B7C05E2C6D4D9AF61100562595568F5B69A7A nickname=bauruine sampled_on=2026-02-24T08:29:07 sampled_idx=15 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=E3FE92D92B011A41887983A89AB08DFE16046235 nickname=twista sampled_on=2026-03-02T00:11:47 sampled_idx=16 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=53508DECD9A503C50CA5A41D500367C98C1391F7 nickname=feinler sampled_on=2026-02-27T17:54:23 sampled_idx=17 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=9F8531794011C8CF9C935BDE64CB2C07BCD6DA18 nickname=BehemothLTDFI2 sampled_on=2026-02-24T06:01:19 sampled_idx=18 sampled_by=0.4.8.10 listed=1
+Guard in=default rsa_id=CBA653B8678CF7BEF7C2C1BCDCA0807CD449A8AB nickname=teutates2 sampled_on=2026-02-28T10:40:26 sampled_idx=19 sampled_by=0.4.8.10 listed=1
+LastWritten 2026-03-05 08:36:54
+TorVersion Tor 0.4.8.10
