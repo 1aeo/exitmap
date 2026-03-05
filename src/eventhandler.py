@@ -51,7 +51,7 @@ def get_relay_desc(controller, fpr):
     except stem.DescriptorUnavailable as err:
         log.warning("Descriptor for %s not available: %s", fpr, err)
     except stem.ControllerError as err:
-        log.warning("Unable to query for %d: %s", fpr, err)
+        log.warning("Unable to query for %s: %s", fpr, err)
     except ValueError:
         log.warning("%s is malformed.  Is it a relay fingerprint?", fpr)
 
