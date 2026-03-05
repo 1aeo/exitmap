@@ -246,19 +246,33 @@ def main():
         os.umask(0o077)
         # First, create the directory(ies) if they don't exists
         os.makedirs(args.tor_dir, mode=0o700, exist_ok=True)
-        # Then check that both the parent and the dir are owned only by the
-        # user and aren't symlinks.
-        parent = os.path.dirname(os.path.realpath(args.tor_dir))
-        if (
-            not os.stat(parent).st_uid == os.getuid() or
-            not oct(os.stat(parent).st_mode)[-3:] == "700" or
-            os.path.islink(parent)
-        ):
+        # Check the parent directory for symlink attacks (see #47).
+        # First check the *unresolved* parent for symlinks, since
+        # os.path.realpath() would silently follow them.
+        parent_raw = os.path.dirname(args.tor_dir)
+        if os.path.islink(parent_raw):
             log.critical(
-                "Directory %s is not owned by the user or hasn't mask 700 "
-                "or it's a symlink.", parent
+                "Parent directory %s is a symlink.", parent_raw
             )
             return 1
+        # Then check the resolved parent.  Directories with a sticky
+        # bit (like /tmp, mode 1777) are safe because other users
+        # cannot rename or delete files they don't own.  For non-sticky
+        # directories, require ownership by the current user and
+        # mode 700, matching the original security fix in #47.
+        parent = os.path.dirname(os.path.realpath(args.tor_dir))
+        parent_stat = os.stat(parent)
+        parent_sticky = bool(parent_stat.st_mode & 0o1000)
+        if not parent_sticky:
+            if (
+                parent_stat.st_uid != os.getuid() or
+                oct(parent_stat.st_mode)[-3:] != "700"
+            ):
+                log.critical(
+                    "Parent directory %s is not owned by the user "
+                    "or hasn't mask 700.", parent
+                )
+                return 1
         if os.path.exists(args.tor_dir):
             if (
                 not os.stat(args.tor_dir).st_uid == os.getuid() or
