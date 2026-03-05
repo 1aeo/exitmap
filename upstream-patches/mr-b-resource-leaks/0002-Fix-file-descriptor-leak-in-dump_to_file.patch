@@ -1,0 +1,41 @@
+From 9531790162c8cdb6590837ee57bc037c04ddc6e2 Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 04:59:40 +0000
+Subject: [PATCH 2/3] Fix file descriptor leak in dump_to_file
+
+tempfile.mkstemp() returns (fd, file_name) where fd is an open OS-level
+file descriptor. The code then opens the file again with
+'with open(file_name, "wb") as fd:', shadowing the original fd
+without closing it. Each call leaks one file descriptor.
+
+Fixed by adding os.close(fd) after mkstemp().
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/util.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/util.py b/src/util.py
+index f2b2dd8..9bbfd99 100644
+--- a/src/util.py
++++ b/src/util.py
+@@ -156,7 +156,7 @@ def dump_to_file(blurb, exit_fpr):
+     """
+     if analysis_dir is None:
+         fd, file_name = tempfile.mkstemp(prefix="%s_" % exit_fpr)
+-
++        os.close(fd)
+     else:
+         try:
+             os.makedirs(analysis_dir)
+@@ -165,6 +165,7 @@ def dump_to_file(blurb, exit_fpr):
+                 raise
+         fd, file_name = tempfile.mkstemp(prefix="%s_" % exit_fpr,
+                                          dir=analysis_dir)
++        os.close(fd)
+ 
+     try:
+         with open(file_name, "wb") as fd:
+-- 
+2.43.0
+

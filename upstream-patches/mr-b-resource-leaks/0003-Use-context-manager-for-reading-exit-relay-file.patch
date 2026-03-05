@@ -1,0 +1,30 @@
+From aca2d510cc1545bda164c75289f2381651cfced3 Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 05:00:30 +0000
+Subject: [PATCH 3/3] Use context manager for reading exit relay file
+
+open(args.exit_file) was not wrapped in a context manager, leaking the
+file handle. Fixed with 'with open(...) as f:'.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/exitmap.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/exitmap.py b/src/exitmap.py
+index 742652f..a89bfe2 100644
+--- a/src/exitmap.py
++++ b/src/exitmap.py
+@@ -370,7 +370,8 @@ def select_exits(args, module):
+     elif args.exit_file:
+         # '-E' was used to specify a file containing exit relays.
+         try:
+-            requested_exits = [line.strip() for line in open(args.exit_file)]
++            with open(args.exit_file) as f:
++                requested_exits = [line.strip() for line in f]
+         except OSError as err:
+             log.error("Could not read %s: %s", args.exit_file, err.strerror)
+             sys.exit(1)
+-- 
+2.43.0
+

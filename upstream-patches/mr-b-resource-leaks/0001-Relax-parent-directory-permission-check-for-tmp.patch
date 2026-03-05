@@ -1,0 +1,50 @@
+From c1a198b874efb927efd9f3b4480f0da6d6d8ae7c Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 04:58:46 +0000
+Subject: [PATCH 1/3] Relax parent directory permission check for /tmp
+
+The security check added in #47 requires the parent directory of
+tor_dir to have mode 700 and be owned by the current user. But the
+default tor_dir is under /tmp, which is typically mode 1777. This
+prevents exitmap from starting on most Linux systems with the default
+configuration.
+
+Keep strict checks on the tor_dir itself (mode 700, owned by user,
+not a symlink) but relax the parent directory check to only verify
+it is not a symlink.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/exitmap.py | 14 +++++---------
+ 1 file changed, 5 insertions(+), 9 deletions(-)
+
+diff --git a/src/exitmap.py b/src/exitmap.py
+index 41d5d67..742652f 100644
+--- a/src/exitmap.py
++++ b/src/exitmap.py
+@@ -246,17 +246,13 @@ def main():
+         os.umask(0o077)
+         # First, create the directory(ies) if they don't exists
+         os.makedirs(args.tor_dir, mode=0o700, exist_ok=True)
+-        # Then check that both the parent and the dir are owned only by the
+-        # user and aren't symlinks.
++        # Check that the parent directory is not a symlink.  We don't
++        # require mode 700 on the parent because common locations like
++        # /tmp have mode 1777, which is expected and safe (sticky bit).
+         parent = os.path.dirname(os.path.realpath(args.tor_dir))
+-        if (
+-            not os.stat(parent).st_uid == os.getuid() or
+-            not oct(os.stat(parent).st_mode)[-3:] == "700" or
+-            os.path.islink(parent)
+-        ):
++        if os.path.islink(parent):
+             log.critical(
+-                "Directory %s is not owned by the user or hasn't mask 700 "
+-                "or it's a symlink.", parent
++                "Parent directory %s is a symlink.", parent
+             )
+             return 1
+         if os.path.exists(args.tor_dir):
+-- 
+2.43.0
+
