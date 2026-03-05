@@ -58,7 +58,7 @@ def decompress(data):
     """
 
     try:
-        buf = io.StringIO(data)
+        buf = io.BytesIO(data)
         fileobj = gzip.GzipFile(fileobj=buf)
         data = fileobj.read()
     except Exception:
