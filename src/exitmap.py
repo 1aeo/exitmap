@@ -333,6 +333,7 @@ def lookup_destinations(args, module):
     log.debug("Selecting destinations depending on the module.")
     destinations = set()
     addrs = {}
+    raw_destinations = None
     if hasattr(module, 'destinations') and module.destinations is None:
         log.info("Destination is built from the module default *None* attribute")
         raw_destinations = module.destinations
