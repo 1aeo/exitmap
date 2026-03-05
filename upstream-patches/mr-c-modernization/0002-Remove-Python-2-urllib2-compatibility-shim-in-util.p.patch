@@ -1,0 +1,32 @@
+From 932536733c3a9e1cbb3c010481b4819be980de71 Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 05:06:08 +0000
+Subject: [PATCH 2/7] Remove Python 2 urllib2 compatibility shim in util.py
+
+The try/except import of urllib2 is left over from the Python 2 era.
+Python 2 support was removed in 9704ff4 but this file was missed.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/util.py | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/src/util.py b/src/util.py
+index a6a9db4..9e5b170 100644
+--- a/src/util.py
++++ b/src/util.py
+@@ -23,10 +23,7 @@ Provides utility functions.
+ import os
+ import re
+ import logging
+-try:
+-    import urllib2
+-except ImportError:
+-    import urllib.request as urllib2
++import urllib.request as urllib2
+ import json
+ import tempfile
+ import errno
+-- 
+2.43.0
+

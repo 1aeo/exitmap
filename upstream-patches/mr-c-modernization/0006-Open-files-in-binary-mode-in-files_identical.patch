@@ -1,0 +1,34 @@
+From 8a6ed5094008d866de2d2d6442da25b979c8de63 Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 05:11:29 +0000
+Subject: [PATCH 6/7] Open files in binary mode in files_identical()
+
+files_identical() reads files that were written in binary mode ("wb")
+using text-mode open(). This can cause encoding errors with binary
+content like executables. Fixed by using "rb" mode.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/modules/patchingCheck.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/modules/patchingCheck.py b/src/modules/patchingCheck.py
+index 1c1cc1e..bb4da46 100644
+--- a/src/modules/patchingCheck.py
++++ b/src/modules/patchingCheck.py
+@@ -143,10 +143,10 @@ def files_identical(observed_file, original_file):
+     if observed_length >= original_length:
+         return False
+ 
+-    with open(original_file) as fd:
++    with open(original_file, "rb") as fd:
+         original_data = fd.read(observed_length)
+ 
+-    with open(observed_file) as fd:
++    with open(observed_file, "rb") as fd:
+         observed_data = fd.read()
+ 
+     return original_data == observed_data
+-- 
+2.43.0
+

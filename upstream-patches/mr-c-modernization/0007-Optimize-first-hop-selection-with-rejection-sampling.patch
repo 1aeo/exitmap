@@ -1,0 +1,47 @@
+From bf0143bdc23cd09a5bc8a301fc0da707d5621b4c Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 05:13:01 +0000
+Subject: [PATCH 7/7] Optimize first hop selection with rejection sampling
+
+iter_exit_relays() created a full copy of the fingerprints list for
+every exit relay and called .remove() on it. With ~2000 exits and
+~7000 fingerprints this is O(n*m) unnecessary work.
+
+Replaced with rejection sampling: pick a random fingerprint, retry if
+it matches the exit relay. Expected O(1) per relay since the collision
+probability is ~1/7000.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/exitmap.py | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/src/exitmap.py b/src/exitmap.py
+index 41d5d67..6deba8e 100644
+--- a/src/exitmap.py
++++ b/src/exitmap.py
+@@ -501,14 +501,13 @@ def iter_exit_relays(exit_relays, controller, stats, args):
+         if args.first_hop:
+             hops = [args.first_hop, exit_relay]
+         else:
+-            all_hops = list(fingerprints)
+-
+-            try:
+-                all_hops.remove(exit_relay)
+-            except ValueError:
+-                # Catch exception when exit is not in the cached_consensus
+-                pass
+-            first_hop = random.choice(all_hops)
++            # Use rejection sampling to pick a random first hop that is
++            # not the exit relay.  This is O(1) expected time since the
++            # probability of collision is ~1/len(fingerprints).
++            while True:
++                first_hop = random.choice(fingerprints)
++                if first_hop != exit_relay:
++                    break
+             log.debug("Using random first hop %s for circuit.", first_hop)
+             hops = [first_hop, exit_relay]
+ 
+-- 
+2.43.0
+

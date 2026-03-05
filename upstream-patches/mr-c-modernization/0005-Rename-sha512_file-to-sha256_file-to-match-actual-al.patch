@@ -1,0 +1,52 @@
+From edccd77b550ccc9e768d3d92af7e7b67027147d6 Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 05:10:16 +0000
+Subject: [PATCH 5/7] Rename sha512_file to sha256_file to match actual
+ algorithm
+
+The function is named sha512_file but uses hashlib.sha256(). The name
+has been wrong since the function was first written. Renamed to match
+the actual algorithm used. No behavioral change.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/modules/patchingCheck.py | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/modules/patchingCheck.py b/src/modules/patchingCheck.py
+index 9a4ca7f..1c1cc1e 100644
+--- a/src/modules/patchingCheck.py
++++ b/src/modules/patchingCheck.py
+@@ -99,7 +99,7 @@ def setup(**kwargs):
+ 
+         log.debug("Wrote file to \"%s\".", tmp_file)
+ 
+-        check_files[url] = [tmp_file, sha512_file(tmp_file)]
++        check_files[url] = [tmp_file, sha256_file(tmp_file)]
+ 
+ 
+ def teardown():
+@@ -116,9 +116,9 @@ def teardown():
+         os.remove(orig_file)
+ 
+ 
+-def sha512_file(file_name):
++def sha256_file(file_name):
+     """
+-    Calculate SHA512 over the given file.
++    Calculate SHA256 over the given file.
+     """
+ 
+     hash_func = hashlib.sha256()
+@@ -187,7 +187,7 @@ def run_check(exit_desc):
+         with open(tmp_file, "wb") as fd:
+             fd.write(data)
+ 
+-        observed_digest = sha512_file(tmp_file)
++        observed_digest = sha256_file(tmp_file)
+ 
+         if (observed_digest != orig_digest) and \
+            (not files_identical(tmp_file, orig_file)):
+-- 
+2.43.0
+
