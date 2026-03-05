@@ -374,7 +374,8 @@ def select_exits(args, module):
     elif args.exit_file:
         # '-E' was used to specify a file containing exit relays.
         try:
-            requested_exits = [line.strip() for line in open(args.exit_file)]
+            with open(args.exit_file) as f:
+                requested_exits = [line.strip() for line in f]
         except OSError as err:
             log.error("Could not read %s: %s", args.exit_file, err.strerror)
             sys.exit(1)
