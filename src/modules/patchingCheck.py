@@ -143,10 +143,10 @@ def files_identical(observed_file, original_file):
     if observed_length >= original_length:
         return False
 
-    with open(original_file) as fd:
+    with open(original_file, "rb") as fd:
         original_data = fd.read(observed_length)
 
-    with open(observed_file) as fd:
+    with open(observed_file, "rb") as fd:
         observed_data = fd.read()
 
     return original_data == observed_data
