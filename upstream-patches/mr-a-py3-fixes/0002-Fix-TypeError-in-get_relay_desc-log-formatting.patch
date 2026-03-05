@@ -1,0 +1,29 @@
+From 26f730b04e955ecec6fb8bb86f7335d9a6579007 Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 04:50:16 +0000
+Subject: [PATCH 2/5] Fix TypeError in get_relay_desc() log formatting
+
+log.warning uses %d but fpr is a hex string fingerprint, not an integer.
+Raises TypeError on the ControllerError code path. Fixed: %d to %s.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/eventhandler.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/eventhandler.py b/src/eventhandler.py
+index 35e976e..4816684 100644
+--- a/src/eventhandler.py
++++ b/src/eventhandler.py
+@@ -51,7 +51,7 @@ def get_relay_desc(controller, fpr):
+     except stem.DescriptorUnavailable as err:
+         log.warning("Descriptor for %s not available: %s", fpr, err)
+     except stem.ControllerError as err:
+-        log.warning("Unable to query for %d: %s", fpr, err)
++        log.warning("Unable to query for %s: %s", fpr, err)
+     except ValueError:
+         log.warning("%s is malformed.  Is it a relay fingerprint?", fpr)
+ 
+-- 
+2.43.0
+

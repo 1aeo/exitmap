@@ -1,0 +1,33 @@
+From 0a1630317a69458ad4655c7193a29514dcd52df6 Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 04:49:37 +0000
+Subject: [PATCH 1/5] Fix TypeError writing to binary temp file in command.py
+
+NamedTemporaryFile opens in binary mode by default. The string writes
+on lines 116-117 raise TypeError in Python 3. Fixed by encoding to bytes.
+
+Triggers when a module calls run_cmd_over_tor().
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/command.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/command.py b/src/command.py
+index 22a45c0..c2ae054 100644
+--- a/src/command.py
++++ b/src/command.py
+@@ -113,8 +113,8 @@ class Command(object):
+             os.environ["TORSOCKS_CONF_FILE"] = fd.name
+             os.environ["TORSOCKS_LOG_LEVEL"] = "5"
+ 
+-            fd.write("TorPort %d\n" % self.socks_port)
+-            fd.write("TorAddress 127.0.0.1\n")
++            fd.write(("TorPort %d\n" % self.socks_port).encode())
++            fd.write(b"TorAddress 127.0.0.1\n")
+             fd.flush()
+ 
+             log.debug("Invoking \"%s\" in environment:\n%s",
+-- 
+2.43.0
+

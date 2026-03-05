@@ -1,0 +1,31 @@
+From 4395153d8539dddcb75ab5d2957819ccbc3fea88 Mon Sep 17 00:00:00 2001
+From: 1aeo <github@1aeo.com>
+Date: Thu, 5 Mar 2026 04:52:31 +0000
+Subject: [PATCH 5/5] Fix NameError in lookup_destinations for modules without
+ destinations
+
+If a module has no destinations attribute and --host/--port are not
+given, raw_destinations is never assigned. The subsequent check
+'if raw_destinations is not None' raises NameError. Fixed by
+initializing raw_destinations = None before the conditional chain.
+
+Co-authored-by: 1aeo <1aeo@users.noreply.github.com>
+---
+ src/exitmap.py | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/exitmap.py b/src/exitmap.py
+index 7418c46..319707a 100644
+--- a/src/exitmap.py
++++ b/src/exitmap.py
+@@ -333,6 +333,7 @@ def lookup_destinations(args, module):
+     log.debug("Selecting destinations depending on the module.")
+     destinations = set()
+     addrs = {}
++    raw_destinations = None
+     if hasattr(module, 'destinations') and module.destinations is None:
+         log.info("Destination is built from the module default *None* attribute")
+         raw_destinations = module.destinations
+-- 
+2.43.0
+
