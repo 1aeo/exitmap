@@ -59,7 +59,7 @@ def setup(target=None, **kwargs):
         """
         Populate IPv4
         """
-        response = dns.resolver.query(domain, 'A')
+        response = dns.resolver.resolve(domain, 'A')
         for record in response:
             log.debug("Domain %s maps in IPv4 to %s.", domain, record.address)
             domains[domain].append(record.address)
@@ -67,7 +67,7 @@ def setup(target=None, **kwargs):
         Populate IPv6 if any result
         """
         try:
-            response6 = dns.resolver.query(domain, 'AAAA')
+            response6 = dns.resolver.resolve(domain, 'AAAA')
             for record in response6:
                 log.debug("Domain %s maps in IPv6 to %s.", domain, record.address)
                 domains[domain].append(record.address)
