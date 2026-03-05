@@ -29,6 +29,7 @@ import argparse
 import datetime
 import random
 import logging
+import configparser
 from configparser import ConfigParser
 import functools
 import pwd
@@ -122,7 +123,7 @@ def parse_cmd_args():
     if file_parsed:
         try:
             defaults = dict(config_parser.items("Defaults"))
-        except ConfigParser.NoSectionError as err:
+        except configparser.NoSectionError as err:
             log.warning("Could not parse config file \"%s\": %s",
                         config_file, err)
             defaults = {}
