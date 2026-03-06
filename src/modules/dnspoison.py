@@ -71,7 +71,7 @@ def setup(target=None, **kwargs):
             for record in response6:
                 log.debug("Domain %s maps in IPv6 to %s.", domain, record.address)
                 domains[domain].append(record.address)
-        except:
+        except Exception:
             log.warning("No IPv6 mapping")
 
     log.info("Domain whitelist: %s", str(domains))
