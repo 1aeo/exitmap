@@ -43,11 +43,7 @@ import random
 import socket
 import util
 
-try:
-    from time import monotonic as tick
-except ImportError:
-    # FIXME: Maybe use ctypes to get at clock_gettime(CLOCK_MONOTONIC)?
-    from time import time as tick
+from time import monotonic as tick
 
 import selectors
 

@@ -99,7 +99,7 @@ def setup(**kwargs):
 
         log.debug("Wrote file to \"%s\".", tmp_file)
 
-        check_files[url] = [tmp_file, sha512_file(tmp_file)]
+        check_files[url] = [tmp_file, sha256_file(tmp_file)]
 
 
 def teardown():
@@ -116,9 +116,9 @@ def teardown():
         os.remove(orig_file)
 
 
-def sha512_file(file_name):
+def sha256_file(file_name):
     """
-    Calculate SHA512 over the given file.
+    Calculate SHA256 over the given file.
     """
 
     hash_func = hashlib.sha256()
@@ -143,10 +143,10 @@ def files_identical(observed_file, original_file):
     if observed_length >= original_length:
         return False
 
-    with open(original_file) as fd:
+    with open(original_file, "rb") as fd:
         original_data = fd.read(observed_length)
 
-    with open(observed_file) as fd:
+    with open(observed_file, "rb") as fd:
         observed_data = fd.read()
 
     return original_data == observed_data
@@ -187,7 +187,7 @@ def run_check(exit_desc):
         with open(tmp_file, "wb") as fd:
             fd.write(data)
 
-        observed_digest = sha512_file(tmp_file)
+        observed_digest = sha256_file(tmp_file)
 
         if (observed_digest != orig_digest) and \
            (not files_identical(tmp_file, orig_file)):
