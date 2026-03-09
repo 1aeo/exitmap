@@ -70,7 +70,7 @@ def parse_cmd_args():
 
 def get_fingerprints(cached_consensus_path, exclude=[],
                      include_flags=None, exclude_flags=None,
-                     min_bandwidth_kb=None, require_measured_bw=False,
+                     min_bandwidth_kb=None, require_measured_relays=False,
                      include_country=None):
     """
     Get relay fingerprints from consensus, optionally filtered.
@@ -83,7 +83,7 @@ def get_fingerprints(cached_consensus_path, exclude=[],
     :param set include_flags: stem.Flag values the relay MUST have ALL of
     :param set exclude_flags: stem.Flag values the relay must have NONE of
     :param int min_bandwidth_kb: minimum consensus bandwidth in KB/s
-    :param bool require_measured_bw: only include authority-measured bandwidth
+    :param bool require_measured_relays: only include authority-measured relays
     :param str include_country: 2-letter country code (only relays in this country)
     :returns: list of relay fingerprints matching all criteria
     :rtype: list
@@ -104,7 +104,7 @@ def get_fingerprints(cached_consensus_path, exclude=[],
             continue
         if min_bandwidth_kb and desc.bandwidth < min_bandwidth_kb:
             continue
-        if require_measured_bw and getattr(desc, 'is_unmeasured', False):
+        if require_measured_relays and getattr(desc, 'is_unmeasured', False):
             continue
         if country_relays and desc.fingerprint not in country_relays:
             continue
