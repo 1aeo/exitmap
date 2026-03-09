@@ -92,7 +92,14 @@ class _Torsocket(socks.socksocket):
                 orig_neg(*args, **kwargs)
             except socks.SOCKS5Error as e:
                 # No e.errno, but can still check the message
-                if e.msg.startswith("0x06: TTL expired"):
+                if e.msg.startswith(
+                    # Any of the SOCKS errors defined previously:
+                    tuple(
+                        [str(k) for k in socks5_errors]
+                        # and:
+                        + ["[Errno 104] Connection reset by peer"]
+                    )
+                ):
                     # Don't raise this exception, just log it at level warning
                     log.warning("Error in custom negotiation function: %s", e)
                 else:
