@@ -152,7 +152,7 @@ def dump_to_file(blurb, exit_fpr):
     """
     if analysis_dir is None:
         fd, file_name = tempfile.mkstemp(prefix="%s_" % exit_fpr)
-
+        os.close(fd)
     else:
         try:
             os.makedirs(analysis_dir)
@@ -161,6 +161,7 @@ def dump_to_file(blurb, exit_fpr):
                 raise
         fd, file_name = tempfile.mkstemp(prefix="%s_" % exit_fpr,
                                          dir=analysis_dir)
+        os.close(fd)
 
     try:
         with open(file_name, "wb") as fd:
