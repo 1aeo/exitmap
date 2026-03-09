@@ -72,8 +72,8 @@ class Statistics(object):
         if self.total_circuits == 0:
             return
 
-        percent_done = (self.successful_circuits /
-                        float(self.total_circuits)) * 100
+        percent_done = (self.successful_circuits
+                        / float(self.total_circuits)) * 100
 
         log.info("Probed %d out of %d exit relays, so we are %.2f%% done.",
                  self.successful_circuits, self.total_circuits, percent_done)
