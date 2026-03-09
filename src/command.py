@@ -113,8 +113,8 @@ class Command(object):
             os.environ["TORSOCKS_CONF_FILE"] = fd.name
             os.environ["TORSOCKS_LOG_LEVEL"] = "5"
 
-            fd.write("TorPort %d\n" % self.socks_port)
-            fd.write("TorAddress 127.0.0.1\n")
+            fd.write(("TorPort %d\n" % self.socks_port).encode())
+            fd.write(b"TorAddress 127.0.0.1\n")
             fd.flush()
 
             log.debug("Invoking \"%s\" in environment:\n%s",

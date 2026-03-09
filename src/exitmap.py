@@ -29,6 +29,7 @@ import argparse
 import datetime
 import random
 import logging
+import configparser
 from configparser import ConfigParser
 import functools
 import pwd
@@ -122,7 +123,7 @@ def parse_cmd_args():
     if file_parsed:
         try:
             defaults = dict(config_parser.items("Defaults"))
-        except ConfigParser.NoSectionError as err:
+        except configparser.NoSectionError as err:
             log.warning("Could not parse config file \"%s\": %s",
                         config_file, err)
             defaults = {}
@@ -338,6 +339,7 @@ def lookup_destinations(args, module):
     log.debug("Selecting destinations depending on the module.")
     destinations = set()
     addrs = {}
+    raw_destinations = None
     if hasattr(module, 'destinations') and module.destinations is None:
         log.info("Destination is built from the module default *None* attribute")
         raw_destinations = module.destinations
