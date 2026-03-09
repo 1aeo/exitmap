@@ -20,7 +20,6 @@
 Handles Tor controller events.
 """
 
-import sys
 import functools
 import threading
 import multiprocessing
@@ -70,6 +69,7 @@ class Attacher(object):
 
         self.unattached = {}
         self.controller = controller
+        self._lock = threading.Lock()  # Protect against concurrent access
 
     def prepare(self, port, circuit_id=None, stream_id=None):
         """
@@ -78,38 +78,41 @@ class Attacher(object):
         If we already have the corresponding stream/circuit, we can attach it
         now.  Otherwise, the method _attach() is partially executed and stored,
         so it can be attached later.
+
+        Thread-safe: Uses a lock to protect the shared unattached dictionary
+        from concurrent access by the queue_reader thread and main event thread.
         """
 
         assert ((circuit_id is not None) and (stream_id is None)) or \
                ((circuit_id is None) and (stream_id is not None))
 
-        # Check if we can already attach.
+        # Thread-safe access to the shared dictionary
+        with self._lock:
+            # Use pop() to atomically get and remove, avoiding check-then-delete race
+            attach = self.unattached.pop(port, None)
 
-        if port in self.unattached:
-            attach = self.unattached[port]
-
-            if circuit_id:
-                attach(circuit_id=circuit_id)
+            if attach is not None:
+                # We had a pending attacher - complete it
+                if circuit_id:
+                    attach(circuit_id=circuit_id)
+                else:
+                    attach(stream_id=stream_id)
             else:
-                attach(stream_id=stream_id)
+                # We maintain a dictionary of source ports that point to their
+                # respective attaching function.  At this point we only know either
+                # the stream or the circuit ID, so we store a partially executed
+                # function.
 
-            del self.unattached[port]
-        else:
-            # We maintain a dictionary of source ports that point to their
-            # respective attaching function.  At this point we only know either
-            # the stream or the circuit ID, so we store a partially executed
-            # function.
+                if circuit_id:
+                    partially_attached = functools.partial(self._attach,
+                                                           circuit_id=circuit_id)
+                    self.unattached[port] = partially_attached
+                else:
+                    partially_attached = functools.partial(self._attach,
+                                                           stream_id=stream_id)
+                    self.unattached[port] = partially_attached
 
-            if circuit_id:
-                partially_attached = functools.partial(self._attach,
-                                                       circuit_id=circuit_id)
-                self.unattached[port] = partially_attached
-            else:
-                partially_attached = functools.partial(self._attach,
-                                                       stream_id=stream_id)
-                self.unattached[port] = partially_attached
-
-        log.debug("Pending attachers: %d.", len(self.unattached))
+            log.debug("Pending attachers: %d.", len(self.unattached))
 
     def _attach(self, stream_id=None, circuit_id=None):
         """
@@ -205,18 +208,20 @@ class EventHandler(object):
         self.controller = controller
         self.attacher = Attacher(controller)
         self.module = module
-        self.manager = multiprocessing.Manager()
-        self.queue = self.manager.Queue()
+        # Use plain Queue instead of Manager().Queue() to avoid spawning
+        # a Manager subprocess that must be explicitly shut down.
+        self.queue = multiprocessing.Queue()
         self.socks_port = socks_port
         self.exit_destinations = exit_destinations
         self.target_host = target_host
         self.target_port = target_port
         self.check_finished_lock = threading.Lock()
         self.already_finished = False
+        self.finished_event = threading.Event()
 
-        queue_thread = threading.Thread(target=self.queue_reader)
-        queue_thread.daemon = False
-        queue_thread.start()
+        self.queue_thread = threading.Thread(target=self.queue_reader)
+        self.queue_thread.daemon = False
+        self.queue_thread.start()
 
     def queue_reader(self):
         """
@@ -236,7 +241,12 @@ class EventHandler(object):
                 break
 
             try:
-                circ_id, sockname = self.queue.get()
+                item = self.queue.get()
+                # Sentinel value signals shutdown
+                if item is None:
+                    log.debug("IPC queue received shutdown signal.")
+                    break
+                circ_id, sockname = item
             except (EOFError, queue.Empty):
                 log.debug("IPC queue terminated.")
                 break
@@ -273,9 +283,11 @@ class EventHandler(object):
                 self.attacher.prepare(port, circuit_id=circ_id)
                 self.check_finished()
 
+        self._close_queue()
+
     def check_finished(self):
         """
-        Check if the scan is finished and if it is, shut down exitmap.
+        Check if the scan is finished and if it is, signal completion.
         """
 
         # This is called from both the queue reader thread and the
@@ -283,7 +295,7 @@ class EventHandler(object):
         # must only happen once.
         with self.check_finished_lock:
             if self.already_finished:
-                sys.exit(0)
+                return
 
             # Did all circuits either build or fail?
             circs_done = ((self.stats.failed_circuits +
@@ -303,33 +315,62 @@ class EventHandler(object):
 
             if circs_done and streams_done:
                 self.already_finished = True
-
-                for proc in multiprocessing.active_children():
-                    log.debug(
-                        "Terminating remaining PID %d with name %s.",
-                        proc.pid, proc.name
-                    )
-                    proc.terminate()
-
-                if hasattr(self.module, "teardown"):
-                    log.debug("Calling module's teardown() function.")
-                    self.module.teardown()
-
-                log.info(self.stats)
-                sys.exit(0)
+                self.finished_event.set()
 
             if not self.controller.is_alive():
                 log.error("Terminating threads because controller isn't alive.")
                 self.already_finished = True
-                for proc in multiprocessing.active_children():
-                    log.debug(
-                        "Terminating remaining PID %d, with name %s.",
-                        proc.pid, proc.name
-                    )
-                    proc.terminate()
-                    proc.join(5)
-                log.info(self.stats)
-                sys.exit(1)
+                self.finished_event.set()
+
+    def wait(self):
+        """
+        Wait for the scan to finish.
+        """
+        self.finished_event.wait()
+
+    def shutdown(self):
+        """
+        Clean up resources and shut down.
+        """
+        for proc in multiprocessing.active_children():
+            log.debug(
+                "Terminating remaining PID %d with name %s.",
+                proc.pid, proc.name
+            )
+            proc.terminate()
+
+        if hasattr(self.module, "teardown"):
+            log.debug("Calling module's teardown() function.")
+            self.module.teardown()
+
+        log.info(self.stats)
+
+        # Signal queue reader to stop
+        try:
+            self.queue.put(None)
+        except Exception:
+            pass
+
+        self.queue_thread.join()
+
+        # Remove event listener
+        try:
+            self.controller.remove_event_listener(self.new_event)
+        except Exception:
+            pass
+
+    def _close_queue(self):
+        """
+        Close the multiprocessing queue to release resources.
+        """
+        try:
+            self.queue.close()
+        except Exception:
+            pass
+        try:
+            self.queue.join_thread()
+        except Exception:
+            pass
 
     def new_circuit(self, circ_event):
         """

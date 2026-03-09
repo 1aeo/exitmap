@@ -89,7 +89,7 @@ def get_source_port(stream_line):
     Extract the source port from a stream event.
     """
 
-    pattern = "SOURCE_ADDR=[0-9\.]{7,15}:([0-9]{1,5})"
+    pattern = r"SOURCE_ADDR=[0-9\.]{7,15}:([0-9]{1,5})"
     match = re.search(pattern, stream_line)
 
     if match:
