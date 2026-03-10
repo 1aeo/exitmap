@@ -1,0 +1,56 @@
+diff --git a/stem/socket.py b/stem/socket.py
+index 8303fd06..7287a505 100644
+--- a/stem/socket.py
++++ b/stem/socket.py
+@@ -194,6 +194,7 @@ class BaseSocket(object):
+       # is causing our is_alive() state to change.
+ 
+       is_change = self.is_alive()
++      self._is_alive = False
+ 
+       if self._socket:
+         # if we haven't yet established a connection then this raises an error
+@@ -222,7 +223,6 @@ class BaseSocket(object):
+ 
+       self._socket = None
+       self._socket_file = None
+-      self._is_alive = False
+       self._connection_time = time.time()
+ 
+       if is_change:
+@@ -678,7 +678,7 @@ def recv_message(control_file, arrived_at = None):
+       # if the control_file has been closed then we will receive:
+       # AttributeError: 'NoneType' object has no attribute 'recv'
+ 
+-      log.info(ERROR_MSG % ('SocketClosed', 'socket file has been closed'))
++      log.debug(ERROR_MSG % ('SocketClosed', 'socket file has been closed'))
+       raise stem.SocketClosed('socket file has been closed')
+     except (socket.error, ValueError) as exc:
+       # When disconnected we get...
+@@ -689,7 +689,7 @@ def recv_message(control_file, arrived_at = None):
+       # Python 3:
+       #   ValueError: I/O operation on closed file.
+ 
+-      log.info(ERROR_MSG % ('SocketClosed', 'received exception "%s"' % exc))
++      log.debug(ERROR_MSG % ('SocketClosed', 'received exception "%s"' % exc))
+       raise stem.SocketClosed(exc)
+ 
+     # Parses the tor control lines. These are of the form...
+@@ -699,7 +699,7 @@ def recv_message(control_file, arrived_at = None):
+       # if the socket is disconnected then the readline() method will provide
+       # empty content
+ 
+-      log.info(ERROR_MSG % ('SocketClosed', 'empty socket content'))
++      log.debug(ERROR_MSG % ('SocketClosed', 'empty socket content'))
+       raise stem.SocketClosed('Received empty socket content.')
+     elif not MESSAGE_PREFIX.match(line):
+       log.info(ERROR_MSG % ('ProtocolError', 'malformed status code/divider, "%s"' % log.escape(line)))
+@@ -745,7 +745,7 @@ def recv_message(control_file, arrived_at = None):
+           line = control_file.readline()
+           raw_content += line
+         except socket.error as exc:
+-          log.info(ERROR_MSG % ('SocketClosed', 'received an exception while mid-way through a data reply (exception: "%s", read content: "%s")' % (exc, log.escape(bytes(raw_content)))))
++          log.debug(ERROR_MSG % ('SocketClosed', 'received an exception while mid-way through a data reply (exception: "%s", read content: "%s")' % (exc, log.escape(bytes(raw_content)))))
+           raise stem.SocketClosed(exc)
+ 
+         if not line.endswith(b'\r\n'):
