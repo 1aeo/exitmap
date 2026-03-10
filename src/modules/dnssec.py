@@ -63,6 +63,8 @@ def test_dnssec(exit_fpr, domain):
     except Exception as err:
         log.debug("Could not resolve domain because: %s", err)
         return
+    finally:
+        sock.close()
 
     log.critical("%s resolved domain to %s", exit_url, ip)
 

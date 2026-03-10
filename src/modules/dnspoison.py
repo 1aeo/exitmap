@@ -102,6 +102,8 @@ def resolve(exit_desc, domain, whitelist):
     except EOFError as err:
         log.debug("EOF error: %s", err)
         return
+    finally:
+        sock.close()
 
     if ip not in whitelist:
         log.critical("Exit relay %s returned unexpected IP address %s "
