@@ -125,8 +125,9 @@ def perform_probes(addresses, spacing, parallel, timeout, wr):
                 last_progress = now
                 change = False
 
-            if (len(pending) < parallel and addresses
-                and now - last_connection >= spacing):
+            if (len(pending) < parallel
+                    and addresses
+                    and now - last_connection >= spacing):
 
                 addr = addresses.pop()
                 sock = socket.socket(AF_INET, SOCK_STREAM)
@@ -207,7 +208,8 @@ def choose_probe_order(dests):
 
     hosts = {}
     for h, p in dests:
-        if h not in hosts: hosts[h] = set()
+        if h not in hosts:
+            hosts[h] = set()
         hosts[h].add(p)
 
     remaining = {}
@@ -268,6 +270,7 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over
                             CONNECTION_TIMEOUT,
                             wr)
 
+
 # exitmap needs this variable to figure out which relays can exit to the given
 # destination(s).
 
@@ -279,7 +282,8 @@ def setup(**kwargs):
     with open("rtt-destinations.txt") as f:
         for line in f:
             line = line.strip()
-            if not line or line[0] == '#': continue
+            if not line or line[0] == '#':
+                continue
             ipaddr = socket.getaddrinfo(
                 line, 80, socket.AF_INET, socket.SOCK_STREAM, 0, 0)[0][4][0]
 

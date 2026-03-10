@@ -138,12 +138,8 @@ class Attacher(object):
 
 
 def module_call(queue, module, circ_id, socks_port,
-            exit_desc,
-            run_cmd_over_tor,
-            destinations,
-            target_host,
-            target_port
-            ):
+                exit_desc, run_cmd_over_tor, destinations,
+                target_host, target_port):
     """
     Run the module and then inform the event handler.
 
@@ -308,10 +304,11 @@ class EventHandler(object):
                              self.stats.failed_circuits))
 
             log.debug("failedCircs=%d, builtCircs=%d, totalCircs=%d, "
-                      "finishedStreams=%d", self.stats.failed_circuits,
-                                              self.stats.successful_circuits,
-                                              self.stats.total_circuits,
-                                              self.stats.finished_streams)
+                      "finishedStreams=%d",
+                      self.stats.failed_circuits,
+                      self.stats.successful_circuits,
+                      self.stats.total_circuits,
+                      self.stats.finished_streams)
 
             if circs_done and streams_done:
                 self.already_finished = True

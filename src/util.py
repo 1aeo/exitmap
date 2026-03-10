@@ -171,7 +171,7 @@ def dump_to_file(blurb, exit_fpr):
         return None
 
     log.debug("Wrote %d-length blurb to file \"%s\".",
-                 len(blurb), file_name)
+              len(blurb), file_name)
 
     return file_name
 
