@@ -329,6 +329,13 @@ class EventHandler(object):
         """
         Clean up resources and shut down.
         """
+        # Remove event listener first — scan is complete, no more events needed.
+        # This prevents event callbacks from racing with resource cleanup.
+        try:
+            self.controller.remove_event_listener(self.new_event)
+        except Exception:
+            pass
+
         for proc in multiprocessing.active_children():
             log.debug(
                 "Terminating remaining PID %d with name %s.",
@@ -349,12 +356,6 @@ class EventHandler(object):
             pass
 
         self.queue_thread.join()
-
-        # Remove event listener
-        try:
-            self.controller.remove_event_listener(self.new_event)
-        except Exception:
-            pass
 
     def _close_queue(self):
         """
