@@ -61,6 +61,8 @@ def resolve(exit_desc, domain):
     except EOFError as err:
         log.error("EOF error: %s", err)
         return
+    finally:
+        sock.close()
 
     log.debug("%s resolved domain %s to %s", exit, domain, ip)
 
