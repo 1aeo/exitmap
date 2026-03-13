@@ -92,7 +92,7 @@ def temp_analysis_dir(tmp_path):
 @pytest.fixture
 def mock_torsocket():
     """Fixture that provides a mock torsocket with patch context.
-    
+
     Usage:
         def test_foo(mock_torsocket):
             mock_socket, use_socket = mock_torsocket
@@ -101,10 +101,10 @@ def mock_torsocket():
                 result = dnshealth.resolve_with_retry(...)
     """
     mock_socket = MagicMock()
-    
+
     def use_socket():
         return patch.object(dnshealth.torsocks, 'torsocket', return_value=mock_socket)
-    
+
     return mock_socket, use_socket
 
 

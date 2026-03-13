@@ -23,15 +23,12 @@ Provides utility functions.
 import os
 import re
 import logging
-try:
-    import urllib2
-except ImportError:
-    import urllib.request as urllib2
+import urllib.request as urllib2
 import json
 import tempfile
 import errno
 
-from stem.descriptor.reader import DescriptorReader
+import stem.descriptor
 
 
 log = logging.getLogger(__name__)
@@ -48,7 +45,7 @@ def parse_log_lines(ports, log_line):
     Both ports are written to the given dictionary.
     """
 
-    log.debug("Tor says: %s" % log_line)
+    log.debug("Tor says: %s", log_line)
 
     if re.search(r"^.*Bootstrapped \d+%.*$", log_line):
         log.info(re.sub(r"^.*(Bootstrapped \d+%.*)$", r"Tor \1", log_line))
@@ -59,12 +56,12 @@ def parse_log_lines(ports, log_line):
     match = re.search(socks_pattern, log_line)
     if match:
         ports["socks"] = int(match.group(1))
-        log.debug("Tor uses port %d as SOCKS port." % ports["socks"])
+        log.debug("Tor uses port %d as SOCKS port.", ports["socks"])
 
     match = re.search(control_pattern, log_line)
     if match:
         ports["control"] = int(match.group(1))
-        log.debug("Tor uses port %d as control port." % ports["control"])
+        log.debug("Tor uses port %d as control port.", ports["control"])
 
 
 def relay_in_consensus(fingerprint, cached_consensus_path):
@@ -77,10 +74,9 @@ def relay_in_consensus(fingerprint, cached_consensus_path):
 
     fingerprint = fingerprint.upper()
 
-    with DescriptorReader(cached_consensus_path) as reader:
-        for descriptor in reader:
-            if descriptor.fingerprint == fingerprint:
-                return True
+    for desc in stem.descriptor.parse_file(cached_consensus_path):
+        if desc.fingerprint == fingerprint:
+            return True
 
     return False
 
@@ -125,7 +121,7 @@ def get_relays_in_country(country_code):
     onionoo_url = "https://onionoo.torproject.org/details?country="
 
     log.info("Attempting to fetch all relays with country code \"%s\" "
-             "from Onionoo." % country_code)
+             "from Onionoo.", country_code)
 
     f = urllib2.urlopen("%s%s" % (onionoo_url, country_code))
     data = f.read().decode('utf-8')
@@ -133,7 +129,7 @@ def get_relays_in_country(country_code):
 
     fingerprints = [desc["fingerprint"] for desc in response["relays"]]
 
-    log.info("Onionoo gave us %d (exit and non-exit) fingerprints." %
+    log.info("Onionoo gave us %d (exit and non-exit) fingerprints.",
              len(fingerprints))
 
     return fingerprints
@@ -156,7 +152,7 @@ def dump_to_file(blurb, exit_fpr):
     """
     if analysis_dir is None:
         fd, file_name = tempfile.mkstemp(prefix="%s_" % exit_fpr)
-
+        os.close(fd)
     else:
         try:
             os.makedirs(analysis_dir)
@@ -165,16 +161,17 @@ def dump_to_file(blurb, exit_fpr):
                 raise
         fd, file_name = tempfile.mkstemp(prefix="%s_" % exit_fpr,
                                          dir=analysis_dir)
+        os.close(fd)
 
     try:
         with open(file_name, "wb") as fd:
             fd.write(blurb)
     except IOError as err:
-        log.warning("Couldn't write to \"%s\": %s" % (file_name, err))
+        log.warning("Couldn't write to \"%s\": %s", file_name, err)
         return None
 
-    log.debug("Wrote %d-length blurb to file \"%s\"." %
-                 (len(blurb), file_name))
+    log.debug("Wrote %d-length blurb to file \"%s\".",
+              len(blurb), file_name)
 
     return file_name
 
