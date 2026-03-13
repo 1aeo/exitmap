@@ -27,7 +27,7 @@ def mock_argv():
 @pytest.fixture(scope="session")
 def args_default():
     namespace = argparse.Namespace(
-        config_file = None,
+        config_file=None,
         country=None,
         exit=None,
         exit_file=None,
@@ -50,7 +50,7 @@ def args_default():
 @pytest.fixture(scope="session")
 def args(args_default, tor_dir):
     namespace = argparse.Namespace(
-        config_file = None,
+        config_file=None,
         country=None,
         exit="50485E03CA39D393BD54D315CEBA65E6DD0FDDB9",
         exit_file=None,

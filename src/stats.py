@@ -34,27 +34,27 @@ CIRCUIT_FAILURE_MAP = {
     "TIMEOUT": ("circuit_timeout", "Tor Circuit Error: Construction timed out"),
     "CONNECTFAILED": ("relay_connect_failed", "Tor Circuit Error: Could not connect to relay"),
     "NOPATH": ("circuit_no_path", "Tor Circuit Error: No path available"),
-    
+
     # Relay resource/status issues
     "RESOURCELIMIT": ("relay_resource_limit", "Tor Circuit Error: Relay at capacity"),
     "HIBERNATING": ("relay_hibernating", "Tor Circuit Error: Relay is hibernating"),
-    
+
     # Circuit closed/destroyed
     "DESTROYED": ("circuit_destroyed", "Tor Circuit Error: Circuit was closed"),
     "FINISHED": ("circuit_finished", "Tor Circuit Error: Circuit finished normally"),
-    
+
     # Connection issues
     "OR_CONN_CLOSED": ("relay_connection_closed", "Tor Circuit Error: Connection to relay closed"),
     "CHANNEL_CLOSED": ("channel_closed", "Tor Circuit Error: Relay channel closed unexpectedly"),
     "IOERROR": ("io_error", "Tor Circuit Error: I/O error on connection"),
-    
+
     # Protocol/internal errors
     "TORPROTOCOL": ("tor_protocol_error", "Tor Circuit Error: Protocol violation"),
     "INTERNAL": ("tor_internal_error", "Tor Circuit Error: Internal error"),
     "REQUESTED": ("circuit_requested", "Tor Circuit Error: Circuit close requested"),
     "NOSUCHSERVICE": ("no_such_service", "Tor Circuit Error: Hidden service not found"),
-    
-    # Measurement/guard issues  
+
+    # Measurement/guard issues
     "MEASUREMENT_EXPIRED": ("measurement_expired", "Tor Circuit Error: Measurement expired"),
     "GUARD_LIMIT_REACHED": ("guard_limit", "Tor Circuit Error: Guard circuit limit reached"),
 }
@@ -97,7 +97,7 @@ class Statistics(object):
     def register_circuit(self, circuit_id, first_hop, exit_relay):
         """
         Register a circuit we're about to create, so we can track failures.
-        
+
         Args:
             circuit_id: The circuit ID returned by controller.new_circuit()
             first_hop: Fingerprint of the first hop (guard) relay
@@ -116,7 +116,7 @@ class Statistics(object):
     def resolve_circuit(self, circuit_id):
         """
         Look up the intended path for a circuit by its ID.
-        
+
         Returns:
             Tuple of (first_hop, exit_relay) or (None, None) if not found
         """
@@ -151,12 +151,12 @@ class Statistics(object):
         status = circ_event.status
 
         if status == CircStatus.FAILED:
-            log.debug("Circuit %s failed: %s" % (cid, circ_event.reason))
+            log.debug("Circuit %s failed: %s", cid, circ_event.reason)
             self.failed_circuits += 1
-            
+
             first_hop, exit_relay = self.resolve_circuit(cid)
             reason_key, error_msg = get_circuit_failure_info(circ_event.reason)
-            
+
             if exit_relay:
                 self.failed_circuit_relays[exit_relay] = {
                     "reason_key": reason_key,
@@ -182,7 +182,7 @@ class Statistics(object):
                     "unresolved": True
                 }
                 log.debug("Circuit %s not in registry - recorded as unresolved failure" % cid)
-            
+
             self.complete_circuit(cid)
 
         elif status == CircStatus.BUILT:
@@ -206,11 +206,11 @@ class Statistics(object):
         if self.total_circuits == 0:
             return
 
-        percent_done = (self.successful_circuits /
-                        float(self.total_circuits)) * 100
+        percent_done = (self.successful_circuits
+                        / float(self.total_circuits)) * 100
 
-        log.info("Probed %d out of %d exit relays, so we are %.2f%% done." %
-                 (self.successful_circuits, self.total_circuits, percent_done))
+        log.info("Probed %d out of %d exit relays, so we are %.2f%% done.",
+                 self.successful_circuits, self.total_circuits, percent_done)
 
     def __str__(self):
         """

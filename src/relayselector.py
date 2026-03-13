@@ -70,21 +70,23 @@ def parse_cmd_args():
 
 def get_fingerprints(cached_consensus_path, exclude=[],
                      include_flags=None, exclude_flags=None,
-                     min_bandwidth_kb=None, require_measured_bw=False,
+                     min_bandwidth_kb=None, require_measured_relays=False,
                      include_country=None):
     """
     Get relay fingerprints from consensus, optionally filtered.
 
-    Args:
-        cached_consensus_path: Path to cached-consensus file
-        exclude: List of fingerprints to exclude
-        include_flags: Set of stem.Flag relay MUST have ALL of
-        exclude_flags: Set of stem.Flag relay must have NONE of
-        min_bandwidth_kb: Minimum consensus bandwidth in KB/s
-        require_measured_bw: If True, only include authority-measured bandwidth
-        include_country: 2-letter country code (only relays IN this country)
+    All new parameters default to None/False for full backward compatibility
+    with existing callers.
 
-    All new parameters default to None/False for backward compatibility.
+    :param str cached_consensus_path: path to cached-consensus file
+    :param list exclude: fingerprints to exclude
+    :param set include_flags: stem.Flag values the relay MUST have ALL of
+    :param set exclude_flags: stem.Flag values the relay must have NONE of
+    :param int min_bandwidth_kb: minimum consensus bandwidth in KB/s
+    :param bool require_measured_relays: only include authority-measured relays
+    :param str include_country: 2-letter country code (only relays in this country)
+    :returns: list of relay fingerprints matching all criteria
+    :rtype: list
     """
     fingerprints = []
 
@@ -102,7 +104,7 @@ def get_fingerprints(cached_consensus_path, exclude=[],
             continue
         if min_bandwidth_kb and desc.bandwidth < min_bandwidth_kb:
             continue
-        if require_measured_bw and getattr(desc, 'is_unmeasured', False):
+        if require_measured_relays and getattr(desc, 'is_unmeasured', False):
             continue
         if country_relays and desc.fingerprint not in country_relays:
             continue
@@ -138,8 +140,8 @@ def get_exit_policies(cached_descriptors_path):
         return have_exit_policy
 
     except IOError as err:
-        log.critical("File \"%s\" could not be read: %s" %
-                     (cached_descriptors_path, err))
+        log.critical("File \"%s\" could not be read: %s",
+                     cached_descriptors_path, err)
         sys.exit(1)
 
 
@@ -163,8 +165,8 @@ def get_cached_consensus(cached_consensus_path):
         return cached_consensus
 
     except IOError as err:
-        log.critical("File \"%s\" could not be read: %s" %
-                     (cached_consensus_path, err))
+        log.critical("File \"%s\" could not be read: %s",
+                     cached_consensus_path, err)
         sys.exit(1)
 
 
@@ -219,7 +221,7 @@ def get_exits(data_dir,
     cached_consensus = get_cached_consensus(cached_consensus_path)
     # It's sometimes useful to know which consensus we used for scanning.
     # Log that info even though extracting it is a bit awkward.
-    log.info("The consensus is valid after: %s" %
+    log.info("The consensus is valid after: %s",
              next(iter(cached_consensus.values())).document.valid_after)
     have_exit_policy = get_exit_policies(cached_descriptors_path)
     log.debug("Number of relays with exit policy: %s", len(have_exit_policy))
@@ -324,7 +326,7 @@ def get_exits(data_dir,
         try:
             relay_fprs = frozenset(util.get_relays_in_country(country_code))
         except Exception as err:
-            log.warning("get_relays_in_country() failed: %s" % err)
+            log.warning("get_relays_in_country() failed: %s", err)
             relay_fprs = []
 
         exit_candidates = [

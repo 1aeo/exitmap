@@ -59,22 +59,22 @@ def setup(target=None, **kwargs):
         """
         Populate IPv4
         """
-        response = dns.resolver.query(domain, 'A')
+        response = dns.resolver.resolve(domain, 'A')
         for record in response:
-            log.debug("Domain %s maps in IPv4 to %s." % (domain, record.address))
+            log.debug("Domain %s maps in IPv4 to %s.", domain, record.address)
             domains[domain].append(record.address)
         """
         Populate IPv6 if any result
         """
         try:
-            response6 = dns.resolver.query(domain, 'AAAA')
+            response6 = dns.resolver.resolve(domain, 'AAAA')
             for record in response6:
-                log.debug("Domain %s maps in IPv6 to %s." % (domain, record.address))
+                log.debug("Domain %s maps in IPv6 to %s.", domain, record.address)
                 domains[domain].append(record.address)
-        except:
+        except Exception:
             log.warning("No IPv6 mapping")
 
-    log.info("Domain whitelist: %s" % str(domains))
+    log.info("Domain whitelist: %s", str(domains))
 
 
 def resolve(exit_desc, domain, whitelist):
@@ -94,21 +94,23 @@ def resolve(exit_desc, domain, whitelist):
         ip = sock.resolve(domain)
     except error.SOCKSv5Error as err:
         log.debug("Exit relay %s could not resolve IP address for "
-                  "\"%s\" because: %s" % (exit, domain, err))
+                  "\"%s\" because: %s", exit, domain, err)
         return
     except socket.timeout as err:
-        log.debug("Socket over exit relay %s timed out: %s" % (exit, err))
+        log.debug("Socket over exit relay %s timed out: %s", exit, err)
         return
     except EOFError as err:
-        log.debug("EOF error: %s" % err)
+        log.debug("EOF error: %s", err)
         return
+    finally:
+        sock.close()
 
     if ip not in whitelist:
         log.critical("Exit relay %s returned unexpected IP address %s "
-                     "for domain %s" % (exit, ip, domain))
+                     "for domain %s", exit, ip, domain)
     else:
-        log.debug("IP address of domain %s as expected for %s." %
-                  (domain, exit))
+        log.debug("IP address of domain %s as expected for %s.",
+                  domain, exit)
 
 
 def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor, **kwargs):

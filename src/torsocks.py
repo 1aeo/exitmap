@@ -76,10 +76,12 @@ def send_queue(sock_name):
     assert (queue is not None) and (circ_id is not None)
     queue.put([circ_id, sock_name])
 
+
 class _Torsocket(socks.socksocket):
     def __init__(self, *args, **kwargs):
         super(_Torsocket, self).__init__(*args, **kwargs)
         orig_neg = self._proxy_negotiators[2]  # This is the original function
+
         def ourneg(*args, **kwargs):
             "Our modified function to add data to the queue"
             try:
@@ -88,6 +90,20 @@ class _Torsocket(socks.socksocket):
                 # args[0] is the original socket to the proxy address
                 send_queue(args[0].getsockname())
                 orig_neg(*args, **kwargs)
+            except socks.SOCKS5Error as e:
+                # No e.errno, but can still check the message
+                if e.msg.startswith(
+                    # Any of the SOCKS errors defined previously:
+                    tuple(
+                        [str(k) for k in socks5_errors]
+                        # and:
+                        + ["[Errno 104] Connection reset by peer"]
+                    )
+                ):
+                    # Don't raise this exception, just log it at level warning
+                    log.warning("Error in custom negotiation function: %s", e)
+                else:
+                    raise error.SOCKSv5Error("Error in custom negotiation function: {}".format(e))
             except Exception as e:
                 raise error.SOCKSv5Error("Error in custom negotiation function: {}".format(e))
         self._proxy_negotiators[2] = ourneg
@@ -117,7 +133,7 @@ class _Torsocket(socks.socksocket):
         elif resp[1:2] != chr(0x00).encode():
             # Connection failed
             socks._BaseSocket.close(self)
-            if ord(resp[1:2])<=8:
+            if ord(resp[1:2]) <= 8:
                 raise error.SOCKSv5Error("SOCKS Server error {}".format(ord(resp[1:2])))
             else:
                 raise error.SOCKSv5Error("SOCKS Server error 9")
@@ -135,7 +151,6 @@ class _Torsocket(socks.socksocket):
         struct.unpack(">H", socks._BaseSocket.recv(self, 2))[0]
         socks._BaseSocket.close(self)
         return ip
-
 
 
 def torsocket(family=socket.AF_INET, type=socket.SOCK_STREAM,
@@ -164,8 +179,10 @@ def torsocket(family=socket.AF_INET, type=socket.SOCK_STREAM,
 
     return _Torsocket(family, type, proto, _sock)
 
+
 def getaddrinfo(*args):
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
+
 
 class MonkeyPatchedSocket(object):
     """

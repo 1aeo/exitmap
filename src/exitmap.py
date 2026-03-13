@@ -29,6 +29,7 @@ import argparse
 import datetime
 import random
 import logging
+import configparser
 from configparser import ConfigParser
 import functools
 import pwd
@@ -54,46 +55,8 @@ log = logging.getLogger(__name__)
 MAX_PENDING_CIRCUITS = int(os.environ.get("MAX_PENDING_CIRCUITS", "128"))
 
 # Use reliable guards for first-hop selection (GUARD+STABLE+FAST flags, ≥5MB/s)
-RELIABLE_FIRST_HOP = os.environ.get("RELIABLE_FIRST_HOP", "").lower() in ("1", "true", "yes", "y")
-
-
-def _validate_directory(path, name="directory", check_parent=False):
-    """
-    Validate that a directory is secure: owned by current user, mode 700, not a symlink.
-    
-    For parent directories (check_parent=True), we're more lenient since /tmp is 
-    typically world-writable with sticky bit (1777).
-    
-    Returns True if valid, False otherwise.
-    """
-    if not os.path.exists(path):
-        return True  # Non-existent is OK (will be created)
-    
-    try:
-        stat_info = os.stat(path)
-        
-        # For parent directories like /tmp, only check it's not a symlink
-        if check_parent:
-            if os.path.islink(path):
-                log.critical("%s %s is a symlink.", name, path)
-                return False
-            return True
-        
-        # For the actual tor directory, strict checks
-        if stat_info.st_uid != os.getuid():
-            log.critical("%s %s is not owned by current user.", name, path)
-            return False
-        if oct(stat_info.st_mode)[-3:] != "700":
-            log.critical("%s %s does not have mode 700.", name, path)
-            return False
-        if os.path.islink(path):
-            log.critical("%s %s is a symlink.", name, path)
-            return False
-    except OSError as err:
-        log.critical("Cannot stat %s %s: %s", name, path, err)
-        return False
-    
-    return True
+RELIABLE_FIRST_HOP = os.environ.get(
+    "RELIABLE_FIRST_HOP", "").lower() in ("1", "true", "yes", "y")
 
 
 def bootstrap_tor(args):
@@ -102,7 +65,7 @@ def bootstrap_tor(args):
     """
 
     log.info("Attempting to invoke Tor process in directory \"%s\".  This "
-             "might take a while." % args.tor_dir)
+             "might take a while.", args.tor_dir)
 
     if not args.first_hop:
         log.info("No first hop given.  Using randomly determined first "
@@ -133,9 +96,9 @@ def bootstrap_tor(args):
             completion_percent=75,
             init_msg_handler=partial_parse_log_lines,
         )
-        log.info("Successfully started Tor process (PID=%d)." % proc.pid)
+        log.info("Successfully started Tor process (PID=%d).", proc.pid)
     except OSError as err:
-        log.error("Couldn't launch Tor: %s.  Maybe try again?" % err)
+        log.error("Couldn't launch Tor: %s.  Maybe try again?", err)
         sys.exit(1)
 
     return ports["socks"], ports["control"]
@@ -168,9 +131,9 @@ def parse_cmd_args():
     if file_parsed:
         try:
             defaults = dict(config_parser.items("Defaults"))
-        except ConfigParser.NoSectionError as err:
-            log.warning("Could not parse config file \"%s\": %s" %
-                        (config_file, err))
+        except configparser.NoSectionError as err:
+            log.warning("Could not parse config file \"%s\": %s",
+                        config_file, err)
             defaults = {}
     else:
         defaults = {}
@@ -286,25 +249,64 @@ def main():
     # Create and set the given directories.
 
     if args.tor_dir:
-        # Set umask so that parent directories are also created with
-        # permissions only for the user.
+        # Set umask so that parents directories are also created with
+        # permissions only for the user, though they are unchanged if they
+        # already exists.
         os.umask(0o077)
+        # First, create the directory(ies) if they don't exists
         os.makedirs(args.tor_dir, mode=0o700, exist_ok=True)
-        
-        # Validate both parent and target directory security
+        # Check the parent directory for symlink attacks (see #47).
+        # First check the *unresolved* parent for symlinks, since
+        # os.path.realpath() would silently follow them.
+        parent_raw = os.path.dirname(args.tor_dir)
+        if os.path.islink(parent_raw):
+            log.critical(
+                "Parent directory %s is a symlink.", parent_raw
+            )
+            return 1
+        # Then check the resolved parent.  Directories with a sticky
+        # bit (like /tmp, mode 1777) are safe because other users
+        # cannot rename or delete files they don't own.  For non-sticky
+        # directories, require ownership by the current user and
+        # mode 700, matching the original security fix in #47.
         parent = os.path.dirname(os.path.realpath(args.tor_dir))
-        if not _validate_directory(parent, "Parent directory", check_parent=True):
-            return 1
-        if not _validate_directory(args.tor_dir, "Tor data directory"):
-            return 1
-
-    logging.getLogger("stem").setLevel(logging.__dict__[args.verbosity.upper()])
-    log_format = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
+        parent_stat = os.stat(parent)
+        parent_sticky = bool(parent_stat.st_mode & 0o1000)
+        if not parent_sticky:
+            if (
+                parent_stat.st_uid != os.getuid() or
+                oct(parent_stat.st_mode)[-3:] != "700"
+            ):
+                log.critical(
+                    "Parent directory %s is not owned by the user "
+                    "or hasn't mask 700.", parent
+                )
+                return 1
+        if os.path.exists(args.tor_dir):
+            if (
+                not os.stat(args.tor_dir).st_uid == os.getuid() or
+                not oct(os.stat(args.tor_dir).st_mode)[-3:] == "700" or
+                os.path.islink(args.tor_dir)
+            ):
+                log.critical(
+                    "Directory %s is not owned by the user or hasn't mask 700 "
+                    "or it's a symlink.", args.tor_dir
+                )
+                return 1
+    level = logging.__dict__[args.verbosity.upper()]
+    logging.getLogger("stem").setLevel(level)
+    if level == logging.DEBUG:
+        log_format = (
+            "%(asctime)s [%(levelname)s] (%(threadName)s) "
+            "%(filename)s:%(lineno)s - %(funcName)s - %(message)s"
+        )
+    else:
+        log_format = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
     logging.basicConfig(format=log_format,
                         level=logging.__dict__[args.verbosity.upper()],
                         filename=args.logfile)
 
-    log.debug("Command line arguments: %s" % str(args))
+    log.debug("Command line arguments: %s", str(args))
 
     socks_port, control_port = bootstrap_tor(args)
     controller = Controller.from_port(port=control_port)
@@ -333,7 +335,7 @@ def main():
     if args.first_hop and (not util.relay_in_consensus(args.first_hop,
                                                        cached_consensus_path)):
         log.critical("Given first hop \"%s\" not found in consensus.  Is it"
-                     " offline?" % args.first_hop)
+                     " offline?", args.first_hop)
         return 1
 
     try:
@@ -346,7 +348,7 @@ def main():
             try:
                 run_module(module_name, args, controller, socks_port, stats)
             except error.ExitSelectionError as err:
-                log.error("Failed to run because : %s" % err)
+                log.error("Failed to run because : %s", err)
     finally:
         try:
             controller.close()
@@ -363,20 +365,21 @@ def lookup_destinations(args, module):
     log.debug("Selecting destinations depending on the module.")
     destinations = set()
     addrs = {}
+    raw_destinations = None
     if hasattr(module, 'destinations') and module.destinations is None:
         log.info("Destination is built from the module default *None* attribute")
         raw_destinations = module.destinations
-        log.info("raw_destination= %s" % raw_destinations)
+        log.info("raw_destination= %s", raw_destinations)
 
     elif args.host is not None and args.port is not None:
-        log.info("Destination is built from the command line host attribute: %s" % args.host)
+        log.info("Destination is built from the command line host attribute: %s", args.host)
         raw_destinations = [(args.host, args.port)]
-        log.info("raw_destination= %s" % raw_destinations)
+        log.info("raw_destination= %s", raw_destinations)
 
     elif hasattr(module, 'destinations'):
-        log.info("Destination is built from the module default attribute : %s" % module.destinations)
+        log.info("Destination is built from the module default attribute : %s", module.destinations)
         raw_destinations = module.destinations
-        log.info("raw_destination= %s" % raw_destinations)
+        log.info("raw_destination= %s", raw_destinations)
 
     if raw_destinations is not None:
         for (host, port) in raw_destinations:
@@ -405,7 +408,8 @@ def select_exits(args, module):
     elif args.exit_file:
         # '-E' was used to specify a file containing exit relays.
         try:
-            requested_exits = [line.strip() for line in open(args.exit_file)]
+            with open(args.exit_file) as f:
+                requested_exits = [line.strip() for line in f]
         except OSError as err:
             log.error("Could not read %s: %s", args.exit_file, err.strerror)
             sys.exit(1)
@@ -423,7 +427,7 @@ def select_exits(args, module):
         requested_exits = requested_exits,
         destinations    = destinations)
 
-    log.debug("Successfully selected exit relays after %s." %
+    log.debug("Successfully selected exit relays after %s.",
               str(datetime.datetime.now() - before))
 
     return exit_destinations
@@ -434,14 +438,14 @@ def run_module(module_name, args, controller, socks_port, stats):
     Run an exitmap module over all available exit relays.
     """
 
-    log.info("Running module '%s'." % module_name)
-    log.info("with host '%s'." % args.host)
+    log.info("Running module '%s'.", module_name)
+    log.info("with host '%s'.", args.host)
     stats.modules_run += 1
 
     try:
         module = __import__("modules.%s" % module_name, fromlist=[module_name])
     except ImportError as err:
-        log.error("Failed to load module because: %s" % err)
+        log.error("Failed to load module because: %s", err)
         return
 
     # Let module perform one-off setup tasks.
@@ -484,7 +488,7 @@ def run_module(module_name, args, controller, socks_port, stats):
     log.info("Scan is estimated to take around %s." %
              datetime.timedelta(seconds=duration))
 
-    log.info("Beginning to trigger %d circuit creation(s)." % count)
+    log.info("Beginning to trigger %d circuit creation(s).", count)
 
     try:
         iter_exit_relays(exit_relays, controller, stats, args)
@@ -514,7 +518,7 @@ def sleep(delay, delay_noise):
     if delay < 0:
         delay = 0
 
-    log.debug("Sleeping for %.1fs, then building next circuit." % delay)
+    log.debug("Sleeping for %.1fs, then building next circuit.", delay)
     time.sleep(delay)
 
 
@@ -525,24 +529,27 @@ def iter_exit_relays(exit_relays, controller, stats, args):
     before = datetime.datetime.now()
     count = len(exit_relays)
     use_delay = args.build_delay > 0 or args.delay_noise > 0
-    
+
     # Pre-compute fingerprints list once if using random first hops
     if not args.first_hop:
-        cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
+        cached_consensus_path = os.path.join(args.tor_dir,
+                                             "cached-consensus")
         if RELIABLE_FIRST_HOP:
             fingerprints = relayselector.get_fingerprints(
                 cached_consensus_path,
-                include_flags={stem.Flag.GUARD, stem.Flag.STABLE, stem.Flag.FAST,
-                              stem.Flag.RUNNING, stem.Flag.VALID},
+                include_flags={stem.Flag.GUARD, stem.Flag.STABLE,
+                               stem.Flag.FAST, stem.Flag.RUNNING,
+                               stem.Flag.VALID},
                 exclude_flags={stem.Flag.BADEXIT},
                 min_bandwidth_kb=5000,
-                require_measured_bw=True,
+                require_measured_relays=True,
             )
-            log.info("Using %d reliable guards for first hop.", len(fingerprints))
+            log.info("Using %d reliable guards for first hop.",
+                     len(fingerprints))
         else:
-            fingerprints = relayselector.get_fingerprints(cached_consensus_path)
-        fingerprint_set = set(fingerprints)
-    
+            fingerprints = relayselector.get_fingerprints(
+                cached_consensus_path)
+
     for i, exit_relay in enumerate(exit_relays):
         # Determine the hops in our circuit
         if args.first_hop:
