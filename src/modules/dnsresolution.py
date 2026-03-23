@@ -22,6 +22,7 @@ Module to detect broken DNS resolution.
 """
 
 import logging
+import uuid
 
 import torsocks
 import socket
@@ -35,6 +36,26 @@ domains = {
     "www.example.com": [],
     "www.torproject.org": [],
 }
+
+_wildcard_mode = False
+_base_domain = None
+
+
+def setup(consensus=None, target=None, **kwargs):
+    """Detect wildcard domain and configure unique-per-relay mode."""
+    global _wildcard_mode, _base_domain
+    if target is None:
+        return
+    log.debug("Checking if target domain is a wildcard.")
+    test_domain = "%s.%s" % (uuid.uuid4().hex[:8], target)
+    try:
+        socket.gethostbyname(test_domain)
+    except socket.gaierror:
+        log.info("Using literal resolution for %s", target)
+        return
+    _wildcard_mode = True
+    _base_domain = target
+    log.info("Wildcard detected: *.%s", target)
 
 
 def resolve(exit_desc, domain):
@@ -74,6 +95,13 @@ def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over
     if target_host is None:
         for domain in domains:
             run_python_over_tor(resolve, exit_desc, domain)
+    elif _wildcard_mode:
+        domain = "%s.%s.%s" % (
+            uuid.uuid4().hex,
+            exit_desc.fingerprint[:8].lower(),
+            _base_domain,
+        )
+        run_python_over_tor(resolve, exit_desc, domain)
     else:
         run_python_over_tor(resolve, exit_desc, target_host)
 
