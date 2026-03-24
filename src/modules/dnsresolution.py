@@ -44,14 +44,20 @@ _base_domain = None
 def setup(consensus=None, target=None, **kwargs):
     """Detect wildcard domain and configure unique-per-relay mode."""
     global _wildcard_mode, _base_domain
+    _wildcard_mode = False
+    _base_domain = None
     if target is None:
         return
     log.debug("Checking if target domain is a wildcard.")
-    test_domain = "%s.%s" % (uuid.uuid4().hex[:8], target)
+    test_domain = "%s.%s" % (uuid.uuid4().hex, target)
     try:
         socket.gethostbyname(test_domain)
-    except socket.gaierror:
-        log.info("Using literal resolution for %s", target)
+    except socket.gaierror as err:
+        if err.errno in (socket.EAI_NONAME, socket.EAI_NODATA):
+            log.info("Using literal resolution for %s", target)
+        else:
+            log.warning("Could not check for wildcard (%s), "
+                        "using literal resolution for %s", err, target)
         return
     _wildcard_mode = True
     _base_domain = target
