@@ -92,20 +92,18 @@ class _Torsocket(socks.socksocket):
                 orig_neg(*args, **kwargs)
             except socks.SOCKS5Error as e:
                 # No e.errno, but can still check the message
-                if e.msg.startswith(
-                    # Any of the SOCKS errors defined previously:
-                    tuple(
-                        [str(k) for k in socks5_errors]
-                        # and:
-                        + ["[Errno 104] Connection reset by peer"]
-                    )
-                ):
+                # Any of the SOCKS errors defined previously:
+                if e.msg.startswith(tuple(f"0x{k:02x}" for k in socks5_errors)):
                     # Don't raise this exception, just log it at level warning
                     log.warning("Error in custom negotiation function: %s", e)
                 else:
-                    raise error.SOCKSv5Error("Error in custom negotiation function: {}".format(e))
+                    raise e
             except Exception as e:
-                raise error.SOCKSv5Error("Error in custom negotiation function: {}".format(e))
+                if str(e).startswith("[Errno 104] Connection reset by peer"):
+                    # Don't raise this exception, just log it at level warning
+                    log.warning("Error in custom negotiation function: %s", e)
+                else:
+                    raise e
         self._proxy_negotiators[2] = ourneg
 
     def negotiate(self):
