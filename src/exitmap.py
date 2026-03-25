@@ -443,10 +443,10 @@ def run_module(module_name, args, controller, socks_port, stats):
         cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
         cached_consensus = relayselector.get_cached_consensus(cached_consensus_path)
         log.debug("Calling module's setup() function.")
-        if args.host is None:
-            module.setup(consensus=cached_consensus)
-        else:
-            module.setup(target=args.host, consensus=cached_consensus)
+        setup_kwargs = {"consensus": cached_consensus}
+        if args.host is not None:
+            setup_kwargs["target"] = args.host
+        module.setup(**setup_kwargs)
 
     exit_destinations = select_exits(args, module)
 
