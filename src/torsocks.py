@@ -99,7 +99,11 @@ class _Torsocket(socks.socksocket):
                 else:
                     raise e
             except Exception as e:
-                if str(e).startswith("[Errno 104] Connection reset by peer"):
+                if (
+                    str(e).startswith("[Errno 104] Connection reset by peer")
+                    or repr(e).startswith("Connection reset by peer")
+                    or isinstance(e, ConnectionResetError)
+                ):
                     # Don't raise this exception, just log it at level warning
                     log.warning("Error in custom negotiation function: %s", e)
                 else:
