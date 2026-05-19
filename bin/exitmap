@@ -37,16 +37,20 @@ def main():
 
     try:
         exitmap_main()
-        sys.exit(0)
+        # Here there is no need for sys.exit(0) when exitmap_main doesn't raise
+        # an exception.
 
     except KeyboardInterrupt:
         failed = 1
-
     finally:
         print("Removing tmp files...")
-        shutil.rmtree(args.tor_dir)
+        try:
+            shutil.rmtree(args.tor_dir)
+        except OSError as e:
+            print(
+              f"Warning: could not remove {args.tor_dir}: {e}", file=sys.stderr
+            )
         sys.exit(failed)
 
 if __name__ == "__main__":
     main()
-

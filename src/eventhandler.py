@@ -21,6 +21,7 @@ Handles Tor controller events.
 """
 
 import functools
+import socket
 import threading
 import multiprocessing
 import logging
@@ -29,6 +30,7 @@ import stem
 from stem import StreamStatus
 from stem import CircStatus
 
+import error
 import torsocks
 
 import command
@@ -158,9 +160,18 @@ def module_call(queue, module, circ_id, socks_port,
             try:
                 with torsocks.MonkeyPatchedSocket(queue, circ_id, socks_port):
                     func(*args)
+            # Any of these are exceptions are circuit connection errors that
+            # shouldn't be logged at error level.
+            except (socket.error, error.SOCKSv5Error,
+                    socket.timeout, EOFError, ConnectionError) as err:
+                log.warning("Error in `module_call` closure: %s", err)
+            # Any other unexpected exception is logged at error level and
+            # re-raised so the outer module_call handler sees it.
             except Exception as err:
-                log.error("Error in `module_call` closure: %s", err)
-                return
+                log.error(
+                    "Error in `module_call` closure: %s", err, exc_info=True
+                )
+                raise
         return closure
 
     try:
@@ -175,9 +186,12 @@ def module_call(queue, module, circ_id, socks_port,
     except KeyboardInterrupt:
         log.debug("Ignoring `KeyboardInterrupt`")
     except Exception as exc:
-        log.error("Exception %s", exc)
-    else:
+        # An exception here is something unexpected from the module itself.
+        log.error("Exception: %s", exc, exc_info=True)
+    finally:
         log.debug("Informing event handler that module finished.")
+        # keep finished_streams consistent, regardless of whether the moodule
+        # raised or not
         queue.put((circ_id, None))
 
 
@@ -387,12 +401,17 @@ class EventHandler(object):
             return
         exit_desc = get_relay_desc(self.controller, exit_fpr)
         if exit_desc is None:
+            log.warning("Descriptor unavailable for %s; skipping circuit %s.",
+                        exit_fpr, circ_event.id)
             try:
                 self.controller.close_circuit(circ_event.id)
             except (stem.InvalidArguments, stem.InvalidRequest) as err:
                 log.debug("Could not close circuit because: %s", err)
             except Exception as err:
-                log.error("Error while closing circuit: %s!", err)
+                log.error("Error while closing circuit: %s!", err, exc_info=True)
+            # Add this circuit to finished_streams so check_finished()
+            # doesn't block waiting for a sentinel that will never arrive.
+            self.queue.put((circ_event.id, None))
             return
 
         proc = multiprocessing.Process(target=module_call, args=(

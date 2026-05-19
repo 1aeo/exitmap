@@ -339,6 +339,10 @@ def main():
                 log.error("Failed to run because : %s", err)
     finally:
         try:
+            # Silence stem's SocketClosed reader-thread spam: after
+            # handler.shutdown() the socket is about to close, and
+            # stem's internal listener fires repeatedly until it notices.
+            logging.getLogger("stem").setLevel(logging.ERROR)
             controller.close()
         except Exception as err:
             log.debug("Failed to close controller: %s", err)
