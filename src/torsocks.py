@@ -84,15 +84,13 @@ class _Torsocket(socks.socksocket):
 
         def ourneg(*args, **kwargs):
             "Our modified function to add data to the queue"
-            try:
-                # we are adding to the queue before as orig_neg will also do
-                # the actual connection to the destination inside.
-                # args[0] is the original socket to the proxy address
-                send_queue(args[0].getsockname())
-                orig_neg(*args, **kwargs)
-            # Catch and log any exception
-            except Exception as e:
-                log.warning("Error in custom negotiation function: %s", e)
+            # we are adding to the queue before as orig_neg will also do
+            # the actual connection to the destination inside.
+            # args[0] is the original socket to the proxy address
+            # Any exception will be just raised, to avoid leaving the stream
+            # registered in the Attacher with the circuit never closed
+            send_queue(args[0].getsockname())
+            orig_neg(*args, **kwargs)
         self._proxy_negotiators[2] = ourneg
 
     def negotiate(self):
