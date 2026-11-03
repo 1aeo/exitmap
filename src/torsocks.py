@@ -103,7 +103,11 @@ class _Torsocket(socks.socksocket):
         host = hostname.encode("utf-8")
         # First connect to the local proxy
         self.negotiate()
-        send_queue(socks._BaseSocket.getsockname(self))
+        sockname = socks._BaseSocket.getsockname(self)
+        # Kept after close so the caller can match this socket to the
+        # controller STREAM event (SOURCE_ADDR is only on NEW/NEWRESOLVE).
+        self.local_port = sockname[1]
+        send_queue(sockname)
         req = struct.pack('BBB', 0x05, 0xF0, 0x00)
         req += chr(0x03).encode() + chr(len(host)).encode() + host
         req = req + struct.pack(">H", 8444)

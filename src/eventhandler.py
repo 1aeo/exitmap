@@ -39,6 +39,59 @@ import util
 
 log = logging.getLogger(__name__)
 
+# Statuses that carry REASON. RESOLVE streams are closed rather than failed:
+# connection_ap_handshake_socks_reply skips STREAM FAILED for RESOLVE, and
+# connection_ap_about_to_close emits CLOSED with the end reason.
+_TERMINAL_STREAM_STATUSES = (StreamStatus.CLOSED, StreamStatus.FAILED)
+
+
+def _normalize_stream_reason(reason):
+    """Return a control-port reason name, or None."""
+    if reason is None:
+        return None
+    text = str(reason).strip()
+    if not text or text.lower() == "none":
+        return None
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text.upper()
+
+
+def observe_stream(stream_ports, stream_reasons, stream_event):
+    """
+    Remember a stream's source port, and record CLOSED/FAILED reasons.
+
+    NEW and NEWRESOLVE carry SOURCE_ADDR. CLOSED and FAILED carry REASON
+    but not the source port, and a successful resolve's CLOSED target is
+    the answer address rather than the name that was queried. The source
+    port is the stable key back to the SOCKS socket.
+
+    Returns True when the event is terminal (CLOSED or FAILED).
+    """
+    status = stream_event.status
+    stream_id = str(stream_event.id)
+
+    if status in (StreamStatus.NEW, StreamStatus.NEWRESOLVE):
+        port = getattr(stream_event, "source_port", None)
+        if isinstance(port, int):
+            stream_ports[stream_id] = port
+        return False
+
+    if status not in _TERMINAL_STREAM_STATUSES:
+        return False
+
+    port = stream_ports.pop(stream_id, None)
+    if stream_reasons is None or not isinstance(port, int):
+        return True
+    reason = _normalize_stream_reason(getattr(stream_event, "reason", None))
+    if not reason:
+        return True
+    try:
+        stream_reasons[port] = reason
+    except Exception as err:
+        log.debug("Could not record stream reason for port %s: %s", port, err)
+    return True
+
 
 def get_relay_desc(controller, fpr):
     """
@@ -135,7 +188,8 @@ def module_call(queue, module, circ_id, socks_port,
             destinations,
             target_host,
             target_port,
-            first_hop_fpr=None
+            first_hop_fpr=None,
+            stream_reasons=None,
             ):
     """
     Run the module and then inform the event handler.
@@ -171,7 +225,8 @@ def module_call(queue, module, circ_id, socks_port,
             destinations=destinations,
             target_host=target_host,
             target_port=target_port,
-            first_hop=first_hop_fpr
+            first_hop=first_hop_fpr,
+            stream_reasons=stream_reasons,
         )
         log.debug("Informing event handler that module finished.")
         queue.put((circ_id, None))
@@ -206,6 +261,17 @@ class EventHandler(object):
         self.already_finished = False
         self.finished_event = threading.Event()
         self.pid_to_fingerprint = {}  # {pid: fingerprint} for grace period
+        # stream id -> SOCKS client port, then port -> CLOSED/FAILED reason.
+        # The map is shared with probe processes so a reply 4 can be split
+        # by cause. A Manager dict survives the child being a separate process.
+        self._stream_ports = {}
+        try:
+            self._reason_manager = multiprocessing.Manager()
+            self.stream_reasons = self._reason_manager.dict()
+        except Exception as err:
+            log.warning("Stream reason tracking unavailable: %s", err)
+            self._reason_manager = None
+            self.stream_reasons = None
 
         self.queue_thread = threading.Thread(target=self.queue_reader)
         self.queue_thread.daemon = False
@@ -329,12 +395,20 @@ class EventHandler(object):
             pass
             
         self.queue_thread.join()
-        
+
         # Remove event listener
         try:
             self.controller.remove_event_listener(self.new_event)
         except Exception:
             pass
+
+        manager = getattr(self, "_reason_manager", None)
+        if manager is not None:
+            try:
+                manager.shutdown()
+            except Exception:
+                pass
+            self._reason_manager = None
 
     def _close_queue(self):
         """
@@ -389,7 +463,8 @@ class EventHandler(object):
             self.exit_destinations[exit_fpr],
             self.target_host,
             self.target_port,
-            first_hop_fpr
+            first_hop_fpr,
+            self.stream_reasons,
         ))
         proc.daemon = True
         proc.start()
@@ -403,6 +478,9 @@ class EventHandler(object):
         desired circuit ID at this point.  So we set up all we can at this
         point and wait for the attaching to be done in queue_reader().
         """
+
+        if observe_stream(self._stream_ports, self.stream_reasons, stream_event):
+            return
 
         if stream_event.status not in [StreamStatus.NEW,
                                        StreamStatus.NEWRESOLVE]:
