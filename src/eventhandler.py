@@ -206,6 +206,12 @@ class EventHandler(object):
         self.already_finished = False
         self.finished_event = threading.Event()
         self.pid_to_fingerprint = {}  # {pid: fingerprint} for grace period
+        # Relays whose built circuit had no server descriptor.
+        self.missing_descriptors = set()
+        # Filled by run_module: exit-file relays this instance did not select,
+        # and the relays it did select. Teardown writes a row for each.
+        self.skipped_exits = {}
+        self.selected_exits = []
 
         self.queue_thread = threading.Thread(target=self.queue_reader)
         self.queue_thread.daemon = False
@@ -314,7 +320,10 @@ class EventHandler(object):
             try:
                 self.module.teardown(
                     stats=self.stats, controller=self.controller,
-                    terminated_relays=terminated
+                    terminated_relays=terminated,
+                    skipped_exits=self.skipped_exits,
+                    selected_exits=self.selected_exits,
+                    missing_descriptors=self.missing_descriptors,
                 )
             except TypeError:
                 # Module doesn't accept kwargs - call without arguments
@@ -376,7 +385,13 @@ class EventHandler(object):
 
         exit_desc = get_relay_desc(self.controller, exit_fpr)
         if exit_desc is None:
-            self.controller.close_circuit(circ_event.id)
+            self.missing_descriptors.add(exit_fpr)
+            log.warning("No descriptor for %s; closing circuit without a result",
+                        exit_fpr)
+            try:
+                self.controller.close_circuit(circ_event.id)
+            except Exception as err:
+                log.debug("Failed to close circuit %s: %s", circ_event.id, err)
             return
 
         proc = multiprocessing.Process(target=module_call, args=(

@@ -801,6 +801,51 @@ class TestHardTimeout:
         # Just verify no exception was raised
 
 
+# === Test: one row per targeted relay ===
+
+class TestNotTestedRows:
+    """Relays filtered before probing still get one not_tested row."""
+
+    def test_badexit_skip_and_selected_gap_each_write_one_row(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(dnshealth.util, "analysis_dir", str(tmp_path))
+        bad = "B" * 40
+        absent = "C" * 40
+        selected = "D" * 40
+        failed = "E" * 40
+        dnshealth._write_not_tested_rows(
+            stats=None,
+            controller=None,
+            skipped={
+                bad: {"reason": "bad_exit", "nickname": "BadRelay", "address": "1.2.3.4"},
+                absent: {"reason": "not_in_consensus", "nickname": None, "address": None},
+            },
+            selected=[selected],
+            missing_descriptors=set(),
+        )
+        # A fingerprinted circuit failure already accounts for this relay.
+        stats = MagicMock()
+        stats.get_failed_circuit_relays.return_value = {failed: {"reason_key": "circuit_timeout"}}
+        stats.flush_early_failures = MagicMock()
+        # Rewrite with the failure present; the failure must not gain a second row,
+        # and the earlier rows stay as written.
+        dnshealth._write_not_tested_rows(
+            stats=stats, controller=None, skipped={},
+            selected=[selected, failed], missing_descriptors=set())
+
+        def load(fp):
+            with open(tmp_path / ("dnshealth_%s.json" % fp)) as handle:
+                return json.load(handle)
+
+        bad_row = load(bad)
+        assert bad_row["status"] == "not_tested"
+        assert bad_row["not_tested_reason"] == "bad_exit"
+        assert bad_row["error"] == "Not tested: BadExit"
+        assert bad_row["exit_nickname"] == "BadRelay"
+        assert load(absent)["not_tested_reason"] == "not_in_consensus"
+        assert load(selected)["not_tested_reason"] == "no_result"
+        assert not (tmp_path / ("dnshealth_%s.json" % failed)).exists()
+
+
 # === Test: Main guard ===
 
 class TestMainGuard:

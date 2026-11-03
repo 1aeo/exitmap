@@ -73,5 +73,46 @@ def test_router_statuses_with_exit_flag(cached_consensus):
     assert 2297 == len(rs)
 
 
+# torexitbsd2: Exit and BadExit in the test consensus.
+# AccessNow007: Exit, not BadExit.
+_BAD_EXIT = "052848D49E213DE9F85C8721E138DAABA2DE08C8"
+_GOOD_EXIT = "0516085D6CAC40ED4CDCEFDFC5CCF6B00DE61DED"
+_ABSENT = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+
+def test_exit_file_without_all_exits_skips_badexit(tor_dir):
+    """A BadExit in the target file is dropped, with an explicit reason."""
+    skipped = {}
+    selected = relayselector.get_exits(
+        tor_dir,
+        good_exit=True,
+        bad_exit=False,
+        requested_exits=[_BAD_EXIT, _GOOD_EXIT, _ABSENT],
+        destinations=None,
+        skipped=skipped,
+    )
+    assert _GOOD_EXIT in selected
+    assert _BAD_EXIT not in selected
+    assert skipped[_BAD_EXIT]["reason"] == "bad_exit"
+    assert skipped[_BAD_EXIT]["nickname"] == "torexitbsd2"
+    assert skipped[_ABSENT]["reason"] == "not_in_consensus"
+
+
+def test_all_exits_keeps_badexit_in_the_target_file(tor_dir):
+    """--all-exits together with an exit file scans the BadExit relay."""
+    skipped = {}
+    selected = relayselector.get_exits(
+        tor_dir,
+        good_exit=True,
+        bad_exit=True,
+        requested_exits=[_BAD_EXIT, _GOOD_EXIT],
+        destinations=None,
+        skipped=skipped,
+    )
+    assert _BAD_EXIT in selected
+    assert _GOOD_EXIT in selected
+    assert skipped == {}
+
+
 if __name__ == '__main__':
     unittest.main()

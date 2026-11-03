@@ -21,6 +21,7 @@ Provides functions to keep track of scanning statistics.
 """
 
 import logging
+import threading
 from datetime import datetime
 
 from stem import CircStatus
@@ -93,6 +94,22 @@ class Statistics(object):
         # Circuit registry: {circuit_id: {"first_hop": fpr, "exit_relay": fpr, "timestamp": ...}}
         # This allows us to know the intended path even when Tor doesn't report it on failure
         self.pending_circuits = {}
+        # FAILED events can arrive before register_circuit() runs. Hold them
+        # until the circuit id is known, instead of dropping the fingerprint.
+        self._early_failures = {}
+        # RLock: resolve/complete are called while the caller already holds it.
+        self._lock = threading.RLock()
+
+    def _record_failed_relay(self, exit_relay, reason_key, error_msg, tor_reason,
+                             first_hop, timestamp=None):
+        """Store one failed circuit against its exit fingerprint."""
+        self.failed_circuit_relays[exit_relay] = {
+            "reason_key": reason_key,
+            "error": error_msg,
+            "tor_reason": tor_reason,
+            "first_hop": first_hop,
+            "timestamp": timestamp if timestamp is not None else datetime.now().timestamp(),
+        }
 
     def register_circuit(self, circuit_id, first_hop, exit_relay):
         """
@@ -104,14 +121,24 @@ class Statistics(object):
             exit_relay: Fingerprint of the exit relay
         """
         cid = str(circuit_id)  # Normalize to string for consistent lookup
-        self.pending_circuits[cid] = {
-            "first_hop": first_hop,
-            "exit_relay": exit_relay,
-            "timestamp": datetime.now().timestamp()
-        }
+        with self._lock:
+            self.pending_circuits[cid] = {
+                "first_hop": first_hop,
+                "exit_relay": exit_relay,
+                "timestamp": datetime.now().timestamp()
+            }
+            # A FAILED event may already have been observed for this id.
+            early = self._early_failures.pop(cid, None)
+        if early:
+            self._record_failed_relay(
+                exit_relay, early["reason_key"], early["error"],
+                early["tor_reason"], first_hop, early["timestamp"])
+            self.complete_circuit(cid)
+            log.debug("Attached early failure for circuit %s to %s", cid, exit_relay[:8])
         log.debug("Registered circuit %s: %s -> %s" % (cid, first_hop[:8], exit_relay[:8]))
-        if len(self.pending_circuits) % 100 == 0:
-            log.info("Circuit registry: %d circuits registered" % len(self.pending_circuits))
+        registered = len(self.pending_circuits)
+        if registered and registered % 100 == 0:
+            log.info("Circuit registry: %d circuits registered" % registered)
 
     def resolve_circuit(self, circuit_id):
         """
@@ -120,12 +147,33 @@ class Statistics(object):
         Returns:
             Tuple of (first_hop, exit_relay) or (None, None) if not found
         """
-        info = self.pending_circuits.get(str(circuit_id))
+        with self._lock:
+            info = self.pending_circuits.get(str(circuit_id))
         return (info["first_hop"], info["exit_relay"]) if info else (None, None)
 
     def complete_circuit(self, circuit_id):
         """Remove a circuit from the pending registry (it completed or failed)."""
-        self.pending_circuits.pop(str(circuit_id), None)  # pop with default avoids KeyError check
+        with self._lock:
+            self.pending_circuits.pop(str(circuit_id), None)  # pop with default avoids KeyError check
+
+    def flush_early_failures(self):
+        """Record FAILED events whose circuit was never registered.
+
+        These stay fingerprint-less (``UNRESOLVED_<id>``). Events that were
+        waiting on ``register_circuit`` are already stored under the exit.
+        """
+        with self._lock:
+            pending = list(self._early_failures.items())
+            self._early_failures.clear()
+        for cid, early in pending:
+            self.failed_circuit_relays["UNRESOLVED_%s" % cid] = {
+                "reason_key": early["reason_key"],
+                "error": early["error"],
+                "tor_reason": early["tor_reason"],
+                "first_hop": None,
+                "timestamp": early["timestamp"],
+                "unresolved": True,
+            }
 
     def record_immediate_failure(self, first_hop, exit_relay, error_str):
         """
@@ -153,37 +201,36 @@ class Statistics(object):
         if status == CircStatus.FAILED:
             log.debug("Circuit %s failed: %s" % (cid, circ_event.reason))
             self.failed_circuits += 1
-            
-            first_hop, exit_relay = self.resolve_circuit(cid)
+
             reason_key, error_msg = get_circuit_failure_info(circ_event.reason)
-            
+            tor_reason = str(circ_event.reason) if circ_event.reason else "UNKNOWN"
+            first_hop, exit_relay = self.resolve_circuit(cid)
+
             if exit_relay:
-                self.failed_circuit_relays[exit_relay] = {
-                    "reason_key": reason_key,
-                    "error": error_msg,
-                    "tor_reason": str(circ_event.reason) if circ_event.reason else "UNKNOWN",
-                    "first_hop": first_hop,
-                    "timestamp": datetime.now().timestamp()
-                }
+                self._record_failed_relay(
+                    exit_relay, reason_key, error_msg, tor_reason, first_hop)
                 log.debug("Recorded failure for %s via %s: %s" % (
                     exit_relay[:8], first_hop[:8] if first_hop else "?", reason_key))
                 if len(self.failed_circuit_relays) % 50 == 0:
                     log.info("Captured %d circuit failures" % len(self.failed_circuit_relays))
+                self.complete_circuit(cid)
             else:
-                # Circuit not in registry - record as unresolved failure
-                # Use circuit ID as placeholder fingerprint to maintain count consistency
-                unresolved_key = "UNRESOLVED_%s" % cid
-                self.failed_circuit_relays[unresolved_key] = {
-                    "reason_key": reason_key,
-                    "error": error_msg,
-                    "tor_reason": str(circ_event.reason) if circ_event.reason else "UNKNOWN",
-                    "first_hop": None,
-                    "timestamp": datetime.now().timestamp(),
-                    "unresolved": True
-                }
-                log.debug("Circuit %s not in registry - recorded as unresolved failure" % cid)
-            
-            self.complete_circuit(cid)
+                # register_circuit() may still be running on the main thread.
+                # Keep the event until that call can attach the exit fingerprint.
+                with self._lock:
+                    first_hop, exit_relay = self.resolve_circuit(cid)
+                    if exit_relay:
+                        self._record_failed_relay(
+                            exit_relay, reason_key, error_msg, tor_reason, first_hop)
+                        self.complete_circuit(cid)
+                    else:
+                        self._early_failures[cid] = {
+                            "reason_key": reason_key,
+                            "error": error_msg,
+                            "tor_reason": tor_reason,
+                            "timestamp": datetime.now().timestamp(),
+                        }
+                        log.debug("Circuit %s failed before it was registered", cid)
 
         elif status == CircStatus.BUILT:
             self.successful_circuits += 1

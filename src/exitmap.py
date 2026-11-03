@@ -401,11 +401,15 @@ def select_exits(args, module):
 
     if args.exit:
         # '-e' was used to specify a single exit relay.
-        requested_exits = [args.exit]
+        requested_exits = [args.exit.strip().upper()]
     elif args.exit_file:
         # '-E' was used to specify a file containing exit relays.
         try:
-            requested_exits = [line.strip() for line in open(args.exit_file)]
+            requested_exits = []
+            for line in open(args.exit_file):
+                fp = line.strip().upper()
+                if fp:
+                    requested_exits.append(fp)
         except OSError as err:
             log.error("Could not read %s: %s", args.exit_file, err.strerror)
             sys.exit(1)
@@ -415,13 +419,17 @@ def select_exits(args, module):
     else:
         requested_exits = None
 
+    skipped = {}
     exit_destinations = relayselector.get_exits(
         args.tor_dir,
         good_exit       = args.all_exits or (not args.bad_exits),
         bad_exit        = args.all_exits or args.bad_exits,
         country_code    = args.country,
         requested_exits = requested_exits,
-        destinations    = destinations)
+        destinations    = destinations,
+        skipped         = skipped)
+    # Every fingerprint from --exit / --exit-file that was not selected.
+    args.skipped_exits = skipped
 
     log.debug("Successfully selected exit relays after %s." %
               str(datetime.datetime.now() - before))
@@ -457,6 +465,7 @@ def run_module(module_name, args, controller, socks_port, stats):
             module.setup(target=args.host, consensus=cached_consensus)
 
     exit_destinations = select_exits(args, module)
+    skipped = getattr(args, "skipped_exits", None) or {}
 
     exit_relays = list(exit_destinations.keys())
     random.shuffle(exit_relays)
@@ -469,6 +478,18 @@ def run_module(module_name, args, controller, socks_port, stats):
     stats.total_circuits += count
 
     if count < 1:
+        # The exit file can be entirely filtered (BadExit, not in this
+        # consensus, no descriptor). Still record one row per fingerprint.
+        if skipped and hasattr(module, "teardown"):
+            log.info("Exit selection yielded no scannable relays; "
+                     "recording %d not-tested relay(s).", len(skipped))
+            try:
+                module.teardown(
+                    stats=stats, controller=controller,
+                    skipped_exits=skipped, selected_exits=[])
+            except TypeError:
+                module.teardown()
+            return
         raise error.ExitSelectionError("Exit selection yielded %d exits "
                                        "but need at least one." % count)
 
@@ -476,6 +497,8 @@ def run_module(module_name, args, controller, socks_port, stats):
                            exit_destinations=exit_destinations,
                            target_host=target_host,
                            target_port=target_port)
+    handler.skipped_exits = skipped
+    handler.selected_exits = list(exit_destinations.keys())
 
     controller.add_event_listener(handler.new_event,
                                   EventType.CIRC, EventType.STREAM)
