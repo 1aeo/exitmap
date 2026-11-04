@@ -632,7 +632,7 @@ class TestResolveWithRetry:
         mock_socket, use_socket = mock_torsocket
         mock_socket.local_port = 4242
         mock_socket.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
-        dnshealth._stream_reasons = {4242: "TORPROTOCOL"}
+        dnshealth._stream_reasons = {4242: ("TORPROTOCOL", time.time() + 60)}
 
         with use_socket(), patch.object(dnshealth.time, "sleep"):
             result = dnshealth.resolve_with_retry(
@@ -655,7 +655,7 @@ class TestResolveWithRetry:
             error.SOCKSv5Error("SOCKS Server error 4"),
             "64.65.4.1",
         ]
-        dnshealth._stream_reasons = {4242: "DESTROY"}
+        dnshealth._stream_reasons = {4242: ("DESTROY", time.time() + 60)}
 
         with use_socket(), patch.object(dnshealth.time, "sleep"):
             result = dnshealth.resolve_with_retry(
@@ -702,7 +702,7 @@ class TestResolveWithRetry:
         mock_socket, use_socket = mock_torsocket
         mock_socket.local_port = 4242
         mock_socket.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
-        dnshealth._stream_reasons = {4242: "DONE"}
+        dnshealth._stream_reasons = {4242: ("DONE", time.time() + 60)}
 
         with use_socket(), patch.object(dnshealth.time, "sleep"):
             result = dnshealth.resolve_with_retry(

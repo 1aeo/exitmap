@@ -195,8 +195,6 @@ def _parse_socks_error_code(err_str):
 
 def _reason_since(value, started):
     """Return a reason recorded for this attempt. Older ones belong to a reused port."""
-    if isinstance(value, str):
-        return value
     if isinstance(value, tuple) and len(value) == 2 and value[1] >= started:
         return str(value[0])
     return None
