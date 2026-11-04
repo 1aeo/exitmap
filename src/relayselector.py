@@ -231,49 +231,33 @@ def get_exits(data_dir,
     have_exit_flag = router_statuses_with_exit_flag(cached_consensus)
 
     def _record_skips(selected):
-        """Explain requested relays that this call did not select.
-
-        ``skipped`` is an optional dict filled with
-        ``{fingerprint: {"reason", "nickname", "address"}}``.
-        Reasons are ``bad_exit``, ``not_in_consensus``, ``no_descriptor``,
-        and ``exit_policy``.
-        """
+        """Fill ``skipped`` with ``{fingerprint: reason}`` for relays not selected."""
         if skipped is None or not requested_exits:
             return
         selected = {fp.upper() for fp in selected}
-        policy_only = len(have_exit_policy) > len(have_exit_flag)
+        # Missing descriptors drop a relay only when candidates come from the
+        # descriptor set, or when a destination has to be checked against policy.
+        policy_required = destinations or len(have_exit_policy) > len(have_exit_flag)
         for fp in requested_exits:
-            if fp in selected or fp in skipped:
+            if fp in selected:
                 continue
             desc = cached_consensus.get(fp)
-            nickname_s = getattr(desc, "nickname", None) if desc else None
-            address_s = getattr(desc, "address", None) if desc else None
-            flags = desc.flags if desc is not None else frozenset()
-            if desc is None or stem.Flag.EXIT not in flags:
-                reason = "not_in_consensus"
-            elif stem.Flag.BADEXIT in flags and not bad_exit:
+            flags = desc.flags if desc is not None else ()
+            if desc is not None and stem.Flag.BADEXIT in flags and not bad_exit:
                 reason = "bad_exit"
-            elif stem.Flag.BADEXIT not in flags and not good_exit:
+            elif desc is None or stem.Flag.EXIT not in flags:
                 reason = "not_in_consensus"
-            elif fp not in have_exit_policy and (destinations or policy_only):
+            elif fp not in have_exit_policy and policy_required:
                 reason = "no_descriptor"
-            elif destinations and fp in have_exit_policy:
-                policy = have_exit_policy[fp].exit_policy
-                if any(policy.can_exit_to(*dest) for dest in destinations):
-                    reason = "not_in_consensus"
-                else:
-                    reason = "exit_policy"
+            elif destinations and fp in have_exit_policy and not any(
+                    have_exit_policy[fp].exit_policy.can_exit_to(*dest)
+                    for dest in destinations):
+                reason = "exit_policy"
             else:
                 reason = "not_in_consensus"
-            skipped[fp] = {
-                "reason": reason,
-                "nickname": nickname_s,
-                "address": address_s,
-            }
+            skipped[fp] = reason
         if skipped:
             log.info("Not testing %d requested relay(s).", len(skipped))
-            for fp, info in skipped.items():
-                log.info("Not testing %s: %s", fp, info["reason"])
 
     # We want to start with the maximum possible number of exits, this set
     # of possible exits can be filtered out later dependending on the

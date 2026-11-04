@@ -427,11 +427,6 @@ def _write_circuit_failures(stats, controller=None):
     if not util.analysis_dir or not stats:
         return 0
 
-    # Attach fingerprints for FAILED events that won the race with
-    # register_circuit(), and keep the rest as UNRESOLVED_<id>.
-    if hasattr(stats, "flush_early_failures"):
-        stats.flush_early_failures()
-
     # Get failed relays once (was called twice before)
     failed_relays = stats.get_failed_circuit_relays()
     
@@ -520,21 +515,12 @@ _NOT_TESTED_REASONS = {
 }
 
 
-def _result_path(fingerprint):
-    """Path of the per-relay result file, or None when analysis_dir is unset."""
-    if not util.analysis_dir or not fingerprint:
-        return None
-    return os.path.join(util.analysis_dir, "dnshealth_%s.json" % fingerprint)
-
-
 def _write_not_tested_rows(stats, controller, skipped, selected, missing_descriptors):
-    """Write one ``not_tested`` row for every targeted relay that has no row yet.
+    """One ``not_tested`` file per targeted relay that has no result yet.
 
-    A relay that already has a DNS result, or a fingerprinted circuit failure,
-    is left alone. ``skipped`` maps fingerprint to ``{reason, nickname, address}``
-    for relays removed before a circuit was attempted. ``selected`` is the list
-    that was probed; anything in it with no file is ``no_descriptor`` when the
-    built circuit had no descriptor, otherwise ``no_result``.
+    ``skipped`` is ``{fingerprint: reason}`` from get_exits(). ``selected``
+    relays with no file are ``no_descriptor`` or ``no_result``. Circuit
+    failures already have their own row and are left alone.
     """
     if not util.analysis_dir:
         return 0
@@ -542,44 +528,31 @@ def _write_not_tested_rows(stats, controller, skipped, selected, missing_descrip
     if stats:
         failed = {fp for fp in stats.get_failed_circuit_relays()
                   if not str(fp).startswith("UNRESOLVED_")}
-    missing_descriptors = set(missing_descriptors or ())
+    missing = set(missing_descriptors or ())
+    pending = list((skipped or {}).items())
+    pending.extend((fp, "no_descriptor" if fp in missing else "no_result")
+                   for fp in (selected or ()))
     written = 0
     seen = set()
-
-    def emit(fp, reason, nickname=None, address=None):
-        nonlocal written
+    for fp, reason in pending:
         fp = (fp or "").strip().upper()
         if not fp or fp in seen or fp in failed:
-            return
+            continue
         seen.add(fp)
-        path = _result_path(fp)
-        if path is None or os.path.exists(path):
-            return
-        if not nickname:
-            nickname, address = _get_relay_info(controller, fp)
-        text = _NOT_TESTED_REASONS.get(reason, _NOT_TESTED_REASONS["no_result"])
+        if os.path.exists(os.path.join(util.analysis_dir, "dnshealth_%s.json" % fp)):
+            continue
+        if reason not in _NOT_TESTED_REASONS:
+            reason = "no_result"
+        nickname, address = _get_relay_info(controller, fp)
         _write_result({
-            "exit_fingerprint": fp,
-            "exit_nickname": nickname or "unknown",
-            "exit_address": address or "unknown",
-            "status": "not_tested",
-            "not_tested_reason": reason if reason in _NOT_TESTED_REASONS else "no_result",
-            "error": text,
-            "run_id": _run_id,
-            "timestamp": time.time(),
-            "tor_metrics_url": TOR_METRICS_URL.format(fp),
+            "exit_fingerprint": fp, "exit_nickname": nickname, "exit_address": address,
+            "status": "not_tested", "not_tested_reason": reason,
+            "error": _NOT_TESTED_REASONS[reason], "run_id": _run_id,
+            "timestamp": time.time(), "tor_metrics_url": TOR_METRICS_URL.format(fp),
             "query_domain": None, "expected_ip": None, "resolved_ip": None,
             "timing": None, "mode": None, "first_hop": None, "attempt": None,
         }, fp)
         written += 1
-
-    for fp, info in (skipped or {}).items():
-        info = info or {}
-        emit(fp, info.get("reason") or "no_result",
-             info.get("nickname"), info.get("address"))
-    for fp in selected or []:
-        reason = "no_descriptor" if fp in missing_descriptors else "no_result"
-        emit(fp, reason)
     if written:
         _status_counts["not_tested"] = _status_counts.get("not_tested", 0) + written
         log.info("Wrote %d not-tested relays", written)

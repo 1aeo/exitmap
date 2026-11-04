@@ -401,15 +401,11 @@ def select_exits(args, module):
 
     if args.exit:
         # '-e' was used to specify a single exit relay.
-        requested_exits = [args.exit.strip().upper()]
+        requested_exits = [args.exit]
     elif args.exit_file:
         # '-E' was used to specify a file containing exit relays.
         try:
-            requested_exits = []
-            for line in open(args.exit_file):
-                fp = line.strip().upper()
-                if fp:
-                    requested_exits.append(fp)
+            requested_exits = [line.strip() for line in open(args.exit_file)]
         except OSError as err:
             log.error("Could not read %s: %s", args.exit_file, err.strerror)
             sys.exit(1)

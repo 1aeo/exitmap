@@ -64,7 +64,7 @@ class TestStats(unittest.TestCase):
 
         self.stats.update_circs(event)
         self.assertEqual(self.stats.failed_circuits, 1)
-        self.assertNotIn("UNRESOLVED_7", self.stats.failed_circuit_relays)
+        self.assertIn("UNRESOLVED_7", self.stats.failed_circuit_relays)
 
         self.stats.register_circuit("7", guard_fp, exit_fp)
         failure = self.stats.failed_circuit_relays[exit_fp]

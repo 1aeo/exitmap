@@ -815,10 +815,7 @@ class TestNotTestedRows:
         dnshealth._write_not_tested_rows(
             stats=None,
             controller=None,
-            skipped={
-                bad: {"reason": "bad_exit", "nickname": "BadRelay", "address": "1.2.3.4"},
-                absent: {"reason": "not_in_consensus", "nickname": None, "address": None},
-            },
+            skipped={bad: "bad_exit", absent: "not_in_consensus"},
             selected=[selected],
             missing_descriptors=set(),
         )
@@ -840,7 +837,6 @@ class TestNotTestedRows:
         assert bad_row["status"] == "not_tested"
         assert bad_row["not_tested_reason"] == "bad_exit"
         assert bad_row["error"] == "Not tested: BadExit"
-        assert bad_row["exit_nickname"] == "BadRelay"
         assert load(absent)["not_tested_reason"] == "not_in_consensus"
         assert load(selected)["not_tested_reason"] == "no_result"
         assert not (tmp_path / ("dnshealth_%s.json" % failed)).exists()

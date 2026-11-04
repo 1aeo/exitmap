@@ -93,9 +93,8 @@ def test_exit_file_without_all_exits_skips_badexit(tor_dir):
     )
     assert _GOOD_EXIT in selected
     assert _BAD_EXIT not in selected
-    assert skipped[_BAD_EXIT]["reason"] == "bad_exit"
-    assert skipped[_BAD_EXIT]["nickname"] == "torexitbsd2"
-    assert skipped[_ABSENT]["reason"] == "not_in_consensus"
+    assert skipped[_BAD_EXIT] == "bad_exit"
+    assert skipped[_ABSENT] == "not_in_consensus"
 
 
 def test_all_exits_keeps_badexit_in_the_target_file(tor_dir):
