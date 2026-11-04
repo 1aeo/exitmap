@@ -97,6 +97,18 @@ def test_exit_file_without_all_exits_skips_badexit(tor_dir):
     assert skipped[_ABSENT] == "not_in_consensus"
 
 
+def test_non_fingerprint_request_is_ignored(tor_dir):
+    """A path-like exit-file line is not selected and not reported."""
+    skipped = {}
+    selected = relayselector.get_exits(
+        tor_dir, good_exit=True, bad_exit=True,
+        requested_exits=["../OUTSIDE", _BAD_EXIT],
+        destinations=None, skipped=skipped)
+    assert "../OUTSIDE" not in selected
+    assert "../OUTSIDE" not in skipped
+    assert _BAD_EXIT in selected or skipped.get(_BAD_EXIT) == "bad_exit"
+
+
 def test_empty_requested_list_selects_nothing(tor_dir):
     """An empty exit file must not fall through to scanning every exit."""
     selected = relayselector.get_exits(

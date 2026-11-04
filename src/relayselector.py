@@ -23,6 +23,7 @@ Extracts exit relays with given attributes from consensus.
 """
 
 import os
+import re
 import sys
 import argparse
 import logging
@@ -33,6 +34,9 @@ import stem.descriptor
 import util
 
 log = logging.getLogger(__name__)
+
+# Relay fingerprints are 40 hex characters. Anything else must not be used as a path.
+_FINGERPRINT_RE = re.compile(r"^[A-F0-9]{40}$")
 
 
 def parse_cmd_args():
@@ -216,8 +220,11 @@ def get_exits(data_dir,
     # An empty requested list is a filter that matches nothing, not "scan all".
     requested_given = requested_exits is not None
     if requested_given:
-        requested_exits = {str(fp).strip().upper() for fp in requested_exits
-                           if fp and str(fp).strip()}
+        raw = [str(fp).strip().upper() for fp in requested_exits if fp and str(fp).strip()]
+        requested_exits = {fp for fp in raw if _FINGERPRINT_RE.match(fp)}
+        invalid = sum(1 for fp in raw if not _FINGERPRINT_RE.match(fp))
+        if invalid:
+            log.warning("Ignoring %d requested value(s) that are not relay fingerprints.", invalid)
 
     cached_consensus_path = os.path.join(data_dir, "cached-consensus")
     cached_descriptors_path = os.path.join(data_dir, "cached-descriptors")

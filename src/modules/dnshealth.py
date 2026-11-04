@@ -221,12 +221,40 @@ def _make_timing(total_start):
     return {"total_ms": total_ms}
 
 
+_FINGERPRINT_RE = re.compile(r"^[A-F0-9]{40}$")
+
+
+def _result_path(fingerprint):
+    """Path of dnshealth_<fingerprint>.json inside analysis_dir, or None.
+
+    The fingerprint must be 40 hex characters. The resolved path must stay
+    inside analysis_dir. Anything else is refused so an exit-file line cannot
+    be used as a path.
+    """
+    if not util.analysis_dir or not fingerprint:
+        return None
+    fp = str(fingerprint).strip().upper()
+    if not _FINGERPRINT_RE.match(fp):
+        log.warning("Refusing to write a result for %r: not a relay fingerprint", fingerprint)
+        return None
+    root = os.path.realpath(util.analysis_dir)
+    path = os.path.realpath(os.path.join(root, "dnshealth_%s.json" % fp))
+    try:
+        inside = os.path.commonpath([root, path]) == root
+    except ValueError:
+        inside = False
+    if not inside:
+        log.warning("Refusing to write a result outside %s", root)
+        return None
+    return path
+
+
 def _write_result(result, fingerprint):
     """Write result to JSON file."""
-    if not util.analysis_dir:
+    path = _result_path(fingerprint)
+    if path is None:
         return
     try:
-        path = os.path.join(util.analysis_dir, "dnshealth_%s.json" % fingerprint)
         with open(path, "w") as f:
             json.dump(result, f)  # No indent for speed
     except Exception as e:
@@ -541,7 +569,8 @@ def _write_not_tested_rows(stats, controller, skipped, selected, missing_descrip
         if not fp or fp in seen or fp in failed:
             continue
         seen.add(fp)
-        if os.path.exists(os.path.join(util.analysis_dir, "dnshealth_%s.json" % fp)):
+        path = _result_path(fp)
+        if path is None or os.path.exists(path):
             continue
         if reason not in _NOT_TESTED_REASONS:
             reason = "no_result"

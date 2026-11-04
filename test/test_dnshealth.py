@@ -841,6 +841,17 @@ class TestNotTestedRows:
         assert load(selected)["not_tested_reason"] == "no_result"
         assert not (tmp_path / ("dnshealth_%s.json" % failed)).exists()
 
+    def test_refuses_to_write_outside_analysis_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(dnshealth.util, "analysis_dir", str(tmp_path))
+        outside = tmp_path.parent / "dnshealth_ESCAPED.json"
+        dnshealth._write_result({"status": "not_tested"}, "../" + "A" * 40)
+        dnshealth._write_result({"status": "not_tested"}, "not a fingerprint")
+        assert not outside.exists()
+        assert list(tmp_path.iterdir()) == []
+        good = "A" * 40
+        dnshealth._write_result({"status": "success", "exit_fingerprint": good}, good)
+        assert (tmp_path / ("dnshealth_%s.json" % good)).is_file()
+
 
 # === Test: Main guard ===
 
