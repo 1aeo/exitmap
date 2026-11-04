@@ -52,12 +52,15 @@ def _handler():
     return handler
 
 
-def test_closed_reason_uses_the_attach_port():
+def test_closed_reason_uses_the_attach_port(monkeypatch):
+    monkeypatch.setattr("eventhandler.time.time", lambda: 1234.5)
     handler = _handler()
     handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "9", source_port=4242))
     handler.attacher.prepare.assert_called_once_with(4242, stream_id="9")
+    assert handler.stream_reasons[("p", 4242)] == "9"
     handler.new_stream(_Stream(StreamStatus.CLOSED, "9", reason="TORPROTOCOL"))
-    assert handler.stream_reasons[4242][0] == "TORPROTOCOL"
+    assert handler.stream_reasons[("s", "9")] == ("TORPROTOCOL", 1234.5)
+    assert ("p", 4242) not in handler.stream_reasons
     assert handler._stream_ports == {}
 
 
@@ -67,8 +70,8 @@ def test_done_and_destroy_stay_distinct():
     handler.new_stream(_Stream(StreamStatus.CLOSED, "1", reason="DONE"))
     handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "2", source_port=1001))
     handler.new_stream(_Stream(StreamStatus.FAILED, "2", reason="DESTROY"))
-    assert handler.stream_reasons[1000][0] == "DONE"
-    assert handler.stream_reasons[1001][0] == "DESTROY"
+    assert handler.stream_reasons[("s", "1")][0] == "DONE"
+    assert handler.stream_reasons[("s", "2")][0] == "DESTROY"
 
 
 def test_reused_port_drops_the_previous_reason():
@@ -76,9 +79,11 @@ def test_reused_port_drops_the_previous_reason():
     handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "1", source_port=4242))
     handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "2", source_port=4242))
     handler.new_stream(_Stream(StreamStatus.CLOSED, "1", reason="TORPROTOCOL"))
-    assert handler.stream_reasons == {}
+    assert handler.stream_reasons[("p", 4242)] == "2"
+    assert handler.stream_reasons[("s", "1")][0] == "TORPROTOCOL"
     handler.new_stream(_Stream(StreamStatus.CLOSED, "2", reason="DONE"))
-    assert handler.stream_reasons[4242][0] == "DONE"
+    assert handler.stream_reasons[("s", "2")][0] == "DONE"
+    assert ("p", 4242) not in handler.stream_reasons
 
 
 def test_remap_does_not_attach_or_record():

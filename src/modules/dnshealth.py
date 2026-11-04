@@ -193,25 +193,41 @@ def _parse_socks_error_code(err_str):
     return None
 
 
-def _reason_since(value, started):
-    """Return a reason recorded for this attempt. Older ones belong to a reused port."""
-    if isinstance(value, tuple) and len(value) == 2 and value[1] >= started:
-        return str(value[0])
-    return None
-
-
-def _take_stream_reason(port, started):
-    """Pop the CLOSED reason for this SOCKS port, waiting briefly for reply 4."""
-    if _stream_reasons is None or not isinstance(port, int):
+def _wait_for(key):
+    """Return a shared-map value, waiting briefly for the controller event."""
+    if _stream_reasons is None:
         return None
     deadline = time.monotonic() + _REPLY4_REASON_WAIT
     while True:
-        reason = _reason_since(_stream_reasons.pop(port, None), started)
-        if reason:
-            return reason
+        value = _stream_reasons.get(key)
+        if value is not None:
+            return value
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.02)
+
+
+def _current_stream_id(port):
+    """Stream id that owns this port. Called while the socket is still open."""
+    if not isinstance(port, int):
+        return None
+    return _wait_for(("p", port))
+
+
+def _take_stream_reason(stream_id, started):
+    """Pop the CLOSED reason for this stream, waiting briefly for reply 4."""
+    if not stream_id:
+        return None
+    value = None
+    deadline = time.monotonic() + _REPLY4_REASON_WAIT
+    while _stream_reasons is not None:
+        value = _stream_reasons.pop(("s", stream_id), None)
+        if (isinstance(value, tuple) and len(value) == 2 and value[1] >= started):
+            return str(value[0])
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.02)
+    return None
 
 
 def _make_result(exit_desc, domain, expected_ip, status="unknown",
@@ -315,13 +331,16 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
         result["error"] = None
         result["stream_reason"] = None
         sock = None
-        local_port = None
         total_start = time.time()
         status = error_msg = None
 
         try:
             sock = torsocks.torsocket()
             sock.settimeout(QUERY_TIMEOUT)
+            sock.stream_id = None
+            if _stream_reasons is not None:
+                sock.on_local_port = lambda port: setattr(
+                    sock, "stream_id", _current_stream_id(port))
             ip = _normalize_ip(sock.resolve(domain))
 
             result["resolved_ip"] = ip
@@ -381,8 +400,6 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             # Ensure socket is closed even on error. Read the port first;
             # resolve() may already have closed the fd.
             if sock is not None:
-                port = getattr(sock, "local_port", None)
-                local_port = port if isinstance(port, int) else None
                 try:
                     sock.close()
                 except Exception:
@@ -390,7 +407,7 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
         if status is not None:
             if status == "dns_fail":
-                reason = _take_stream_reason(local_port, total_start)
+                reason = _take_stream_reason(getattr(sock, "stream_id", None), total_start)
                 result["stream_reason"] = reason
                 if reason == "TORPROTOCOL":
                     status = "wrong_ip"

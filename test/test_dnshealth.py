@@ -630,9 +630,16 @@ class TestResolveWithRetry:
         """TORPROTOCOL means a private address was rejected, so it is not retried."""
         dnshealth.setup()
         mock_socket, use_socket = mock_torsocket
-        mock_socket.local_port = 4242
-        mock_socket.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
-        dnshealth._stream_reasons = {4242: ("TORPROTOCOL", time.time() + 60)}
+        dnshealth._stream_reasons = {
+            ("p", 4242): "9",
+            ("s", "9"): ("TORPROTOCOL", time.time() + 60),
+        }
+
+        def fail(domain):
+            mock_socket.on_local_port(4242)
+            raise error.SOCKSv5Error("SOCKS Server error 4")
+
+        mock_socket.resolve.side_effect = fail
 
         with use_socket(), patch.object(dnshealth.time, "sleep"):
             result = dnshealth.resolve_with_retry(
@@ -650,12 +657,20 @@ class TestResolveWithRetry:
         """A destroyed stream is still reply 4, and it is retried."""
         dnshealth.setup()
         mock_socket, use_socket = mock_torsocket
-        mock_socket.local_port = 4242
-        mock_socket.resolve.side_effect = [
-            error.SOCKSv5Error("SOCKS Server error 4"),
-            "64.65.4.1",
-        ]
-        dnshealth._stream_reasons = {4242: ("DESTROY", time.time() + 60)}
+        dnshealth._stream_reasons = {
+            ("p", 4242): "9",
+            ("s", "9"): ("DESTROY", time.time() + 60),
+        }
+
+        def calls(domain):
+            mock_socket.on_local_port(4242)
+            calls.n += 1
+            if calls.n == 1:
+                raise error.SOCKSv5Error("SOCKS Server error 4")
+            return "64.65.4.1"
+
+        calls.n = 0
+        mock_socket.resolve.side_effect = calls
 
         with use_socket(), patch.object(dnshealth.time, "sleep"):
             result = dnshealth.resolve_with_retry(
@@ -678,31 +693,41 @@ class TestResolveWithRetry:
             clock["now"] += seconds
 
         monkeypatch.setattr(dnshealth.time, "sleep", advance)
-        assert dnshealth._take_stream_reason(4242, started=0.0) is None
+        assert dnshealth._take_stream_reason("9", started=0.0) is None
         assert clock["now"] >= dnshealth._REPLY4_REASON_WAIT
 
         dnshealth._stream_reasons = None
         clock["now"] = 0.0
-        assert dnshealth._take_stream_reason(4242, started=0.0) is None
+        assert dnshealth._take_stream_reason("9", started=0.0) is None
         assert clock["now"] == 0.0
 
     def test_reason_stored_before_this_attempt_is_ignored(self, monkeypatch):
-        """A leftover reason from an earlier user of this port is not this attempt's."""
-        dnshealth._stream_reasons = {4242: ("TORPROTOCOL", 1.0)}
+        """A reason from another stream, or from before this attempt, is not used."""
         clock = {"now": 0.0}
         monkeypatch.setattr(dnshealth.time, "monotonic", lambda: clock["now"])
         monkeypatch.setattr(dnshealth.time, "sleep", lambda seconds: clock.update(now=clock["now"] + seconds))
-        assert dnshealth._take_stream_reason(4242, started=2.0) is None
-        dnshealth._stream_reasons = {4242: ("DONE", 3.0)}
-        assert dnshealth._take_stream_reason(4242, started=2.0) == "DONE"
+        dnshealth._stream_reasons = {("s", "other"): ("TORPROTOCOL", 3.0)}
+        assert dnshealth._take_stream_reason("9", started=2.0) is None
+        clock["now"] = 0.0
+        dnshealth._stream_reasons = {("s", "9"): ("TORPROTOCOL", 1.0)}
+        assert dnshealth._take_stream_reason("9", started=2.0) is None
+        dnshealth._stream_reasons = {("s", "9"): ("DONE", 3.0)}
+        assert dnshealth._take_stream_reason("9", started=2.0) == "DONE"
 
     def test_reply_4_records_non_private_stream_reason(self, mock_exit_desc, mock_torsocket):
         """An exit error (DONE) stays dns_fail and keeps the stream reason."""
         dnshealth.setup()
         mock_socket, use_socket = mock_torsocket
-        mock_socket.local_port = 4242
-        mock_socket.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
-        dnshealth._stream_reasons = {4242: ("DONE", time.time() + 60)}
+        dnshealth._stream_reasons = {
+            ("p", 4242): "9",
+            ("s", "9"): ("DONE", time.time() + 60),
+        }
+
+        def fail(domain):
+            mock_socket.on_local_port(4242)
+            raise error.SOCKSv5Error("SOCKS Server error 4")
+
+        mock_socket.resolve.side_effect = fail
 
         with use_socket(), patch.object(dnshealth.time, "sleep"):
             result = dnshealth.resolve_with_retry(

@@ -432,15 +432,17 @@ class EventHandler(object):
         point and wait for the attaching to be done in queue_reader().
         """
 
-        # CLOSED has the reason and no SOURCE_ADDR. Record it only while this
-        # stream still owns the port, so a late close cannot overwrite a reuse.
+        # The reason is stored under the stream id. The port only points at
+        # the stream that currently owns it, and only while that stream is open.
         sid = str(stream_event.id)
         if stream_event.status in (StreamStatus.CLOSED, StreamStatus.FAILED):
             port = self._stream_ports.pop(sid, None)
-            if port and self._port_stream.get(port) == sid:
+            if self.stream_reasons is not None and stream_event.reason:
+                self.stream_reasons[("s", sid)] = (str(stream_event.reason), time.time())
+            if port is not None and self._port_stream.get(port) == sid:
                 self._port_stream.pop(port, None)
-                if self.stream_reasons is not None and stream_event.reason:
-                    self.stream_reasons[port] = (str(stream_event.reason), time.time())
+                if self.stream_reasons is not None:
+                    self.stream_reasons.pop(("p", port), None)
             return
 
         if stream_event.status not in [StreamStatus.NEW,
@@ -454,7 +456,7 @@ class EventHandler(object):
             return
 
         if self.stream_reasons is not None:
-            self.stream_reasons.pop(port, None)
+            self.stream_reasons[("p", port)] = sid
         self._port_stream[port] = sid
         self._stream_ports[sid] = port
         log.debug("Adding attacher for new stream %s." % stream_event.id)
