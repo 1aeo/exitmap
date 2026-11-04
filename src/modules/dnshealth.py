@@ -195,7 +195,7 @@ def _parse_socks_error_code(err_str):
 
 def _take_stream_reason(port):
     """Pop the CLOSED reason for this SOCKS port, waiting briefly for reply 4."""
-    if not _stream_reasons or not isinstance(port, int):
+    if _stream_reasons is None or not isinstance(port, int):
         return None
     deadline = time.monotonic() + _REPLY4_REASON_WAIT
     while True:
@@ -305,6 +305,8 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
     for attempt in range(1, retries + 1):
         result["attempt"] = attempt
+        result["error"] = None
+        result["stream_reason"] = None
         sock = None
         local_port = None
         total_start = time.time()

@@ -164,17 +164,19 @@ def module_call(queue, module, circ_id, socks_port,
 
         return closure
 
+    call = {
+        "exit_desc": exit_desc,
+        "run_python_over_tor": run_python_over_tor_wrapper(queue, circ_id, socks_port),
+        "run_cmd_over_tor": run_cmd_over_tor,
+        "destinations": destinations,
+        "target_host": target_host,
+        "target_port": target_port,
+        "first_hop": first_hop_fpr,
+    }
+    if stream_reasons is not None:
+        call["stream_reasons"] = stream_reasons
     try:
-        module(
-            exit_desc=exit_desc,
-            run_python_over_tor=run_python_over_tor_wrapper(queue, circ_id, socks_port),
-            run_cmd_over_tor=run_cmd_over_tor,
-            destinations=destinations,
-            target_host=target_host,
-            target_port=target_port,
-            first_hop=first_hop_fpr,
-            stream_reasons=stream_reasons,
-        )
+        module(**call)
         log.debug("Informing event handler that module finished.")
         queue.put((circ_id, None))
     except KeyboardInterrupt:
@@ -211,6 +213,7 @@ class EventHandler(object):
         # stream id -> SOCKS client port. dnshealth reads the CLOSED reason
         # from the shared map; other modules leave it unused.
         self._stream_ports = {}
+        self._port_stream = {}
         self._reason_manager = None
         self.stream_reasons = None
         module_name = getattr(module, "__name__", "").rsplit(".", 1)[-1]
@@ -311,8 +314,10 @@ class EventHandler(object):
         """
         Clean up resources and shut down.
         """
-        # Grace period for straggling processes (split timeout across all)
-        terminated, active = [], multiprocessing.active_children()
+        # Grace period for straggling probes. The reason-map manager is not a probe.
+        terminated = []
+        manager_pid = getattr(getattr(self._reason_manager, "_process", None), "pid", None)
+        active = [p for p in multiprocessing.active_children() if p.pid != manager_pid]
         if active:
             per_proc = max(1, int(os.environ.get("EXITMAP_GRACE_TIMEOUT", "10")) // len(active))
             for proc in active:
@@ -426,12 +431,15 @@ class EventHandler(object):
         point and wait for the attaching to be done in queue_reader().
         """
 
-        # CLOSED has the reason and no SOURCE_ADDR. The port was stored when
-        # this stream was NEW, using the same parser as stream attachment.
+        # CLOSED has the reason and no SOURCE_ADDR. Record it only while this
+        # stream still owns the port, so a late close cannot overwrite a reuse.
+        sid = str(stream_event.id)
         if stream_event.status in (StreamStatus.CLOSED, StreamStatus.FAILED):
-            port = self._stream_ports.pop(str(stream_event.id), None)
-            if self.stream_reasons is not None and port and stream_event.reason:
-                self.stream_reasons[port] = str(stream_event.reason)
+            port = self._stream_ports.pop(sid, None)
+            if port and self._port_stream.get(port) == sid:
+                self._port_stream.pop(port, None)
+                if self.stream_reasons is not None and stream_event.reason:
+                    self.stream_reasons[port] = str(stream_event.reason)
             return
 
         if stream_event.status not in [StreamStatus.NEW,
@@ -444,7 +452,10 @@ class EventHandler(object):
                         "event: %s" % str(stream_event))
             return
 
-        self._stream_ports[str(stream_event.id)] = port
+        if self.stream_reasons is not None:
+            self.stream_reasons.pop(port, None)
+        self._port_stream[port] = sid
+        self._stream_ports[sid] = port
         log.debug("Adding attacher for new stream %s." % stream_event.id)
         self.attacher.prepare(port, stream_id=stream_event.id)
         self.check_finished()

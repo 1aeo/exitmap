@@ -45,6 +45,7 @@ class _Stream(object):
 def _handler():
     handler = EventHandler.__new__(EventHandler)
     handler._stream_ports = {}
+    handler._port_stream = {}
     handler.stream_reasons = {}
     handler.attacher = MagicMock()
     handler.check_finished = MagicMock()
@@ -67,6 +68,16 @@ def test_done_and_destroy_stay_distinct():
     handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "2", source_port=1001))
     handler.new_stream(_Stream(StreamStatus.FAILED, "2", reason="DESTROY"))
     assert handler.stream_reasons == {1000: "DONE", 1001: "DESTROY"}
+
+
+def test_reused_port_drops_the_previous_reason():
+    handler = _handler()
+    handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "1", source_port=4242))
+    handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "2", source_port=4242))
+    handler.new_stream(_Stream(StreamStatus.CLOSED, "1", reason="TORPROTOCOL"))
+    assert handler.stream_reasons == {}
+    handler.new_stream(_Stream(StreamStatus.CLOSED, "2", reason="DONE"))
+    assert handler.stream_reasons == {4242: "DONE"}
 
 
 def test_remap_does_not_attach_or_record():

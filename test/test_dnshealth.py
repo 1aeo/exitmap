@@ -663,7 +663,28 @@ class TestResolveWithRetry:
 
         assert result["status"] == "success"
         assert result["attempt"] == 2
+        assert result["error"] is None
+        assert result["stream_reason"] is None
         assert mock_socket.resolve.call_count == 2
+
+    def test_empty_reason_map_still_waits(self, monkeypatch):
+        """An empty map is not the same as having no map. Reply 4 waits for the event."""
+        dnshealth._stream_reasons = {}
+        clock = {"now": 0.0}
+
+        monkeypatch.setattr(dnshealth.time, "monotonic", lambda: clock["now"])
+
+        def advance(seconds):
+            clock["now"] += seconds
+
+        monkeypatch.setattr(dnshealth.time, "sleep", advance)
+        assert dnshealth._take_stream_reason(4242) is None
+        assert clock["now"] >= dnshealth._REPLY4_REASON_WAIT
+
+        dnshealth._stream_reasons = None
+        clock["now"] = 0.0
+        assert dnshealth._take_stream_reason(4242) is None
+        assert clock["now"] == 0.0
 
     def test_reply_4_records_non_private_stream_reason(self, mock_exit_desc, mock_torsocket):
         """An exit error (DONE) stays dns_fail and keeps the stream reason."""
