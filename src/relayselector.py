@@ -286,6 +286,18 @@ def get_exits(data_dir,
             "policy as exit candidates."
         )
         exit_candidates = list(have_exit_policy.values())
+    # --all-exits keeps both categories. A BadExit relay can have an exit
+    # policy without the EXIT flag. When the flag set is the larger source,
+    # that relay is not in exit_candidates yet, so add it before the filters.
+    if bad_exit and good_exit:
+        seen = {desc.fingerprint for desc in exit_candidates}
+        for fp, desc in have_exit_policy.items():
+            if fp in seen:
+                continue
+            consensus_desc = cached_consensus.get(fp)
+            if consensus_desc is not None and stem.Flag.BADEXIT in consensus_desc.flags:
+                exit_candidates.append(desc)
+                seen.add(fp)
     log.debug("Number of exit candidates: %s.", len(exit_candidates))
 
     # Drop all exit relays which have a descriptor, but either did not

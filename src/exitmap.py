@@ -480,7 +480,9 @@ def run_module(module_name, args, controller, socks_port, stats):
     if count < 1:
         # The exit file can be entirely filtered (BadExit, not in this
         # consensus, no descriptor). Still record one row per fingerprint.
-        if skipped and hasattr(module, "teardown"):
+        # Only modules that write not_tested rows. patchingCheck.teardown
+        # only removes reference files and must still raise ExitSelectionError.
+        if skipped and hasattr(module, "_write_not_tested_rows"):
             log.info("Exit selection yielded no scannable relays; "
                      "recording %d not-tested relay(s).", len(skipped))
             call_module_teardown(
