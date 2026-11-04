@@ -91,32 +91,18 @@ _SOCKS_ERROR_MAP = {
     8: "socks_address_unsupported",
 }
 
-# How long to wait for the controller STREAM CLOSED/FAILED reason.
-# Reply 4 needs the reason before it can be classified; other outcomes
-# only record it, so they wait less.
-STREAM_REASON_TIMEOUT = float(os.environ.get("DNS_STREAM_REASON_TIMEOUT", "1.0"))
-_STREAM_REASON_RECORD_TIMEOUT = min(0.25, STREAM_REASON_TIMEOUT)
+# Reply 4 only. The CLOSED event follows the SOCKS reply within milliseconds;
+# this covers that gap. Other outcomes do not wait.
+_REPLY4_REASON_WAIT = 0.2
 
-# Reply 4 is SOCKS5_HOST_UNREACHABLE. Tor sends it for every RESOLVE that
-# did not yield an IPv4, IPv6, or hostname answer: an error answer from the
-# exit, a stream that closed before any answer, or a private address the
-# client rejected. It does not identify one of those causes by itself.
+# SOCKS5_HOST_UNREACHABLE. Tor sends this for every RESOLVE with no usable
+# address: an error from the exit, a stream that closed first, or a private
+# address the client rejected. The stream reason names which one.
 _REPLY4_MESSAGE = (
     "DNS Error: resolve failed (SOCKS5 reply 4): no usable answer. "
     "Possible causes: the exit returned a DNS error, the stream closed "
     "before an answer (circuit destroyed or timed out), or Tor rejected "
     "a private or internal address"
-)
-
-# ClientDNSRejectInternalAddresses is on for the public network. A resolved
-# cell that contains only private or internal addresses is closed with
-# stream reason TORPROTOCOL and the same SOCKS reply 4. A malformed
-# resolved cell uses TORPROTOCOL too; both are a bad answer, not a
-# missing one. Live checks (Tor 0.4.9) showed private answers as
-# TORPROTOCOL, exit errors as DONE, and a destroyed circuit as DESTROY.
-_PRIVATE_ANSWER_MESSAGE = (
-    "DNS Error: resolve failed (SOCKS5 reply 4), stream reason TORPROTOCOL: "
-    "the exit answered with only a private or internal address, which Tor rejected"
 )
 
 # Descriptive error messages. DNS-layer errors are prefixed with "DNS Error:"
@@ -212,54 +198,24 @@ def _parse_socks_error_code(err_str):
     return None
 
 
-def _normalize_stream_reason(reason):
-    """Return a STREAM reason name such as DONE or TORPROTOCOL, or None."""
-    if reason is None:
-        return None
-    text = str(reason).strip()
-    if not text or text.lower() == "none":
-        return None
-    if "." in text:
-        text = text.rsplit(".", 1)[-1]
-    return text.upper()
-
-
 def _socket_local_port(sock):
     """Return the SOCKS client port stashed by torsocks, or None."""
-    if sock is None:
-        return None
-    port = getattr(sock, "local_port", None)
+    port = getattr(sock, "local_port", None) if sock is not None else None
     return port if isinstance(port, int) else None
 
 
-def _pop_stream_reason(stream_reasons, port):
-    """Pop a recorded reason for this source port, or None."""
-    try:
-        return stream_reasons.pop(port, None)
-    except TypeError:
-        try:
-            return stream_reasons.pop(port)
-        except KeyError:
-            return None
-    except KeyError:
+def _take_stream_reason(stream_reasons, port):
+    """Pop the controller's CLOSED reason for this SOCKS port, waiting briefly."""
+    if not stream_reasons or not isinstance(port, int):
         return None
-
-
-def _await_stream_reason(stream_reasons, port, timeout):
-    """
-    Wait until the controller has recorded the CLOSED/FAILED reason for port.
-
-    stream_reasons is a dict-like mapping of source port to reason name,
-    filled by EventHandler from STREAM events. Missing map, or no port,
-    returns immediately.
-    """
-    if stream_reasons is None or not isinstance(port, int):
-        return None
-    deadline = time.monotonic() + max(0.0, timeout)
+    deadline = time.monotonic() + _REPLY4_REASON_WAIT
     while True:
-        reason = _normalize_stream_reason(_pop_stream_reason(stream_reasons, port))
+        try:
+            reason = stream_reasons.pop(port, None)
+        except KeyError:
+            reason = None
         if reason:
-            return reason
+            return str(reason)
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.02)
@@ -362,9 +318,9 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
                         stream_reasons=None):
     """Resolve domain through exit relay with retry logic.
 
-    stream_reasons, when set, maps the SOCKS client port to the STREAM
-    CLOSED/FAILED reason recorded by the controller. Reply 4 is retried.
-    TORPROTOCOL is reported as wrong_ip and is not retried.
+    stream_reasons maps the SOCKS client port to the STREAM reason recorded
+    by the controller. Reply 4 is retried. TORPROTOCOL is a rejected private
+    address: wrong_ip, and not retried.
     """
     exit_url = exiturl(exit_desc.fingerprint)
     result = _make_result(exit_desc, domain, expected_ip, first_hop=first_hop)
@@ -383,8 +339,6 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
             result["resolved_ip"] = ip
             result["timing"] = _make_timing(total_start)
-            result["stream_reason"] = _await_stream_reason(
-                stream_reasons, _socket_local_port(sock), _STREAM_REASON_RECORD_TIMEOUT)
 
             if expected_ip and ip != expected_ip:
                 result["status"] = "wrong_ip"
@@ -397,8 +351,6 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             return result
 
         except error.SOCKSv5Error as err:
-            # SOCKS error. Reply 4 is "no usable answer" and is retried below
-            # unless the stream reason shows Tor rejected a private address.
             err_code = _parse_socks_error_code(str(err))
             status = _SOCKS_ERROR_MAP.get(err_code, "socks_error")
             base_msg = _SOCKS_ERROR_MESSAGES.get(
@@ -445,29 +397,23 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
                 except Exception:
                     pass
 
-        # Retry transient failures, including reply 4, until the attempt budget
-        # or the hard timeout around this call is exhausted.
         if status is not None:
-            reason_timeout = (STREAM_REASON_TIMEOUT if status == "dns_fail"
-                              else _STREAM_REASON_RECORD_TIMEOUT)
-            reason = _await_stream_reason(stream_reasons, local_port, reason_timeout)
-            result["stream_reason"] = reason
-            if status == "dns_fail" and reason == "TORPROTOCOL":
-                status = "wrong_ip"
-                error_msg = _fmt_with_hop(_PRIVATE_ANSWER_MESSAGE, first_hop)
-            elif status == "dns_fail" and reason:
-                error_msg = _fmt_with_hop(
-                    "%s (stream reason %s)" % (_REPLY4_MESSAGE, reason), first_hop)
+            if status == "dns_fail":
+                reason = _take_stream_reason(stream_reasons, local_port)
+                result["stream_reason"] = reason
+                if reason == "TORPROTOCOL":
+                    status = "wrong_ip"
+                if reason:
+                    error_msg = _fmt_with_hop(
+                        "%s (stream reason %s)" % (_REPLY4_MESSAGE, reason), first_hop)
             result["timing"] = _make_timing(total_start)
             result["status"] = status
             result["error"] = error_msg
             log.warning("Attempt %d/%d: %s [%s] %s", attempt, retries, exit_url, status, error_msg)
 
-            # A private-address answer is a real wrong answer, same as an
-            # unexpected public address. Do not spend the remaining retries.
+            # Same as an unexpected public address: the exit did answer.
             if status == "wrong_ip":
                 return result
-
             if attempt < retries:
                 time.sleep(RETRY_DELAY)
 
