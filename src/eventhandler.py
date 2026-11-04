@@ -22,6 +22,7 @@ Handles Tor controller events.
 
 import os
 import functools
+import inspect
 import threading
 import multiprocessing
 import logging
@@ -38,6 +39,27 @@ import command
 import util
 
 log = logging.getLogger(__name__)
+
+
+def call_module_teardown(module, **kwargs):
+    """Call module.teardown with the kwargs it accepts.
+
+    A TypeError raised inside teardown propagates. The no-argument form is
+    only used when the function cannot take these arguments, as with
+    patchingCheck.teardown().
+    """
+    teardown = getattr(module, "teardown", None)
+    if teardown is None:
+        return
+    params = inspect.signature(teardown).parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        teardown(**kwargs)
+        return
+    accepted = {key: value for key, value in kwargs.items() if key in params}
+    if accepted:
+        teardown(**accepted)
+    else:
+        teardown()
 
 
 def get_relay_desc(controller, fpr):
@@ -206,6 +228,7 @@ class EventHandler(object):
         self.already_finished = False
         self.finished_event = threading.Event()
         self.pid_to_fingerprint = {}  # {pid: fingerprint} for grace period
+        self.missing_descriptors = set()
 
         self.queue_thread = threading.Thread(target=self.queue_reader)
         self.queue_thread.daemon = False
@@ -310,31 +333,28 @@ class EventHandler(object):
         if terminated:
             log.info("Terminated %d stalled relays" % len(terminated))
 
-        if hasattr(self.module, "teardown"):
+        try:
+            call_module_teardown(
+                self.module,
+                stats=self.stats, controller=self.controller,
+                terminated_relays=terminated,
+                skipped_exits=getattr(self, "skipped_exits", None),
+                selected_exits=getattr(self, "selected_exits", None),
+                missing_descriptors=self.missing_descriptors,
+            )
+            log.info(self.stats)
+        finally:
+            # queue_thread is not a daemon and blocks on queue.get(). Stop it
+            # even when teardown raises, or the process stays alive.
             try:
-                self.module.teardown(
-                    stats=self.stats, controller=self.controller,
-                    terminated_relays=terminated
-                )
-            except TypeError:
-                # Module doesn't accept kwargs - call without arguments
-                self.module.teardown()
-
-        log.info(self.stats)
-        
-        # Signal queue reader to stop
-        try:
-            self.queue.put(None)
-        except Exception:
-            pass
-            
-        self.queue_thread.join()
-        
-        # Remove event listener
-        try:
-            self.controller.remove_event_listener(self.new_event)
-        except Exception:
-            pass
+                self.queue.put(None)
+            except Exception:
+                pass
+            self.queue_thread.join()
+            try:
+                self.controller.remove_event_listener(self.new_event)
+            except Exception:
+                pass
 
     def _close_queue(self):
         """
@@ -376,7 +396,15 @@ class EventHandler(object):
 
         exit_desc = get_relay_desc(self.controller, exit_fpr)
         if exit_desc is None:
-            self.controller.close_circuit(circ_event.id)
+            # update_circs() already counted this circuit as built. No probe
+            # will increment finished_streams, so count it here or wait() blocks.
+            self.missing_descriptors.add(exit_fpr)
+            try:
+                self.controller.close_circuit(circ_event.id)
+            except Exception as err:
+                log.debug("Could not close circuit %s: %s", circ_event.id, err)
+            self.stats.finished_streams += 1
+            self.check_finished()
             return
 
         proc = multiprocessing.Process(target=module_call, args=(

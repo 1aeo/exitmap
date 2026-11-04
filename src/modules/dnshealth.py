@@ -221,12 +221,40 @@ def _make_timing(total_start):
     return {"total_ms": total_ms}
 
 
+_FINGERPRINT_RE = re.compile(r"^[A-F0-9]{40}$")
+
+
+def _result_path(fingerprint):
+    """Path of dnshealth_<fingerprint>.json inside analysis_dir, or None.
+
+    The fingerprint must be 40 hex characters. The resolved path must stay
+    inside analysis_dir. Anything else is refused so an exit-file line cannot
+    be used as a path.
+    """
+    if not util.analysis_dir or not fingerprint:
+        return None
+    fp = str(fingerprint).strip().upper()
+    if not _FINGERPRINT_RE.match(fp):
+        log.warning("Refusing to write a result for %r: not a relay fingerprint", fingerprint)
+        return None
+    root = os.path.realpath(util.analysis_dir)
+    path = os.path.realpath(os.path.join(root, "dnshealth_%s.json" % fp))
+    try:
+        inside = os.path.commonpath([root, path]) == root
+    except ValueError:
+        inside = False
+    if not inside:
+        log.warning("Refusing to write a result outside %s", root)
+        return None
+    return path
+
+
 def _write_result(result, fingerprint):
     """Write result to JSON file."""
-    if not util.analysis_dir:
+    path = _result_path(fingerprint)
+    if path is None:
         return
     try:
-        path = os.path.join(util.analysis_dir, "dnshealth_%s.json" % fingerprint)
         with open(path, "w") as f:
             json.dump(result, f)  # No indent for speed
     except Exception as e:
@@ -426,7 +454,7 @@ def _write_circuit_failures(stats, controller=None):
     """Write circuit failure data to JSON files for aggregation."""
     if not util.analysis_dir or not stats:
         return 0
-    
+
     # Get failed relays once (was called twice before)
     failed_relays = stats.get_failed_circuit_relays()
     
@@ -505,10 +533,70 @@ def _write_terminated_relays(relays, controller=None):
     return len(relays)
 
 
+# Why a requested relay produced no DNS result and no circuit failure.
+_NOT_TESTED_REASONS = {
+    "bad_exit": "Not tested: BadExit",
+    "not_in_consensus": "Not tested: not in this consensus",
+    "no_descriptor": "Not tested: no descriptor",
+    "no_result": "Not tested: no result recorded",
+}
+
+
+def _write_not_tested_rows(stats, controller, skipped, selected, missing_descriptors):
+    """One ``not_tested`` file per targeted relay that has no result yet.
+
+    ``skipped`` is ``{fingerprint: reason}`` from get_exits(). ``selected``
+    relays with no file are ``no_descriptor`` or ``no_result``. Circuit
+    failures already have their own row and are left alone.
+    """
+    if not util.analysis_dir:
+        return 0
+    failed = set()
+    if stats:
+        failed = {fp for fp in stats.get_failed_circuit_relays()
+                  if not str(fp).startswith("UNRESOLVED_")}
+    missing = set(missing_descriptors or ())
+    pending = list((skipped or {}).items())
+    pending.extend((fp, "no_descriptor" if fp in missing else "no_result")
+                   for fp in (selected or ()))
+    written = 0
+    seen = set()
+    for fp, reason in pending:
+        fp = (fp or "").strip().upper()
+        if not fp or fp in seen or fp in failed:
+            continue
+        seen.add(fp)
+        path = _result_path(fp)
+        if path is None or os.path.exists(path):
+            continue
+        if reason not in _NOT_TESTED_REASONS:
+            reason = "no_result"
+        nickname, address = _get_relay_info(controller, fp)
+        _write_result({
+            "exit_fingerprint": fp, "exit_nickname": nickname, "exit_address": address,
+            "status": "not_tested", "not_tested_reason": reason,
+            "error": _NOT_TESTED_REASONS[reason], "run_id": _run_id,
+            "timestamp": time.time(), "tor_metrics_url": TOR_METRICS_URL.format(fp),
+            "query_domain": None, "expected_ip": None, "resolved_ip": None,
+            "timing": None, "mode": None, "first_hop": None, "attempt": None,
+        }, fp)
+        written += 1
+    if written:
+        _status_counts["not_tested"] = _status_counts.get("not_tested", 0) + written
+        log.info("Wrote %d not-tested relays", written)
+    return written
+
+
 def teardown(stats=None, controller=None, terminated_relays=None, **kwargs):
     """Called after all probes complete."""
     circuit_failures = _write_circuit_failures(stats, controller) if stats else 0
     terminated = _write_terminated_relays(terminated_relays, controller)
+    not_tested = _write_not_tested_rows(
+        stats, controller,
+        kwargs.get("skipped_exits"),
+        kwargs.get("selected_exits"),
+        kwargs.get("missing_descriptors"),
+    )
     if terminated:
         _status_counts["timeout"] = _status_counts.get("timeout", 0) + terminated
     
@@ -519,6 +607,7 @@ def teardown(stats=None, controller=None, terminated_relays=None, **kwargs):
     log.info("Breakdown: %s", dict(_status_counts))
     if circuit_failures: log.info("Circuit failures: %d", circuit_failures)
     if terminated: log.info("Terminated during retry: %d", terminated)
+    if not_tested: log.info("Not tested: %d", not_tested)
     if util.analysis_dir: log.info("Results: %s", util.analysis_dir)
     log.info("=" * 60)
 

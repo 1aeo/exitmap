@@ -22,6 +22,7 @@ Performs a task over (a subset of) all Tor exit relays.
 
 import sys
 import os
+import re
 import time
 import socket
 import pkgutil
@@ -44,10 +45,12 @@ import error
 import util
 import relayselector
 
-from eventhandler import EventHandler
+from eventhandler import EventHandler, call_module_teardown
 from stats import Statistics
 
 log = logging.getLogger(__name__)
+
+_FINGERPRINT_RE = re.compile(r"^[A-F0-9]{40}$")
 
 # Tor configuration for parallel circuit building (optimal from experiments)
 # Can be overridden via MAX_PENDING_CIRCUITS environment variable
@@ -401,19 +404,34 @@ def select_exits(args, module):
 
     if args.exit:
         # '-e' was used to specify a single exit relay.
-        requested_exits = [args.exit]
+        raw_values = [args.exit]
     elif args.exit_file:
         # '-E' was used to specify a file containing exit relays.
         try:
-            requested_exits = [line.strip() for line in open(args.exit_file)]
+            with open(args.exit_file) as handle:
+                raw_values = [line.strip() for line in handle if line.strip()]
         except OSError as err:
             log.error("Could not read %s: %s", args.exit_file, err.strerror)
             sys.exit(1)
         except Exception as err:
             log.error("Could not read %s: %s", args.exit_file, err)
             sys.exit(1)
+        if not raw_values:
+            log.error("%s contains no relay fingerprints.", args.exit_file)
+            sys.exit(1)
     else:
-        requested_exits = None
+        raw_values = None
+
+    requested_exits = None
+    if raw_values is not None:
+        requested_exits = []
+        for raw in raw_values:
+            fp = raw.strip().upper()
+            if _FINGERPRINT_RE.match(fp) and fp not in requested_exits:
+                requested_exits.append(fp)
+        if not requested_exits:
+            log.error("%s contains no relay fingerprints.", args.exit_file or args.exit)
+            sys.exit(1)
 
     exit_destinations = relayselector.get_exits(
         args.tor_dir,
@@ -422,6 +440,27 @@ def select_exits(args, module):
         country_code    = args.country,
         requested_exits = requested_exits,
         destinations    = destinations)
+
+    # Anything requested that get_exits() did not return still needs a row.
+    skipped = {}
+    if requested_exits:
+        consensus_path = os.path.join(args.tor_dir, "cached-consensus")
+        consensus = relayselector.get_cached_consensus(consensus_path)
+        allow_bad = args.all_exits or args.bad_exits
+        for fp in requested_exits:
+            if fp in exit_destinations:
+                continue
+            desc = consensus.get(fp)
+            if desc is None:
+                reason = "not_in_consensus"
+            elif stem.Flag.BADEXIT in desc.flags and not allow_bad:
+                reason = "bad_exit"
+            elif stem.Flag.EXIT not in desc.flags:
+                reason = "not_in_consensus"
+            else:
+                reason = "no_descriptor"
+            skipped[fp] = reason
+    args.skipped_exits = skipped
 
     log.debug("Successfully selected exit relays after %s." %
               str(datetime.datetime.now() - before))
@@ -457,6 +496,7 @@ def run_module(module_name, args, controller, socks_port, stats):
             module.setup(target=args.host, consensus=cached_consensus)
 
     exit_destinations = select_exits(args, module)
+    skipped = getattr(args, "skipped_exits", None) or {}
 
     exit_relays = list(exit_destinations.keys())
     random.shuffle(exit_relays)
@@ -469,6 +509,22 @@ def run_module(module_name, args, controller, socks_port, stats):
     stats.total_circuits += count
 
     if count < 1:
+        # The exit file can be entirely filtered (BadExit, not in this
+        # consensus, no descriptor). Still record one row per fingerprint.
+        # Only modules that write not_tested rows. patchingCheck.teardown
+        # only removes reference files and must still raise ExitSelectionError.
+        if skipped and hasattr(module, "_write_not_tested_rows"):
+            log.info("Exit selection yielded no scannable relays; "
+                     "recording %d not-tested relay(s).", len(skipped))
+            call_module_teardown(
+                module, stats=stats, controller=controller,
+                skipped_exits=skipped, selected_exits=[])
+            return
+        # setup() may already have created files (patchingCheck). Remove
+        # them, then still report that nothing could be scanned.
+        call_module_teardown(
+            module, stats=stats, controller=controller,
+            skipped_exits=skipped, selected_exits=[])
         raise error.ExitSelectionError("Exit selection yielded %d exits "
                                        "but need at least one." % count)
 
@@ -476,6 +532,8 @@ def run_module(module_name, args, controller, socks_port, stats):
                            exit_destinations=exit_destinations,
                            target_host=target_host,
                            target_port=target_port)
+    handler.skipped_exits = skipped
+    handler.selected_exits = list(exit_destinations.keys())
 
     controller.add_event_listener(handler.new_event,
                                   EventType.CIRC, EventType.STREAM)

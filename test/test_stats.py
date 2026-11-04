@@ -53,6 +53,25 @@ class TestStats(unittest.TestCase):
         self.stats.update_circs(circ_event)
         self.assertEqual(self.stats.successful_circuits, 1)
 
+    def test_failure_before_register_keeps_fingerprint(self):
+        """A FAILED event that arrives before register_circuit still names the exit."""
+        event = stem.response.events.CircuitEvent("foo", "bar")
+        event.id = "7"
+        event.status = CircStatus.FAILED
+        event.reason = "TIMEOUT"
+        exit_fp = "B" * 40
+        guard_fp = "A" * 40
+
+        self.stats.update_circs(event)
+        self.assertEqual(self.stats.failed_circuits, 1)
+        self.assertIn("UNRESOLVED_7", self.stats.failed_circuit_relays)
+
+        self.stats.register_circuit("7", guard_fp, exit_fp)
+        failure = self.stats.failed_circuit_relays[exit_fp]
+        self.assertEqual(failure["reason_key"], "circuit_timeout")
+        self.assertEqual(failure["first_hop"], guard_fp)
+        self.assertNotIn("UNRESOLVED_7", self.stats.failed_circuit_relays)
+
 
 def test_stats_print_progress(caplog, stats_obj):
     stats_obj.total_circuits = 1

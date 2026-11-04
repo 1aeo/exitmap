@@ -51,7 +51,7 @@ import error
 def mock_exit_desc():
     """Create a mock exit relay descriptor."""
     desc = MagicMock()
-    desc.fingerprint = "ABCD1234EFGH5678IJKL9012MNOP3456QRST7890"
+    desc.fingerprint = "ABCD1234EF567890ABCD1234EF567890ABCD1234"
     desc.nickname = "TestExitRelay"
     desc.address = "192.0.2.1"
     return desc
@@ -799,6 +799,58 @@ class TestHardTimeout:
 
         # After context, alarm should be cleared (no pending alarm)
         # Just verify no exception was raised
+
+
+# === Test: one row per targeted relay ===
+
+class TestNotTestedRows:
+    """Relays filtered before probing still get one not_tested row."""
+
+    def test_badexit_skip_and_selected_gap_each_write_one_row(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(dnshealth.util, "analysis_dir", str(tmp_path))
+        bad = "B" * 40
+        absent = "C" * 40
+        selected = "D" * 40
+        failed = "E" * 40
+        dnshealth._write_not_tested_rows(
+            stats=None,
+            controller=None,
+            skipped={bad: "bad_exit", absent: "not_in_consensus"},
+            selected=[selected],
+            missing_descriptors=set(),
+        )
+        # A fingerprinted circuit failure already accounts for this relay.
+        stats = MagicMock()
+        stats.get_failed_circuit_relays.return_value = {failed: {"reason_key": "circuit_timeout"}}
+        stats.flush_early_failures = MagicMock()
+        # Rewrite with the failure present; the failure must not gain a second row,
+        # and the earlier rows stay as written.
+        dnshealth._write_not_tested_rows(
+            stats=stats, controller=None, skipped={},
+            selected=[selected, failed], missing_descriptors=set())
+
+        def load(fp):
+            with open(tmp_path / ("dnshealth_%s.json" % fp)) as handle:
+                return json.load(handle)
+
+        bad_row = load(bad)
+        assert bad_row["status"] == "not_tested"
+        assert bad_row["not_tested_reason"] == "bad_exit"
+        assert bad_row["error"] == "Not tested: BadExit"
+        assert load(absent)["not_tested_reason"] == "not_in_consensus"
+        assert load(selected)["not_tested_reason"] == "no_result"
+        assert not (tmp_path / ("dnshealth_%s.json" % failed)).exists()
+
+    def test_refuses_to_write_outside_analysis_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(dnshealth.util, "analysis_dir", str(tmp_path))
+        outside = tmp_path.parent / "dnshealth_ESCAPED.json"
+        dnshealth._write_result({"status": "not_tested"}, "../" + "A" * 40)
+        dnshealth._write_result({"status": "not_tested"}, "not a fingerprint")
+        assert not outside.exists()
+        assert list(tmp_path.iterdir()) == []
+        good = "A" * 40
+        dnshealth._write_result({"status": "success", "exit_fingerprint": good}, good)
+        assert (tmp_path / ("dnshealth_%s.json" % good)).is_file()
 
 
 # === Test: Main guard ===
