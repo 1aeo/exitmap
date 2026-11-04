@@ -26,6 +26,7 @@ import threading
 import multiprocessing
 import logging
 import socket
+import time
 
 import stem
 from stem import StreamStatus
@@ -135,7 +136,8 @@ def module_call(queue, module, circ_id, socks_port,
             destinations,
             target_host,
             target_port,
-            first_hop_fpr=None
+            first_hop_fpr=None,
+            stream_reasons=None,
             ):
     """
     Run the module and then inform the event handler.
@@ -163,16 +165,19 @@ def module_call(queue, module, circ_id, socks_port,
 
         return closure
 
+    call = {
+        "exit_desc": exit_desc,
+        "run_python_over_tor": run_python_over_tor_wrapper(queue, circ_id, socks_port),
+        "run_cmd_over_tor": run_cmd_over_tor,
+        "destinations": destinations,
+        "target_host": target_host,
+        "target_port": target_port,
+        "first_hop": first_hop_fpr,
+    }
+    if stream_reasons is not None:
+        call["stream_reasons"] = stream_reasons
     try:
-        module(
-            exit_desc=exit_desc,
-            run_python_over_tor=run_python_over_tor_wrapper(queue, circ_id, socks_port),
-            run_cmd_over_tor=run_cmd_over_tor,
-            destinations=destinations,
-            target_host=target_host,
-            target_port=target_port,
-            first_hop=first_hop_fpr
-        )
+        module(**call)
         log.debug("Informing event handler that module finished.")
         queue.put((circ_id, None))
     except KeyboardInterrupt:
@@ -206,6 +211,19 @@ class EventHandler(object):
         self.already_finished = False
         self.finished_event = threading.Event()
         self.pid_to_fingerprint = {}  # {pid: fingerprint} for grace period
+        # stream id -> SOCKS client port. dnshealth reads the CLOSED reason
+        # from the shared map; other modules leave it unused.
+        self._stream_ports = {}
+        self._port_stream = {}
+        self._reason_manager = None
+        self.stream_reasons = None
+        module_name = getattr(module, "__name__", "").rsplit(".", 1)[-1]
+        if module_name == "dnshealth":
+            try:
+                self._reason_manager = multiprocessing.Manager()
+                self.stream_reasons = self._reason_manager.dict()
+            except Exception as err:
+                log.warning("Stream reason tracking unavailable: %s", err)
 
         self.queue_thread = threading.Thread(target=self.queue_reader)
         self.queue_thread.daemon = False
@@ -297,8 +315,10 @@ class EventHandler(object):
         """
         Clean up resources and shut down.
         """
-        # Grace period for straggling processes (split timeout across all)
-        terminated, active = [], multiprocessing.active_children()
+        # Grace period for straggling probes. The reason-map manager is not a probe.
+        terminated = []
+        manager_pid = getattr(getattr(self._reason_manager, "_process", None), "pid", None)
+        active = [p for p in multiprocessing.active_children() if p.pid != manager_pid]
         if active:
             per_proc = max(1, int(os.environ.get("EXITMAP_GRACE_TIMEOUT", "10")) // len(active))
             for proc in active:
@@ -329,12 +349,19 @@ class EventHandler(object):
             pass
             
         self.queue_thread.join()
-        
+
         # Remove event listener
         try:
             self.controller.remove_event_listener(self.new_event)
         except Exception:
             pass
+
+        if self._reason_manager is not None:
+            try:
+                self._reason_manager.shutdown()
+            except Exception:
+                pass
+            self._reason_manager = None
 
     def _close_queue(self):
         """
@@ -389,7 +416,8 @@ class EventHandler(object):
             self.exit_destinations[exit_fpr],
             self.target_host,
             self.target_port,
-            first_hop_fpr
+            first_hop_fpr,
+            self.stream_reasons,
         ))
         proc.daemon = True
         proc.start()
@@ -404,6 +432,17 @@ class EventHandler(object):
         point and wait for the attaching to be done in queue_reader().
         """
 
+        # The reason is stored under the stream id. The port only points at
+        # the stream that currently owns it, and only while that stream is open.
+        sid = str(stream_event.id)
+        if stream_event.status in (StreamStatus.CLOSED, StreamStatus.FAILED):
+            port = self._stream_ports.pop(sid, None)
+            if self.stream_reasons is not None and stream_event.reason:
+                self.stream_reasons[("s", sid)] = (str(stream_event.reason), time.time())
+            if port is not None and self._port_stream.get(port) == sid:
+                self._port_stream.pop(port, None)
+            return
+
         if stream_event.status not in [StreamStatus.NEW,
                                        StreamStatus.NEWRESOLVE]:
             return
@@ -414,6 +453,10 @@ class EventHandler(object):
                         "event: %s" % str(stream_event))
             return
 
+        if self.stream_reasons is not None:
+            self.stream_reasons[("p", port)] = (sid, time.time())
+        self._port_stream[port] = sid
+        self._stream_ports[sid] = port
         log.debug("Adding attacher for new stream %s." % stream_event.id)
         self.attacher.prepare(port, stream_id=stream_event.id)
         self.check_finished()

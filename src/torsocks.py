@@ -98,12 +98,25 @@ class _Torsocket(socks.socksocket):
         socks._BaseSocket.sendall(self, struct.pack('BBB', 0x05, 0x01, 0x00))
         socks._BaseSocket.recv(self, 2)
 
+    def _close_resolve(self):
+        """Close the resolve socket after the caller has seen its local port."""
+        notify = getattr(self, "on_local_port", None)
+        port = getattr(self, "local_port", None)
+        if notify is not None and isinstance(port, int):
+            self.on_local_port = None
+            notify(port)
+        socks._BaseSocket.close(self)
+
     def resolve(self, hostname):
         "Resolves the given domain name over the proxy"
         host = hostname.encode("utf-8")
         # First connect to the local proxy
         self.negotiate()
-        send_queue(socks._BaseSocket.getsockname(self))
+        sockname = socks._BaseSocket.getsockname(self)
+        # Kept after close so the caller can match this socket to the
+        # controller STREAM event (SOURCE_ADDR is only on NEW/NEWRESOLVE).
+        self.local_port = sockname[1]
+        send_queue(sockname)
         req = struct.pack('BBB', 0x05, 0xF0, 0x00)
         req += chr(0x03).encode() + chr(len(host)).encode() + host
         req = req + struct.pack(">H", 8444)
@@ -112,11 +125,11 @@ class _Torsocket(socks.socksocket):
         ip = ""
         resp = socks._BaseSocket.recv(self, 4)
         if resp[0:1] != chr(0x05).encode():
-            socks._BaseSocket.close(self)
+            self._close_resolve()
             raise error.SOCKSv5Error("SOCKS Server error")
         elif resp[1:2] != chr(0x00).encode():
             # Connection failed
-            socks._BaseSocket.close(self)
+            self._close_resolve()
             if ord(resp[1:2])<=8:
                 raise error.SOCKSv5Error("SOCKS Server error {}".format(ord(resp[1:2])))
             else:
@@ -130,10 +143,10 @@ class _Torsocket(socks.socksocket):
         elif resp[3:4] == chr(0x04).encode():
             ip = socket.inet_ntop(socket.AF_INET6, socks._BaseSocket.recv(self, 16))
         else:
-            socks._BaseSocket.close(self)
+            self._close_resolve()
             raise error.SOCKSv5Error("SOCKS Server error.")
         struct.unpack(">H", socks._BaseSocket.recv(self, 2))[0]
-        socks._BaseSocket.close(self)
+        self._close_resolve()
         return ip
 
 

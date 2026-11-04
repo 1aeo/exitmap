@@ -24,7 +24,7 @@ Tests cover:
 - Unique query generation
 - Result structure creation
 - SOCKS error parsing
-- Mode detection (wildcard vs NXDOMAIN)
+- Mode detection (wildcard vs host)
 - Status handling
 - Environment variable configuration
 """
@@ -73,10 +73,12 @@ def reset_module_state():
     """Reset module state before each test."""
     dnshealth._run_id = None
     dnshealth._status_counts.clear()
+    dnshealth._stream_reasons = None
     yield
     # Cleanup after test
     dnshealth._run_id = None
     dnshealth._status_counts.clear()
+    dnshealth._stream_reasons = None
 
 
 @pytest.fixture
@@ -185,7 +187,7 @@ class TestMakeResult:
         assert result["resolved_ip"] == "64.65.4.1"
 
     def test_nxdomain_mode_fields(self, mock_exit_desc):
-        """NXDOMAIN mode should set mode='nxdomain' and expected_ip=None."""
+        """Host mode keeps the historical mode key and has no expected address."""
         result = dnshealth._make_result(
             mock_exit_desc,
             domain="random.example.com",
@@ -220,6 +222,7 @@ class TestMakeResult:
             "timing",
             "error",
             "attempt",
+            "stream_reason",
         ]
 
         for field in required_fields:
@@ -303,6 +306,7 @@ class TestMakeResult:
         assert result["resolved_ip"] is None
         assert result["timing"] is None
         assert result["error"] is None
+        assert result["stream_reason"] is None
 
     def test_attempt_tracking(self, mock_exit_desc):
         """Attempt number should be tracked."""
@@ -322,9 +326,13 @@ class TestParseSocksErrorCode:
     """Tests for SOCKS error code extraction."""
 
     def test_error_code_4_nxdomain(self):
-        """Error code 4 (NXDOMAIN) should be extracted."""
+        """SOCKS reply 4 should be extracted. The code is not a negative answer."""
         assert dnshealth._parse_socks_error_code("SOCKS error 4") == 4
-        assert dnshealth._parse_socks_error_code("error 4: domain not found") == 4
+        assert dnshealth._parse_socks_error_code("SOCKS Server error 4") == 4
+        assert "resolve failed (SOCKS5 reply 4)" in dnshealth._SOCKS_ERROR_MESSAGES[4]
+        message = dnshealth._SOCKS_ERROR_MESSAGES[4].lower()
+        assert "nxdomain" not in message
+        assert "domain not found" not in message
 
     def test_hex_format(self):
         """Hex format error codes should be extracted."""
@@ -411,8 +419,10 @@ class TestSocksErrorMap:
             assert code in dnshealth._SOCKS_ERROR_MAP
 
     def test_code_4_is_dns_fail(self):
-        """Error code 4 should map to 'dns_fail'."""
+        """Reply 4 keeps the status key 'dns_fail'."""
         assert dnshealth._SOCKS_ERROR_MAP[4] == "dns_fail"
+        assert "nxdomain" not in dnshealth._SOCKS_ERROR_MESSAGES[4].lower()
+        assert "domain not found" not in dnshealth._SOCKS_ERROR_MESSAGES[4].lower()
 
     def test_code_5_is_connection_refused(self):
         """Error code 5 should map to 'connection_refused'."""
@@ -459,13 +469,14 @@ class TestSetup:
             assert any("Wildcard" in str(call) for call in calls)
 
     def test_nxdomain_mode_detected(self):
-        """Setup with target should log NXDOMAIN mode."""
+        """Setup with a target logs host mode and does not call reply 4 a negative answer."""
         with patch.object(dnshealth.log, 'info') as mock_log:
             dnshealth.setup(target="example.com")
 
-            # Check that "NXDOMAIN" mode was logged
-            calls = [str(call) for call in mock_log.call_args_list]
-            assert any("NXDOMAIN" in str(call) for call in calls)
+            calls = " ".join(str(call) for call in mock_log.call_args_list)
+            assert "Host" in calls
+            assert "NXDOMAIN" not in calls
+            assert "domain not found" not in calls.lower()
 
     def test_creates_analysis_dir(self, temp_analysis_dir):
         """Setup should create analysis directory if it doesn't exist."""
@@ -550,29 +561,182 @@ class TestResolveWithRetry:
         assert "Expected" in result["error"]
 
     def test_nxdomain_success_in_nxdomain_mode(self, mock_exit_desc, mock_torsocket):
-        """NXDOMAIN should be success in NXDOMAIN mode."""
+        """Host mode cannot treat reply 4 as success; it is the same as a failure."""
         dnshealth.setup()
         mock_socket, use_socket = mock_torsocket
-        mock_socket.resolve.side_effect = error.SOCKSv5Error("error 4: domain not found")
+        mock_socket.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
 
         with use_socket():
             result = dnshealth.resolve_with_retry(
                 mock_exit_desc, "nonexistent.example.com", expected_ip=None, retries=1)
 
-        assert result["status"] == "success"
-        assert result["resolved_ip"] == "NXDOMAIN"
+        assert result["status"] == "dns_fail"
+        assert result["resolved_ip"] is None
+        assert result["mode"] == "nxdomain"
+        assert "resolve failed (SOCKS5 reply 4)" in result["error"]
+        assert "NXDOMAIN" not in result["error"]
+        assert "domain not found" not in result["error"].lower()
 
     def test_nxdomain_failure_in_wildcard_mode(self, mock_exit_desc, mock_torsocket):
-        """NXDOMAIN should be failure in wildcard mode."""
+        """Reply 4 in wildcard mode is dns_fail, not a confirmed negative answer."""
         dnshealth.setup()
         mock_socket, use_socket = mock_torsocket
-        mock_socket.resolve.side_effect = error.SOCKSv5Error("error 4: domain not found")
+        mock_socket.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
 
         with use_socket():
             result = dnshealth.resolve_with_retry(
                 mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
 
         assert result["status"] == "dns_fail"
+        assert "resolve failed (SOCKS5 reply 4)" in result["error"]
+        assert "NXDOMAIN" not in result["error"]
+
+    def test_reply_4_is_retried(self, mock_exit_desc, mock_torsocket):
+        """Reply 4 is retried like other transient failures, then can succeed."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = [
+            error.SOCKSv5Error("SOCKS Server error 4"),
+            error.SOCKSv5Error("SOCKS Server error 4"),
+            "64.65.4.1",
+        ]
+
+        with use_socket(), patch.object(dnshealth.time, "sleep"):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert result["status"] == "success"
+        assert result["resolved_ip"] == "64.65.4.1"
+        assert result["attempt"] == 3
+        assert mock_socket.resolve.call_count == 3
+
+    def test_reply_4_stops_at_max_retries(self, mock_exit_desc, mock_torsocket):
+        """Reply 4 stays dns_fail once MAX_RETRIES is exhausted."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
+
+        with use_socket(), patch.object(dnshealth.time, "sleep"):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert result["status"] == "dns_fail"
+        assert result["attempt"] == 3
+        assert mock_socket.resolve.call_count == 3
+        assert "resolve failed (SOCKS5 reply 4)" in result["error"]
+        assert "NXDOMAIN" not in (result["error"] or "")
+
+    def test_reply_4_torprotocol_is_wrong_answer(self, mock_exit_desc, mock_torsocket):
+        """TORPROTOCOL means a private address was rejected, so it is not retried."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        dnshealth._stream_reasons = {
+            ("p", 4242): ("9", time.time() + 60),
+            ("s", "9"): ("TORPROTOCOL", time.time() + 60),
+        }
+
+        def fail(domain):
+            mock_socket.on_local_port(4242)
+            raise error.SOCKSv5Error("SOCKS Server error 4")
+
+        mock_socket.resolve.side_effect = fail
+
+        with use_socket(), patch.object(dnshealth.time, "sleep"):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
+
+        assert result["status"] == "wrong_ip"
+        assert result["stream_reason"] == "TORPROTOCOL"
+        assert result["attempt"] == 1
+        assert mock_socket.resolve.call_count == 1
+        assert "private or internal address" in result["error"]
+        assert "NXDOMAIN" not in result["error"]
+        assert "domain not found" not in result["error"].lower()
+
+    def test_reply_4_destroy_is_retried(self, mock_exit_desc, mock_torsocket):
+        """A destroyed stream is still reply 4, and it is retried."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        dnshealth._stream_reasons = {
+            ("p", 4242): ("9", time.time() + 60),
+            ("s", "9"): ("DESTROY", time.time() + 60),
+        }
+
+        def calls(domain):
+            mock_socket.on_local_port(4242)
+            calls.n += 1
+            if calls.n == 1:
+                raise error.SOCKSv5Error("SOCKS Server error 4")
+            return "64.65.4.1"
+
+        calls.n = 0
+        mock_socket.resolve.side_effect = calls
+
+        with use_socket(), patch.object(dnshealth.time, "sleep"):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=2)
+
+        assert result["status"] == "success"
+        assert result["attempt"] == 2
+        assert result["error"] is None
+        assert result["stream_reason"] is None
+        assert mock_socket.resolve.call_count == 2
+
+    def test_empty_reason_map_still_waits(self, monkeypatch):
+        """An empty map is not the same as having no map. Reply 4 waits for the event."""
+        dnshealth._stream_reasons = {}
+        clock = {"now": 0.0}
+
+        monkeypatch.setattr(dnshealth.time, "monotonic", lambda: clock["now"])
+
+        def advance(seconds):
+            clock["now"] += seconds
+
+        monkeypatch.setattr(dnshealth.time, "sleep", advance)
+        assert dnshealth._take_stream_reason("9", started=0.0) is None
+        assert clock["now"] >= dnshealth._REPLY4_REASON_WAIT
+
+        dnshealth._stream_reasons = None
+        clock["now"] = 0.0
+        assert dnshealth._take_stream_reason("9", started=0.0) is None
+        assert clock["now"] == 0.0
+
+    def test_reason_stored_before_this_attempt_is_ignored(self, monkeypatch):
+        """A reason from another stream, or from before this attempt, is not used."""
+        clock = {"now": 0.0}
+        monkeypatch.setattr(dnshealth.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(dnshealth.time, "sleep", lambda seconds: clock.update(now=clock["now"] + seconds))
+        dnshealth._stream_reasons = {("s", "other"): ("TORPROTOCOL", 3.0)}
+        assert dnshealth._take_stream_reason("9", started=2.0) is None
+        clock["now"] = 0.0
+        dnshealth._stream_reasons = {("s", "9"): ("TORPROTOCOL", 1.0)}
+        assert dnshealth._take_stream_reason("9", started=2.0) is None
+        dnshealth._stream_reasons = {("s", "9"): ("DONE", 3.0)}
+        assert dnshealth._take_stream_reason("9", started=2.0) == "DONE"
+
+    def test_reply_4_records_non_private_stream_reason(self, mock_exit_desc, mock_torsocket):
+        """An exit error (DONE) stays dns_fail and keeps the stream reason."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        dnshealth._stream_reasons = {
+            ("p", 4242): ("9", time.time() + 60),
+            ("s", "9"): ("DONE", time.time() + 60),
+        }
+
+        def fail(domain):
+            mock_socket.on_local_port(4242)
+            raise error.SOCKSv5Error("SOCKS Server error 4")
+
+        mock_socket.resolve.side_effect = fail
+
+        with use_socket(), patch.object(dnshealth.time, "sleep"):
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
+
+        assert result["status"] == "dns_fail"
+        assert result["stream_reason"] == "DONE"
+        assert "stream reason DONE" in result["error"]
+        assert "resolve failed (SOCKS5 reply 4)" in result["error"]
 
     def test_timeout_handling(self, mock_exit_desc, mock_torsocket):
         """Socket timeout should be handled gracefully."""
@@ -691,14 +855,14 @@ class TestProbe:
         assert expected_ip == dnshealth.EXPECTED_IP
 
     def test_nxdomain_mode_with_host(self, mock_exit_desc):
-        """With target_host, should use NXDOMAIN mode."""
+        """With target_host, probe uses host mode and expects no address."""
         dnshealth.setup()
 
         run_python_over_tor = MagicMock()
 
         dnshealth.probe(
             exit_desc=mock_exit_desc,
-            target_host="example.com",  # With host = NXDOMAIN mode
+            target_host="example.com",
             target_port=None,
             run_python_over_tor=run_python_over_tor,
             run_cmd_over_tor=None
