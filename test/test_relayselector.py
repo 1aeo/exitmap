@@ -133,6 +133,17 @@ def test_relay_in_consensus_without_exit_flag_is_not_exit(tor_dir):
     assert skipped[non_exit] == "not_exit"
 
 
+def test_all_exits_skips_descriptor_absent_from_consensus(tor_dir):
+    """A cached descriptor that is not in the consensus is not scanned."""
+    fp = "9C67E543354ED18B7FF00E080AC086762035119C"
+    skipped = {}
+    selected = relayselector.get_exits(
+        tor_dir, good_exit=True, bad_exit=True,
+        requested_exits=[fp], destinations=None, skipped=skipped)
+    assert fp not in selected
+    assert skipped[fp] == "not_in_consensus"
+
+
 def test_all_exits_includes_badexit_without_exit_flag(tor_dir):
     """A BadExit relay with an exit policy but no EXIT flag is still scanned."""
     fp = "0082C49022C0811D45620D408E068835E2BABA71"

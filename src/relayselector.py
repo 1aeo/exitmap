@@ -328,7 +328,11 @@ def get_exits(data_dir,
         return {}
 
     if bad_exit and good_exit:
-        pass  # All exits are either bad or good.
+        # Policy descriptors can outlive the consensus. Do not scan those.
+        exit_candidates = [
+            desc for desc in exit_candidates
+            if desc.fingerprint in cached_consensus
+        ]
     elif bad_exit:
         exit_candidates = [
             desc

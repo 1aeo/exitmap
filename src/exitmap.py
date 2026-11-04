@@ -489,6 +489,11 @@ def run_module(module_name, args, controller, socks_port, stats):
                 module, stats=stats, controller=controller,
                 skipped_exits=skipped, selected_exits=[])
             return
+        # setup() may already have created files (patchingCheck). Remove
+        # them, then still report that nothing could be scanned.
+        call_module_teardown(
+            module, stats=stats, controller=controller,
+            skipped_exits=skipped, selected_exits=[])
         raise error.ExitSelectionError("Exit selection yielded %d exits "
                                        "but need at least one." % count)
 
