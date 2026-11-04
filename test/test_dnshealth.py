@@ -73,10 +73,12 @@ def reset_module_state():
     """Reset module state before each test."""
     dnshealth._run_id = None
     dnshealth._status_counts.clear()
+    dnshealth._stream_reasons = None
     yield
     # Cleanup after test
     dnshealth._run_id = None
     dnshealth._status_counts.clear()
+    dnshealth._stream_reasons = None
 
 
 @pytest.fixture
@@ -630,11 +632,11 @@ class TestResolveWithRetry:
         mock_socket, use_socket = mock_torsocket
         mock_socket.local_port = 4242
         mock_socket.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
+        dnshealth._stream_reasons = {4242: "TORPROTOCOL"}
 
         with use_socket(), patch.object(dnshealth.time, "sleep"):
             result = dnshealth.resolve_with_retry(
-                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1",
-                retries=3, stream_reasons={4242: "TORPROTOCOL"})
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3)
 
         assert result["status"] == "wrong_ip"
         assert result["stream_reason"] == "TORPROTOCOL"
@@ -653,11 +655,11 @@ class TestResolveWithRetry:
             error.SOCKSv5Error("SOCKS Server error 4"),
             "64.65.4.1",
         ]
+        dnshealth._stream_reasons = {4242: "DESTROY"}
 
         with use_socket(), patch.object(dnshealth.time, "sleep"):
             result = dnshealth.resolve_with_retry(
-                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1",
-                retries=2, stream_reasons={4242: "DESTROY"})
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=2)
 
         assert result["status"] == "success"
         assert result["attempt"] == 2
@@ -669,11 +671,11 @@ class TestResolveWithRetry:
         mock_socket, use_socket = mock_torsocket
         mock_socket.local_port = 4242
         mock_socket.resolve.side_effect = error.SOCKSv5Error("SOCKS Server error 4")
+        dnshealth._stream_reasons = {4242: "DONE"}
 
         with use_socket(), patch.object(dnshealth.time, "sleep"):
             result = dnshealth.resolve_with_retry(
-                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1",
-                retries=1, stream_reasons={4242: "DONE"})
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1)
 
         assert result["status"] == "dns_fail"
         assert result["stream_reason"] == "DONE"

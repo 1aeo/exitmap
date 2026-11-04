@@ -17,15 +17,16 @@
 # You should have received a copy of the GNU General Public License
 # along with exitmap.  If not, see <http://www.gnu.org/licenses/>.
 
-"""STREAM reason recording used to split SOCKS5 reply 4."""
+"""new_stream records a CLOSED reason under the port it already parses."""
 
 import sys
+from unittest.mock import MagicMock
 
 from stem import StreamStatus
 
 sys.path.insert(0, "src/")
 
-from eventhandler import remember_stream_port
+from eventhandler import EventHandler
 
 
 class _Stream(object):
@@ -38,29 +39,40 @@ class _Stream(object):
     def __str__(self):
         if self.source_port:
             return "SOURCE_ADDR=127.0.0.1:%d" % self.source_port
-        return "REASON=%s" % self.reason
+        return "REASON=%s" % (self.reason or "")
 
 
-def test_closed_reason_is_stored_by_source_port():
-    ports, reasons = {}, {}
-    assert remember_stream_port(ports, reasons, _Stream(StreamStatus.NEWRESOLVE, "9", source_port=4242)) is False
-    assert remember_stream_port(ports, reasons, _Stream(StreamStatus.CLOSED, "9", reason="TORPROTOCOL")) is True
-    assert reasons == {4242: "TORPROTOCOL"}
-    assert ports == {}
+def _handler():
+    handler = EventHandler.__new__(EventHandler)
+    handler._stream_ports = {}
+    handler.stream_reasons = {}
+    handler.attacher = MagicMock()
+    handler.check_finished = MagicMock()
+    return handler
+
+
+def test_closed_reason_uses_the_attach_port():
+    handler = _handler()
+    handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "9", source_port=4242))
+    handler.attacher.prepare.assert_called_once_with(4242, stream_id="9")
+    handler.new_stream(_Stream(StreamStatus.CLOSED, "9", reason="TORPROTOCOL"))
+    assert handler.stream_reasons == {4242: "TORPROTOCOL"}
+    assert handler._stream_ports == {}
 
 
 def test_done_and_destroy_stay_distinct():
-    ports, reasons = {}, {}
-    remember_stream_port(ports, reasons, _Stream(StreamStatus.NEWRESOLVE, "1", source_port=1000))
-    remember_stream_port(ports, reasons, _Stream(StreamStatus.CLOSED, "1", reason="DONE"))
-    remember_stream_port(ports, reasons, _Stream(StreamStatus.NEWRESOLVE, "2", source_port=1001))
-    remember_stream_port(ports, reasons, _Stream(StreamStatus.FAILED, "2", reason="DESTROY"))
-    assert reasons == {1000: "DONE", 1001: "DESTROY"}
+    handler = _handler()
+    handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "1", source_port=1000))
+    handler.new_stream(_Stream(StreamStatus.CLOSED, "1", reason="DONE"))
+    handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "2", source_port=1001))
+    handler.new_stream(_Stream(StreamStatus.FAILED, "2", reason="DESTROY"))
+    assert handler.stream_reasons == {1000: "DONE", 1001: "DESTROY"}
 
 
-def test_closed_without_open_and_remap_store_nothing():
-    ports, reasons = {"9": 4242}, {}
-    assert remember_stream_port({}, reasons, _Stream(StreamStatus.CLOSED, "3", reason="DESTROY")) is True
-    assert remember_stream_port(ports, reasons, _Stream(StreamStatus.REMAP, "9")) is False
-    assert reasons == {}
-    assert ports == {"9": 4242}
+def test_remap_does_not_attach_or_record():
+    handler = _handler()
+    handler._stream_ports["9"] = 4242
+    handler.new_stream(_Stream(StreamStatus.REMAP, "9"))
+    handler.attacher.prepare.assert_not_called()
+    assert handler.stream_reasons == {}
+    assert handler._stream_ports == {"9": 4242}

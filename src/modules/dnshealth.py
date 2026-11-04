@@ -91,27 +91,21 @@ _SOCKS_ERROR_MAP = {
     8: "socks_address_unsupported",
 }
 
-# Reply 4 only. The CLOSED event follows the SOCKS reply within milliseconds;
-# this covers that gap. Other outcomes do not wait.
+# How long to wait for the CLOSED reason after SOCKS reply 4.
 _REPLY4_REASON_WAIT = 0.2
 
-# SOCKS5_HOST_UNREACHABLE. Tor sends this for every RESOLVE with no usable
-# address: an error from the exit, a stream that closed first, or a private
-# address the client rejected. The stream reason names which one.
-_REPLY4_MESSAGE = (
-    "DNS Error: resolve failed (SOCKS5 reply 4): no usable answer. "
-    "Possible causes: the exit returned a DNS error, the stream closed "
-    "before an answer (circuit destroyed or timed out), or Tor rejected "
-    "a private or internal address"
-)
-
 # Descriptive error messages. DNS-layer errors are prefixed with "DNS Error:"
-# to distinguish them from Tor circuit errors.
+# to distinguish them from Tor circuit errors. Reply 4 is no usable answer:
+# an error from the exit, a stream that closed first, or a private address
+# Tor rejected. The stream reason says which.
 _SOCKS_ERROR_MESSAGES = {
     1: "DNS Error: SOCKS 1 - General failure",
     2: "DNS Error: SOCKS 2 - Not allowed by ruleset",
     3: "DNS Error: SOCKS 3 - Network unreachable",
-    4: _REPLY4_MESSAGE,
+    4: ("DNS Error: resolve failed (SOCKS5 reply 4): no usable answer. "
+        "Possible causes: the exit returned a DNS error, the stream closed "
+        "before an answer (circuit destroyed or timed out), or Tor rejected "
+        "a private or internal address"),
     5: "DNS Error: SOCKS 5 - Connection refused",
     6: "DNS Error: SOCKS 6 - TTL expired",
     7: "DNS Error: SOCKS 7 - Command not supported",
@@ -144,6 +138,7 @@ def _fmt_exception(err):
 destinations = None
 _run_id = None
 _status_counts = Counter()
+_stream_reasons = None
 
 
 class HardTimeoutError(Exception):
@@ -198,22 +193,13 @@ def _parse_socks_error_code(err_str):
     return None
 
 
-def _socket_local_port(sock):
-    """Return the SOCKS client port stashed by torsocks, or None."""
-    port = getattr(sock, "local_port", None) if sock is not None else None
-    return port if isinstance(port, int) else None
-
-
-def _take_stream_reason(stream_reasons, port):
-    """Pop the controller's CLOSED reason for this SOCKS port, waiting briefly."""
-    if not stream_reasons or not isinstance(port, int):
+def _take_stream_reason(port):
+    """Pop the CLOSED reason for this SOCKS port, waiting briefly for reply 4."""
+    if not _stream_reasons or not isinstance(port, int):
         return None
     deadline = time.monotonic() + _REPLY4_REASON_WAIT
     while True:
-        try:
-            reason = stream_reasons.pop(port, None)
-        except KeyError:
-            reason = None
+        reason = _stream_reasons.pop(port, None)
         if reason:
             return str(reason)
         if time.monotonic() >= deadline:
@@ -222,8 +208,7 @@ def _take_stream_reason(stream_reasons, port):
 
 
 def _make_result(exit_desc, domain, expected_ip, status="unknown",
-                 resolved_ip=None, timing=None, error_msg=None, attempt=0, first_hop=None,
-                 stream_reason=None):
+                 resolved_ip=None, timing=None, error_msg=None, attempt=0, first_hop=None):
     """Create result dict - single source of truth for result structure."""
     fp = exit_desc.fingerprint
     return {
@@ -244,8 +229,7 @@ def _make_result(exit_desc, domain, expected_ip, status="unknown",
         "timing": timing,  # {total_ms, socket_ms, dns_ms}
         "error": error_msg,
         "attempt": attempt,
-        # STREAM CLOSED/FAILED reason (DONE, DESTROY, TORPROTOCOL, ...).
-        "stream_reason": stream_reason,
+        "stream_reason": None,
     }
 
 
@@ -295,10 +279,6 @@ def setup(consensus=None, target=None, **kwargs):
     log.info("DNS Health: %s mode (%s)",
              "Host" if target else "Wildcard",
              target or ("%s -> %s" % (WILDCARD_DOMAIN, EXPECTED_IP)))
-    if target:
-        log.info("Host mode does not treat SOCKS5 reply 4 as success: "
-                 "that reply means no usable answer, so it cannot show "
-                 "that the resolver works")
     log.info("Run ID: %s", _run_id)
     log.info("First hop: %s", FIRST_HOP or "<random>")
     log.info("Configuration: QUERY_TIMEOUT=%ds, MAX_RETRIES=%d, HARD_TIMEOUT=%ds, RETRY_DELAY=%.1fs",
@@ -314,12 +294,10 @@ def generate_unique_query(fingerprint, base_domain):
     return "%s.%s.%s" % (uuid.uuid4().hex, fingerprint[:8].lower(), base_domain)
 
 
-def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES, first_hop=None,
-                        stream_reasons=None):
+def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES, first_hop=None):
     """Resolve domain through exit relay with retry logic.
 
-    stream_reasons maps the SOCKS client port to the STREAM reason recorded
-    by the controller. Reply 4 is retried. TORPROTOCOL is a rejected private
+    Reply 4 is retried. A TORPROTOCOL stream reason is a rejected private
     address: wrong_ip, and not retried.
     """
     exit_url = exiturl(exit_desc.fingerprint)
@@ -340,14 +318,17 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             result["resolved_ip"] = ip
             result["timing"] = _make_timing(total_start)
 
-            if expected_ip and ip != expected_ip:
-                result["status"] = "wrong_ip"
-                result["error"] = "DNS Error: Expected %s, got %s" % (expected_ip, ip)
-                log.warning("%s wrong IP: %s != %s", exit_url, ip, expected_ip)
+            if expected_ip:
+                if ip == expected_ip:
+                    result["status"] = "success"
+                    log.info("%s resolved to %s (correct)", exit_url, ip)
+                else:
+                    result["status"] = "wrong_ip"
+                    result["error"] = "DNS Error: Expected %s, got %s" % (expected_ip, ip)
+                    log.warning("%s wrong IP: %s != %s", exit_url, ip, expected_ip)
             else:
                 result["status"] = "success"
-                log.info("%s resolved to %s%s", exit_url, ip,
-                         " (correct)" if expected_ip else "")
+                log.info("%s resolved to %s", exit_url, ip)
             return result
 
         except error.SOCKSv5Error as err:
@@ -391,7 +372,8 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             # Ensure socket is closed even on error. Read the port first;
             # resolve() may already have closed the fd.
             if sock is not None:
-                local_port = _socket_local_port(sock)
+                port = getattr(sock, "local_port", None)
+                local_port = port if isinstance(port, int) else None
                 try:
                     sock.close()
                 except Exception:
@@ -399,13 +381,13 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
         if status is not None:
             if status == "dns_fail":
-                reason = _take_stream_reason(stream_reasons, local_port)
+                reason = _take_stream_reason(local_port)
                 result["stream_reason"] = reason
                 if reason == "TORPROTOCOL":
                     status = "wrong_ip"
                 if reason:
                     error_msg = _fmt_with_hop(
-                        "%s (stream reason %s)" % (_REPLY4_MESSAGE, reason), first_hop)
+                        "%s (stream reason %s)" % (_SOCKS_ERROR_MESSAGES[4], reason), first_hop)
             result["timing"] = _make_timing(total_start)
             result["status"] = status
             result["error"] = error_msg
@@ -420,14 +402,13 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
     return result
 
 
-def do_validation(exit_desc, query_domain, expected_ip, first_hop=None, stream_reasons=None):
+def do_validation(exit_desc, query_domain, expected_ip, first_hop=None):
     """Perform DNS validation with hard timeout protection."""
     fp = exit_desc.fingerprint
 
     with _AlarmContext(HARD_TIMEOUT):
         try:
-            result = resolve_with_retry(exit_desc, query_domain, expected_ip,
-                                        first_hop=first_hop, stream_reasons=stream_reasons)
+            result = resolve_with_retry(exit_desc, query_domain, expected_ip, first_hop=first_hop)
         except HardTimeoutError:
             log.error("HARD_TIMEOUT %s exceeded %ds (first_hop=%s)", 
                       exiturl(fp), HARD_TIMEOUT, _fmt_first_hop(first_hop))
@@ -453,13 +434,14 @@ def do_validation(exit_desc, query_domain, expected_ip, first_hop=None, stream_r
 def probe(exit_desc, target_host, target_port, run_python_over_tor,
           run_cmd_over_tor, first_hop=None, stream_reasons=None, **kwargs):
     """Probe exit relay's DNS resolution capability."""
+    global _stream_reasons
+    _stream_reasons = stream_reasons
     base_domain = target_host or WILDCARD_DOMAIN
     expected_ip = None if target_host else EXPECTED_IP
     query_domain = generate_unique_query(exit_desc.fingerprint, base_domain)
     # Use passed first_hop or fall back to environment variable
     first_hop_fpr = first_hop or FIRST_HOP
-    run_python_over_tor(do_validation, exit_desc, query_domain, expected_ip,
-                        first_hop_fpr, stream_reasons)
+    run_python_over_tor(do_validation, exit_desc, query_domain, expected_ip, first_hop_fpr)
 
 
 # Default relay info when lookup fails

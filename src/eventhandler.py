@@ -39,31 +39,6 @@ import util
 
 log = logging.getLogger(__name__)
 
-def remember_stream_port(stream_ports, stream_reasons, stream_event):
-    """Remember a NEW stream's source port, and store a CLOSED/FAILED reason.
-
-    CLOSED carries REASON but not SOURCE_ADDR, and a successful resolve's
-    target is rewritten to the answer. The port from NEW/NEWRESOLVE is the
-    key back to the SOCKS socket. Returns True when the event is terminal.
-    """
-    status = stream_event.status
-    sid = str(stream_event.id)
-    if status in (StreamStatus.NEW, StreamStatus.NEWRESOLVE):
-        port = util.get_source_port(str(stream_event))
-        if port:
-            stream_ports[sid] = port
-        return False
-    if status not in (StreamStatus.CLOSED, StreamStatus.FAILED):
-        return False
-    port = stream_ports.pop(sid, None)
-    reason = getattr(stream_event, "reason", None)
-    if stream_reasons is not None and port and reason:
-        try:
-            stream_reasons[port] = str(reason)
-        except Exception as err:
-            log.debug("Could not record stream reason: %s", err)
-    return True
-
 
 def get_relay_desc(controller, fpr):
     """
@@ -375,10 +350,9 @@ class EventHandler(object):
         except Exception:
             pass
 
-        manager = getattr(self, "_reason_manager", None)
-        if manager is not None:
+        if self._reason_manager is not None:
             try:
-                manager.shutdown()
+                self._reason_manager.shutdown()
             except Exception:
                 pass
             self._reason_manager = None
@@ -452,19 +426,25 @@ class EventHandler(object):
         point and wait for the attaching to be done in queue_reader().
         """
 
-        if remember_stream_port(self._stream_ports, self.stream_reasons, stream_event):
+        # CLOSED has the reason and no SOURCE_ADDR. The port was stored when
+        # this stream was NEW, using the same parser as stream attachment.
+        if stream_event.status in (StreamStatus.CLOSED, StreamStatus.FAILED):
+            port = self._stream_ports.pop(str(stream_event.id), None)
+            if self.stream_reasons is not None and port and stream_event.reason:
+                self.stream_reasons[port] = str(stream_event.reason)
             return
 
         if stream_event.status not in [StreamStatus.NEW,
                                        StreamStatus.NEWRESOLVE]:
             return
 
-        port = self._stream_ports.get(str(stream_event.id))
+        port = util.get_source_port(str(stream_event))
         if not port:
             log.warning("Couldn't extract source port from stream "
                         "event: %s" % str(stream_event))
             return
 
+        self._stream_ports[str(stream_event.id)] = port
         log.debug("Adding attacher for new stream %s." % stream_event.id)
         self.attacher.prepare(port, stream_id=stream_event.id)
         self.check_finished()
