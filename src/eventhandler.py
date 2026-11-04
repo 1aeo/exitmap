@@ -22,6 +22,7 @@ Handles Tor controller events.
 
 import os
 import functools
+import inspect
 import threading
 import multiprocessing
 import logging
@@ -38,6 +39,27 @@ import command
 import util
 
 log = logging.getLogger(__name__)
+
+
+def call_module_teardown(module, **kwargs):
+    """Call module.teardown with the kwargs it accepts.
+
+    A TypeError raised inside teardown propagates. The no-argument form is
+    only used when the function cannot take these arguments, as with
+    patchingCheck.teardown().
+    """
+    teardown = getattr(module, "teardown", None)
+    if teardown is None:
+        return
+    params = inspect.signature(teardown).parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        teardown(**kwargs)
+        return
+    accepted = {key: value for key, value in kwargs.items() if key in params}
+    if accepted:
+        teardown(**accepted)
+    else:
+        teardown()
 
 
 def get_relay_desc(controller, fpr):
@@ -311,18 +333,14 @@ class EventHandler(object):
         if terminated:
             log.info("Terminated %d stalled relays" % len(terminated))
 
-        if hasattr(self.module, "teardown"):
-            try:
-                self.module.teardown(
-                    stats=self.stats, controller=self.controller,
-                    terminated_relays=terminated,
-                    skipped_exits=getattr(self, "skipped_exits", None),
-                    selected_exits=getattr(self, "selected_exits", None),
-                    missing_descriptors=self.missing_descriptors,
-                )
-            except TypeError:
-                # Module doesn't accept kwargs - call without arguments
-                self.module.teardown()
+        call_module_teardown(
+            self.module,
+            stats=self.stats, controller=self.controller,
+            terminated_relays=terminated,
+            skipped_exits=getattr(self, "skipped_exits", None),
+            selected_exits=getattr(self, "selected_exits", None),
+            missing_descriptors=self.missing_descriptors,
+        )
 
         log.info(self.stats)
         
@@ -380,8 +398,15 @@ class EventHandler(object):
 
         exit_desc = get_relay_desc(self.controller, exit_fpr)
         if exit_desc is None:
+            # update_circs() already counted this circuit as built. No probe
+            # will increment finished_streams, so count it here or wait() blocks.
             self.missing_descriptors.add(exit_fpr)
-            self.controller.close_circuit(circ_event.id)
+            try:
+                self.controller.close_circuit(circ_event.id)
+            except Exception as err:
+                log.debug("Could not close circuit %s: %s", circ_event.id, err)
+            self.stats.finished_streams += 1
+            self.check_finished()
             return
 
         proc = multiprocessing.Process(target=module_call, args=(

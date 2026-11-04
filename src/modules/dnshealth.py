@@ -509,8 +509,10 @@ def _write_terminated_relays(relays, controller=None):
 _NOT_TESTED_REASONS = {
     "bad_exit": "Not tested: BadExit",
     "not_in_consensus": "Not tested: not in this consensus",
+    "not_exit": "Not tested: not an exit in this consensus",
     "no_descriptor": "Not tested: no descriptor",
     "exit_policy": "Not tested: exit policy blocks the destination",
+    "filtered": "Not tested: excluded by scan filters",
     "no_result": "Not tested: no result recorded",
 }
 

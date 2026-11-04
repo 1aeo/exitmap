@@ -44,7 +44,7 @@ import error
 import util
 import relayselector
 
-from eventhandler import EventHandler
+from eventhandler import EventHandler, call_module_teardown
 from stats import Statistics
 
 log = logging.getLogger(__name__)
@@ -405,7 +405,11 @@ def select_exits(args, module):
     elif args.exit_file:
         # '-E' was used to specify a file containing exit relays.
         try:
-            requested_exits = [line.strip() for line in open(args.exit_file)]
+            with open(args.exit_file) as handle:
+                requested_exits = [line.strip() for line in handle if line.strip()]
+            if not requested_exits:
+                log.error("%s contains no relay fingerprints.", args.exit_file)
+                sys.exit(1)
         except OSError as err:
             log.error("Could not read %s: %s", args.exit_file, err.strerror)
             sys.exit(1)
@@ -479,12 +483,9 @@ def run_module(module_name, args, controller, socks_port, stats):
         if skipped and hasattr(module, "teardown"):
             log.info("Exit selection yielded no scannable relays; "
                      "recording %d not-tested relay(s).", len(skipped))
-            try:
-                module.teardown(
-                    stats=stats, controller=controller,
-                    skipped_exits=skipped, selected_exits=[])
-            except TypeError:
-                module.teardown()
+            call_module_teardown(
+                module, stats=stats, controller=controller,
+                skipped_exits=skipped, selected_exits=[])
             return
         raise error.ExitSelectionError("Exit selection yielded %d exits "
                                        "but need at least one." % count)

@@ -213,10 +213,11 @@ def get_exits(data_dir,
     """
     log.debug("Selecting exits depending on parameters.")
 
-    # Match fingerprints case-insensitively. Callers (exit files) may differ.
-    if requested_exits is not None:
-        requested_exits = [str(fp).strip().upper() for fp in requested_exits
-                           if fp and str(fp).strip()]
+    # An empty requested list is a filter that matches nothing, not "scan all".
+    requested_given = requested_exits is not None
+    if requested_given:
+        requested_exits = {str(fp).strip().upper() for fp in requested_exits
+                           if fp and str(fp).strip()}
 
     cached_consensus_path = os.path.join(data_dir, "cached-consensus")
     cached_descriptors_path = os.path.join(data_dir, "cached-descriptors")
@@ -243,10 +244,12 @@ def get_exits(data_dir,
                 continue
             desc = cached_consensus.get(fp)
             flags = desc.flags if desc is not None else ()
-            if desc is not None and stem.Flag.BADEXIT in flags and not bad_exit:
-                reason = "bad_exit"
-            elif desc is None or stem.Flag.EXIT not in flags:
+            if desc is None:
                 reason = "not_in_consensus"
+            elif stem.Flag.BADEXIT in flags and not bad_exit:
+                reason = "bad_exit"
+            elif stem.Flag.EXIT not in flags:
+                reason = "not_exit"
             elif fp not in have_exit_policy and policy_required:
                 reason = "no_descriptor"
             elif destinations and fp in have_exit_policy and not any(
@@ -254,7 +257,7 @@ def get_exits(data_dir,
                     for dest in destinations):
                 reason = "exit_policy"
             else:
-                reason = "not_in_consensus"
+                reason = "filtered"
             skipped[fp] = reason
         if skipped:
             log.info("Not testing %d requested relay(s).", len(skipped))
@@ -346,13 +349,13 @@ def get_exits(data_dir,
         return {}
 
     # Filter conditions are checked from cheapest to most expensive.
-    if address or nickname or version or requested_exits:
+    if address or nickname or version or requested_given:
         exit_candidates = [
             desc for desc in exit_candidates
             if ((not address or address in desc.address) and
                 (not nickname or nickname in desc.nickname) and
                 (not version or version == str(desc.tor_version)) and
-                (not requested_exits or desc.fingerprint in requested_exits))
+                (not requested_given or desc.fingerprint in requested_exits))
         ]
     if not exit_candidates:
         log.warning("No exit relays meet basic filter conditions.")

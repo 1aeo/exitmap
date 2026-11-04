@@ -97,6 +97,30 @@ def test_exit_file_without_all_exits_skips_badexit(tor_dir):
     assert skipped[_ABSENT] == "not_in_consensus"
 
 
+def test_empty_requested_list_selects_nothing(tor_dir):
+    """An empty exit file must not fall through to scanning every exit."""
+    selected = relayselector.get_exits(
+        tor_dir, good_exit=True, bad_exit=False,
+        requested_exits=[], destinations=None, skipped={})
+    assert selected == {}
+
+
+def test_relay_in_consensus_without_exit_flag_is_not_exit(tor_dir):
+    import os
+    import stem
+    import stem.descriptor
+    non_exit = None
+    for desc in stem.descriptor.parse_file(os.path.join(tor_dir, "cached-consensus")):
+        if stem.Flag.EXIT not in desc.flags:
+            non_exit = desc.fingerprint
+            break
+    skipped = {}
+    relayselector.get_exits(
+        tor_dir, good_exit=True, bad_exit=True,
+        requested_exits=[non_exit], destinations=None, skipped=skipped)
+    assert skipped[non_exit] == "not_exit"
+
+
 def test_all_exits_keeps_badexit_in_the_target_file(tor_dir):
     """--all-exits together with an exit file scans the BadExit relay."""
     skipped = {}
