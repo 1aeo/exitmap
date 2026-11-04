@@ -193,25 +193,18 @@ def _parse_socks_error_code(err_str):
     return None
 
 
-def _wait_for(key):
-    """Return a shared-map value, waiting briefly for the controller event."""
-    if _stream_reasons is None:
+def _current_stream_id(port, started):
+    """Stream id for this attempt. A close leaves the port entry so it can still be read."""
+    if _stream_reasons is None or not isinstance(port, int):
         return None
     deadline = time.monotonic() + _REPLY4_REASON_WAIT
     while True:
-        value = _stream_reasons.get(key)
-        if value is not None:
-            return value
+        value = _stream_reasons.get(("p", port))
+        if isinstance(value, tuple) and len(value) == 2 and value[1] >= started:
+            return value[0]
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.02)
-
-
-def _current_stream_id(port):
-    """Stream id that owns this port. Called while the socket is still open."""
-    if not isinstance(port, int):
-        return None
-    return _wait_for(("p", port))
 
 
 def _take_stream_reason(stream_id, started):
@@ -340,7 +333,7 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             sock.stream_id = None
             if _stream_reasons is not None:
                 sock.on_local_port = lambda port: setattr(
-                    sock, "stream_id", _current_stream_id(port))
+                    sock, "stream_id", _current_stream_id(port, total_start))
             ip = _normalize_ip(sock.resolve(domain))
 
             result["resolved_ip"] = ip

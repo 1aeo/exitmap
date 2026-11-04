@@ -441,8 +441,6 @@ class EventHandler(object):
                 self.stream_reasons[("s", sid)] = (str(stream_event.reason), time.time())
             if port is not None and self._port_stream.get(port) == sid:
                 self._port_stream.pop(port, None)
-                if self.stream_reasons is not None:
-                    self.stream_reasons.pop(("p", port), None)
             return
 
         if stream_event.status not in [StreamStatus.NEW,
@@ -456,7 +454,7 @@ class EventHandler(object):
             return
 
         if self.stream_reasons is not None:
-            self.stream_reasons[("p", port)] = sid
+            self.stream_reasons[("p", port)] = (sid, time.time())
         self._port_stream[port] = sid
         self._stream_ports[sid] = port
         log.debug("Adding attacher for new stream %s." % stream_event.id)

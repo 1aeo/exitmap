@@ -631,7 +631,7 @@ class TestResolveWithRetry:
         dnshealth.setup()
         mock_socket, use_socket = mock_torsocket
         dnshealth._stream_reasons = {
-            ("p", 4242): "9",
+            ("p", 4242): ("9", time.time() + 60),
             ("s", "9"): ("TORPROTOCOL", time.time() + 60),
         }
 
@@ -658,7 +658,7 @@ class TestResolveWithRetry:
         dnshealth.setup()
         mock_socket, use_socket = mock_torsocket
         dnshealth._stream_reasons = {
-            ("p", 4242): "9",
+            ("p", 4242): ("9", time.time() + 60),
             ("s", "9"): ("DESTROY", time.time() + 60),
         }
 
@@ -719,7 +719,7 @@ class TestResolveWithRetry:
         dnshealth.setup()
         mock_socket, use_socket = mock_torsocket
         dnshealth._stream_reasons = {
-            ("p", 4242): "9",
+            ("p", 4242): ("9", time.time() + 60),
             ("s", "9"): ("DONE", time.time() + 60),
         }
 
