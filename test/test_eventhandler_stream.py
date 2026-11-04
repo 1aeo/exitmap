@@ -57,7 +57,7 @@ def test_closed_reason_uses_the_attach_port():
     handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "9", source_port=4242))
     handler.attacher.prepare.assert_called_once_with(4242, stream_id="9")
     handler.new_stream(_Stream(StreamStatus.CLOSED, "9", reason="TORPROTOCOL"))
-    assert handler.stream_reasons == {4242: "TORPROTOCOL"}
+    assert handler.stream_reasons[4242][0] == "TORPROTOCOL"
     assert handler._stream_ports == {}
 
 
@@ -67,7 +67,8 @@ def test_done_and_destroy_stay_distinct():
     handler.new_stream(_Stream(StreamStatus.CLOSED, "1", reason="DONE"))
     handler.new_stream(_Stream(StreamStatus.NEWRESOLVE, "2", source_port=1001))
     handler.new_stream(_Stream(StreamStatus.FAILED, "2", reason="DESTROY"))
-    assert handler.stream_reasons == {1000: "DONE", 1001: "DESTROY"}
+    assert handler.stream_reasons[1000][0] == "DONE"
+    assert handler.stream_reasons[1001][0] == "DESTROY"
 
 
 def test_reused_port_drops_the_previous_reason():
@@ -77,7 +78,7 @@ def test_reused_port_drops_the_previous_reason():
     handler.new_stream(_Stream(StreamStatus.CLOSED, "1", reason="TORPROTOCOL"))
     assert handler.stream_reasons == {}
     handler.new_stream(_Stream(StreamStatus.CLOSED, "2", reason="DONE"))
-    assert handler.stream_reasons == {4242: "DONE"}
+    assert handler.stream_reasons[4242][0] == "DONE"
 
 
 def test_remap_does_not_attach_or_record():

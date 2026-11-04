@@ -26,6 +26,7 @@ import threading
 import multiprocessing
 import logging
 import socket
+import time
 
 import stem
 from stem import StreamStatus
@@ -439,7 +440,7 @@ class EventHandler(object):
             if port and self._port_stream.get(port) == sid:
                 self._port_stream.pop(port, None)
                 if self.stream_reasons is not None and stream_event.reason:
-                    self.stream_reasons[port] = str(stream_event.reason)
+                    self.stream_reasons[port] = (str(stream_event.reason), time.time())
             return
 
         if stream_event.status not in [StreamStatus.NEW,

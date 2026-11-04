@@ -678,13 +678,23 @@ class TestResolveWithRetry:
             clock["now"] += seconds
 
         monkeypatch.setattr(dnshealth.time, "sleep", advance)
-        assert dnshealth._take_stream_reason(4242) is None
+        assert dnshealth._take_stream_reason(4242, started=0.0) is None
         assert clock["now"] >= dnshealth._REPLY4_REASON_WAIT
 
         dnshealth._stream_reasons = None
         clock["now"] = 0.0
-        assert dnshealth._take_stream_reason(4242) is None
+        assert dnshealth._take_stream_reason(4242, started=0.0) is None
         assert clock["now"] == 0.0
+
+    def test_reason_stored_before_this_attempt_is_ignored(self, monkeypatch):
+        """A leftover reason from an earlier user of this port is not this attempt's."""
+        dnshealth._stream_reasons = {4242: ("TORPROTOCOL", 1.0)}
+        clock = {"now": 0.0}
+        monkeypatch.setattr(dnshealth.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(dnshealth.time, "sleep", lambda seconds: clock.update(now=clock["now"] + seconds))
+        assert dnshealth._take_stream_reason(4242, started=2.0) is None
+        dnshealth._stream_reasons = {4242: ("DONE", 3.0)}
+        assert dnshealth._take_stream_reason(4242, started=2.0) == "DONE"
 
     def test_reply_4_records_non_private_stream_reason(self, mock_exit_desc, mock_torsocket):
         """An exit error (DONE) stays dns_fail and keeps the stream reason."""

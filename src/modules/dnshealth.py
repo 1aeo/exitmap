@@ -193,15 +193,24 @@ def _parse_socks_error_code(err_str):
     return None
 
 
-def _take_stream_reason(port):
+def _reason_since(value, started):
+    """Return a reason recorded for this attempt. Older ones belong to a reused port."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, tuple) and len(value) == 2 and value[1] >= started:
+        return str(value[0])
+    return None
+
+
+def _take_stream_reason(port, started):
     """Pop the CLOSED reason for this SOCKS port, waiting briefly for reply 4."""
     if _stream_reasons is None or not isinstance(port, int):
         return None
     deadline = time.monotonic() + _REPLY4_REASON_WAIT
     while True:
-        reason = _stream_reasons.pop(port, None)
+        reason = _reason_since(_stream_reasons.pop(port, None), started)
         if reason:
-            return str(reason)
+            return reason
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.02)
@@ -383,7 +392,7 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
         if status is not None:
             if status == "dns_fail":
-                reason = _take_stream_reason(local_port)
+                reason = _take_stream_reason(local_port, total_start)
                 result["stream_reason"] = reason
                 if reason == "TORPROTOCOL":
                     status = "wrong_ip"
