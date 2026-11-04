@@ -51,7 +51,7 @@ import error
 def mock_exit_desc():
     """Create a mock exit relay descriptor."""
     desc = MagicMock()
-    desc.fingerprint = "ABCD1234EFGH5678IJKL9012MNOP3456QRST7890"
+    desc.fingerprint = "ABCD1234EF567890ABCD1234EF567890ABCD1234"
     desc.nickname = "TestExitRelay"
     desc.address = "192.0.2.1"
     return desc

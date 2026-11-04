@@ -59,6 +59,19 @@ def test_iter_exit_relays(exit_relays, controller, stats_obj, args, caplog):
     assert log_info_expected in caplog.text
 
 
+def test_unselected_badexit_is_skipped(args):
+    """A BadExit passed with -e is not scanned, and the reason is recorded."""
+    import copy
+    bad = "052848D49E213DE9F85C8721E138DAABA2DE08C8"
+    ns = copy.copy(args)
+    ns.exit = bad
+    ns.all_exits = False
+    ns.bad_exits = False
+    selected = exitmap.select_exits(ns, "checktest")
+    assert bad not in selected
+    assert ns.skipped_exits[bad] == "bad_exit"
+
+
 def test_sleep(args):
     # Test with a small fixed delay (not dependent on args.build_delay which is now 0)
     test_delay = 0.1

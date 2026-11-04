@@ -23,7 +23,6 @@ Extracts exit relays with given attributes from consensus.
 """
 
 import os
-import re
 import sys
 import argparse
 import logging
@@ -34,9 +33,6 @@ import stem.descriptor
 import util
 
 log = logging.getLogger(__name__)
-
-# Relay fingerprints are 40 hex characters. Anything else must not be used as a path.
-_FINGERPRINT_RE = re.compile(r"^[A-F0-9]{40}$")
 
 
 def parse_cmd_args():
@@ -175,7 +171,7 @@ def get_cached_consensus(cached_consensus_path):
 def get_exits(data_dir,
               good_exit=True, bad_exit=False,
               version=None, nickname=None, address=None, country_code=None,
-              requested_exits=None, destinations=None, skipped=None):
+              requested_exits=None, destinations=None):
     """Load the Tor network consensus from DATA_DIR, and extract all exit
     relays that have the desired set of attributes.  Specifically:
 
@@ -217,15 +213,6 @@ def get_exits(data_dir,
     """
     log.debug("Selecting exits depending on parameters.")
 
-    # An empty requested list is a filter that matches nothing, not "scan all".
-    requested_given = requested_exits is not None
-    if requested_given:
-        raw = [str(fp).strip().upper() for fp in requested_exits if fp and str(fp).strip()]
-        requested_exits = {fp for fp in raw if _FINGERPRINT_RE.match(fp)}
-        invalid = sum(1 for fp in raw if not _FINGERPRINT_RE.match(fp))
-        if invalid:
-            log.warning("Ignoring %d requested value(s) that are not relay fingerprints.", invalid)
-
     cached_consensus_path = os.path.join(data_dir, "cached-consensus")
     cached_descriptors_path = os.path.join(data_dir, "cached-descriptors")
 
@@ -237,37 +224,6 @@ def get_exits(data_dir,
     have_exit_policy = get_exit_policies(cached_descriptors_path)
     log.debug("Number of relays with exit policy: %s", len(have_exit_policy))
     have_exit_flag = router_statuses_with_exit_flag(cached_consensus)
-
-    def _record_skips(selected):
-        """Fill ``skipped`` with ``{fingerprint: reason}`` for relays not selected."""
-        if skipped is None or not requested_exits:
-            return
-        selected = {fp.upper() for fp in selected}
-        # Missing descriptors drop a relay only when candidates come from the
-        # descriptor set, or when a destination has to be checked against policy.
-        policy_required = destinations or len(have_exit_policy) > len(have_exit_flag)
-        for fp in requested_exits:
-            if fp in selected:
-                continue
-            desc = cached_consensus.get(fp)
-            flags = desc.flags if desc is not None else ()
-            if desc is None:
-                reason = "not_in_consensus"
-            elif stem.Flag.BADEXIT in flags and not bad_exit:
-                reason = "bad_exit"
-            elif stem.Flag.EXIT not in flags:
-                reason = "not_exit"
-            elif fp not in have_exit_policy and policy_required:
-                reason = "no_descriptor"
-            elif destinations and fp in have_exit_policy and not any(
-                    have_exit_policy[fp].exit_policy.can_exit_to(*dest)
-                    for dest in destinations):
-                reason = "exit_policy"
-            else:
-                reason = "filtered"
-            skipped[fp] = reason
-        if skipped:
-            log.info("Not testing %d requested relay(s).", len(skipped))
 
     # We want to start with the maximum possible number of exits, this set
     # of possible exits can be filtered out later dependending on the
@@ -286,18 +242,6 @@ def get_exits(data_dir,
             "policy as exit candidates."
         )
         exit_candidates = list(have_exit_policy.values())
-    # --all-exits keeps both categories. A BadExit relay can have an exit
-    # policy without the EXIT flag. When the flag set is the larger source,
-    # that relay is not in exit_candidates yet, so add it before the filters.
-    if bad_exit and good_exit:
-        seen = {desc.fingerprint for desc in exit_candidates}
-        for fp, desc in have_exit_policy.items():
-            if fp in seen:
-                continue
-            consensus_desc = cached_consensus.get(fp)
-            if consensus_desc is not None and stem.Flag.BADEXIT in consensus_desc.flags:
-                exit_candidates.append(desc)
-                seen.add(fp)
     log.debug("Number of exit candidates: %s.", len(exit_candidates))
 
     # Drop all exit relays which have a descriptor, but either did not
@@ -324,15 +268,10 @@ def get_exits(data_dir,
             "flag. This probably means the cached network consensus "
             "is invalid."
         )
-        _record_skips(set())
         return {}
 
     if bad_exit and good_exit:
-        # Policy descriptors can outlive the consensus. Do not scan those.
-        exit_candidates = [
-            desc for desc in exit_candidates
-            if desc.fingerprint in cached_consensus
-        ]
+        pass  # All exits are either bad or good.
     elif bad_exit:
         exit_candidates = [
             desc
@@ -346,7 +285,6 @@ def get_exits(data_dir,
         )
         if not exit_candidates:
             log.warning("There are no bad exits in the current consensus.")
-            _record_skips(set())
             return {}
     elif good_exit:
         exit_candidates = [
@@ -362,27 +300,24 @@ def get_exits(data_dir,
         )
         if not exit_candidates:
             log.warning("There are no good exits in the current consensus.")
-            _record_skips(set())
             return {}
     else:
         # This was probably a programming error.
         log.warning("get_exits() called with bad_exits=False and "
                     "good_exits=False; this always returns zero exits")
-        _record_skips(set())
         return {}
 
     # Filter conditions are checked from cheapest to most expensive.
-    if address or nickname or version or requested_given:
+    if address or nickname or version or requested_exits:
         exit_candidates = [
             desc for desc in exit_candidates
             if ((not address or address in desc.address) and
                 (not nickname or nickname in desc.nickname) and
                 (not version or version == str(desc.tor_version)) and
-                (not requested_given or desc.fingerprint in requested_exits))
+                (not requested_exits or desc.fingerprint in requested_exits))
         ]
     if not exit_candidates:
         log.warning("No exit relays meet basic filter conditions.")
-        _record_skips(set())
         return {}
 
     if country_code:
@@ -398,7 +333,6 @@ def get_exits(data_dir,
         ]
     if not exit_candidates:
         log.warning("No exit relays meet country-code filter condition.")
-        _record_skips(set())
         return {}
 
     if not destinations:
@@ -455,7 +389,6 @@ def get_exits(data_dir,
             max([len(have_exit_flag), len(have_exit_policy)]),
         )
     )
-    _record_skips(set(exit_destinations))
     return exit_destinations
 
 

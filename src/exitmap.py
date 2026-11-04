@@ -22,6 +22,7 @@ Performs a task over (a subset of) all Tor exit relays.
 
 import sys
 import os
+import re
 import time
 import socket
 import pkgutil
@@ -48,6 +49,8 @@ from eventhandler import EventHandler, call_module_teardown
 from stats import Statistics
 
 log = logging.getLogger(__name__)
+
+_FINGERPRINT_RE = re.compile(r"^[A-F0-9]{40}$")
 
 # Tor configuration for parallel circuit building (optimal from experiments)
 # Can be overridden via MAX_PENDING_CIRCUITS environment variable
@@ -401,34 +404,62 @@ def select_exits(args, module):
 
     if args.exit:
         # '-e' was used to specify a single exit relay.
-        requested_exits = [args.exit]
+        raw_values = [args.exit]
     elif args.exit_file:
         # '-E' was used to specify a file containing exit relays.
         try:
             with open(args.exit_file) as handle:
-                requested_exits = [line.strip() for line in handle if line.strip()]
-            if not requested_exits:
-                log.error("%s contains no relay fingerprints.", args.exit_file)
-                sys.exit(1)
+                raw_values = [line.strip() for line in handle if line.strip()]
         except OSError as err:
             log.error("Could not read %s: %s", args.exit_file, err.strerror)
             sys.exit(1)
         except Exception as err:
             log.error("Could not read %s: %s", args.exit_file, err)
             sys.exit(1)
+        if not raw_values:
+            log.error("%s contains no relay fingerprints.", args.exit_file)
+            sys.exit(1)
     else:
-        requested_exits = None
+        raw_values = None
 
-    skipped = {}
+    requested_exits = None
+    if raw_values is not None:
+        requested_exits = []
+        for raw in raw_values:
+            fp = raw.strip().upper()
+            if _FINGERPRINT_RE.match(fp) and fp not in requested_exits:
+                requested_exits.append(fp)
+        if not requested_exits:
+            log.error("%s contains no relay fingerprints.", args.exit_file or args.exit)
+            sys.exit(1)
+
     exit_destinations = relayselector.get_exits(
         args.tor_dir,
         good_exit       = args.all_exits or (not args.bad_exits),
         bad_exit        = args.all_exits or args.bad_exits,
         country_code    = args.country,
         requested_exits = requested_exits,
-        destinations    = destinations,
-        skipped         = skipped)
-    # Every fingerprint from --exit / --exit-file that was not selected.
+        destinations    = destinations)
+
+    # Anything requested that get_exits() did not return still needs a row.
+    skipped = {}
+    if requested_exits:
+        consensus_path = os.path.join(args.tor_dir, "cached-consensus")
+        consensus = relayselector.get_cached_consensus(consensus_path)
+        allow_bad = args.all_exits or args.bad_exits
+        for fp in requested_exits:
+            if fp in exit_destinations:
+                continue
+            desc = consensus.get(fp)
+            if desc is None:
+                reason = "not_in_consensus"
+            elif stem.Flag.BADEXIT in desc.flags and not allow_bad:
+                reason = "bad_exit"
+            elif stem.Flag.EXIT not in desc.flags:
+                reason = "not_in_consensus"
+            else:
+                reason = "no_descriptor"
+            skipped[fp] = reason
     args.skipped_exits = skipped
 
     log.debug("Successfully selected exit relays after %s." %
