@@ -333,30 +333,28 @@ class EventHandler(object):
         if terminated:
             log.info("Terminated %d stalled relays" % len(terminated))
 
-        call_module_teardown(
-            self.module,
-            stats=self.stats, controller=self.controller,
-            terminated_relays=terminated,
-            skipped_exits=getattr(self, "skipped_exits", None),
-            selected_exits=getattr(self, "selected_exits", None),
-            missing_descriptors=self.missing_descriptors,
-        )
-
-        log.info(self.stats)
-        
-        # Signal queue reader to stop
         try:
-            self.queue.put(None)
-        except Exception:
-            pass
-            
-        self.queue_thread.join()
-        
-        # Remove event listener
-        try:
-            self.controller.remove_event_listener(self.new_event)
-        except Exception:
-            pass
+            call_module_teardown(
+                self.module,
+                stats=self.stats, controller=self.controller,
+                terminated_relays=terminated,
+                skipped_exits=getattr(self, "skipped_exits", None),
+                selected_exits=getattr(self, "selected_exits", None),
+                missing_descriptors=self.missing_descriptors,
+            )
+            log.info(self.stats)
+        finally:
+            # queue_thread is not a daemon and blocks on queue.get(). Stop it
+            # even when teardown raises, or the process stays alive.
+            try:
+                self.queue.put(None)
+            except Exception:
+                pass
+            self.queue_thread.join()
+            try:
+                self.controller.remove_event_listener(self.new_event)
+            except Exception:
+                pass
 
     def _close_queue(self):
         """
