@@ -1,6 +1,7 @@
 import argparse
 import sys
 import time
+from unittest.mock import Mock
 import warnings
 # hacky, until exitmap is an installable package
 sys.path.insert(0, 'src/')  # noqa
@@ -57,6 +58,13 @@ def test_iter_exit_relays(exit_relays, controller, stats_obj, args, caplog):
     exitmap.iter_exit_relays(exit_relays, controller, stats_obj, args)
     log_info_expected = "Done triggering circuit creations after"
     assert log_info_expected in caplog.text
+
+
+def test_iter_exit_relays_controller_not_alive(stats_obj, args):
+    controller = Mock()
+    controller.is_alive.return_value = False
+    exitmap.iter_exit_relays([args.exit], controller, stats_obj, args)
+    controller.new_circuit.assert_not_called()
 
 
 def test_sleep(args):
