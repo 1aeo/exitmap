@@ -1,7 +1,10 @@
 import argparse
 import sys
 import time
+from unittest.mock import Mock
 import warnings
+
+import pytest
 # hacky, until exitmap is an installable package
 sys.path.insert(0, 'src/')  # noqa
 import exitmap
@@ -42,6 +45,17 @@ def test_parser_cmd_args(mock_argv, args_default):
     assert args_default == parsed_args
 
 
+def test_parse_cmd_args_reliable_first_hop(tmp_path, monkeypatch, capsys):
+    config_file = tmp_path / "exitmaprc"
+    config_file.write_text("[Defaults]\nfirst_hop = %s\n" % ("A" * 40))
+    monkeypatch.setattr(
+        sys, "argv", ["exitmap.py", "-f", str(config_file), "-r", "checktest"]
+    )
+    with pytest.raises(SystemExit):
+        exitmap.parse_cmd_args()
+    assert "cannot be used together with -i" in capsys.readouterr().err
+
+
 def test_select_exits(args, modules):
     for module in ["checktest"]:  # modules:
         exits = exitmap.select_exits(args, modules)
@@ -57,6 +71,28 @@ def test_iter_exit_relays(exit_relays, controller, stats_obj, args, caplog):
     exitmap.iter_exit_relays(exit_relays, controller, stats_obj, args)
     log_info_expected = "Done triggering circuit creations after"
     assert log_info_expected in caplog.text
+
+
+def test_iter_exit_relays_reliable_first_hop(stats_obj, args, caplog):
+    args = argparse.Namespace(**vars(args))
+    args.first_hop = None
+    args.reliable_first_hop = True
+    exitmap.iter_exit_relays([args.exit], Mock(), stats_obj, args)
+    assert "Using 3163 reliable guards for first hop." in caplog.text
+
+
+def test_iter_exit_relays_no_reliable_first_hop(stats_obj, args, monkeypatch):
+    args = argparse.Namespace(**vars(args))
+    args.first_hop = None
+    args.reliable_first_hop = True
+    # Only the exit relay itself passes the filters.
+    monkeypatch.setattr(
+        exitmap.relayselector, "get_fingerprints",
+        lambda path, **filters: [args.exit] if filters else ["A" * 40]
+    )
+    controller = Mock()
+    exitmap.iter_exit_relays([args.exit], controller, stats_obj, args)
+    controller.new_circuit.assert_called_once_with(["A" * 40, args.exit])
 
 
 def test_sleep(args):
