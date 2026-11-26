@@ -55,6 +55,19 @@ def test_select_exits(args, modules):
         assert 8000 == list_destinations[0][1]  # [("host", port),]
 
 
+def test_select_exits_lowercase_fingerprints(args, modules, tmp_path):
+    fingerprint = args.exit
+    exit_file = tmp_path / "exits"
+    exit_file.write_text(fingerprint.lower() + "\n")
+    args_exit = dict(vars(args), exit=fingerprint.lower())
+    args_exit_file = dict(vars(args), exit=None, exit_file=str(exit_file))
+    for lowercase_args in [args_exit, args_exit_file]:
+        exits = exitmap.select_exits(
+            argparse.Namespace(**lowercase_args), modules
+        )
+        assert [fingerprint] == list(exits)
+
+
 def test_iter_exit_relays(exit_relays, controller, stats_obj, args, caplog):
     exitmap.iter_exit_relays(exit_relays, controller, stats_obj, args)
     log_info_expected = "Done triggering circuit creations after"
