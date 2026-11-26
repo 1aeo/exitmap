@@ -308,13 +308,12 @@ class EventHandler(object):
 
             # Did all circuits either build or fail?
             circs_done = ((self.stats.failed_circuits +
-                           self.stats.successful_circuits) ==
+                           self.stats.successful_circuits) >=
                           self.stats.total_circuits)
 
-            # Was every built circuit attached to a stream?
+            # Did the module finish for every built circuit?
             streams_done = (self.stats.finished_streams >=
-                            (self.stats.successful_circuits -
-                             self.stats.failed_circuits))
+                            self.stats.successful_circuits)
 
             log.debug("failedCircs=%d, builtCircs=%d, totalCircs=%d, "
                       "finishedStreams=%d",
@@ -353,7 +352,6 @@ class EventHandler(object):
                                self.stats.successful_circuits)
                 self.stats.failed_circuits += circuits
                 modules = max(0, self.stats.successful_circuits -
-                              self.stats.failed_circuits -
                               self.stats.finished_streams)
                 self.stats.finished_streams += modules
                 log.warning("No message from a module process for %d seconds."
@@ -418,6 +416,13 @@ class EventHandler(object):
         """
         Invoke a new probing module when a new circuit becomes ready.
         """
+
+        # Tor may also build circuits on its own.
+        if (circ_event.status in [CircStatus.BUILT] and
+                circ_event.path[-1][0] not in self.exit_destinations):
+            log.debug("Ignoring circuit %s which we did not create.",
+                      circ_event.id)
+            return
 
         self.stats.update_circs(circ_event)
         self.check_finished()
