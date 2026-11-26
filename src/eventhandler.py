@@ -384,7 +384,7 @@ class EventHandler(object):
 
         if hasattr(self.module, "teardown"):
             log.debug("Calling module's teardown() function.")
-            self.module.teardown()
+            self.module.teardown(stats=self.stats)
 
         log.info(self.stats)
 

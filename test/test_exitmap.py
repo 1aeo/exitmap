@@ -90,7 +90,7 @@ def test_run_module_teardown_without_exits(args, stats_obj, monkeypatch):
     monkeypatch.setattr(exitmap, "select_exits", lambda args, module: {})
     with pytest.raises(error.ExitSelectionError):
         exitmap.run_module("mock", args, Mock(), 9050, stats_obj)
-    module.teardown.assert_called_once()
+    module.teardown.assert_called_once_with(stats=stats_obj)
 
 
 def test_select_exits_lowercase_fingerprints(args, modules, tmp_path):

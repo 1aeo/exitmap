@@ -123,3 +123,8 @@ def test_new_circuit_passes_first_hop(handler):
     with patch.object(eventhandler.multiprocessing, "Process") as process:
         handler.new_circuit(circ_event)
     assert first_hop in process.call_args.kwargs["args"]
+
+
+def test_shutdown_passes_stats_to_teardown(handler):
+    handler.shutdown()
+    handler.module.teardown.assert_called_with(stats=handler.stats)

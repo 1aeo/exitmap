@@ -497,7 +497,7 @@ def run_module(module_name, args, controller, socks_port, stats):
         # The module is not run, but it might have to clean up after setup().
         if hasattr(module, "teardown"):
             log.debug("Calling module's teardown() function.")
-            module.teardown()
+            module.teardown(stats=stats)
         raise error.ExitSelectionError("Exit selection yielded %d exits "
                                        "but need at least one." % count)
 
