@@ -24,6 +24,7 @@ import sys
 import os
 import time
 import socket
+import string
 import pkgutil
 import argparse
 import datetime
@@ -38,6 +39,7 @@ import stem
 import stem.connection
 import stem.process
 import stem.descriptor
+import stem.util.tor_tools
 from stem.control import Controller, EventType
 
 import modules
@@ -300,6 +302,16 @@ def main():
 
     log.debug("Command line arguments: %s", str(args))
 
+    if args.first_hop is not None:
+        first_hop = _normalize_fingerprint(args.first_hop)
+        if first_hop is None:
+            log.critical("Invalid first-hop relay fingerprint \"%s\".",
+                         args.first_hop)
+            return 1
+        args.first_hop = first_hop
+
+    requested_exits = _get_requested_exits(args)
+
     socks_port, control_port = bootstrap_tor(args)
     controller = Controller.from_port(port=control_port)
     stem.connection.authenticate(controller)
@@ -335,7 +347,8 @@ def main():
                 util.analysis_dir = os.path.join(args.analysis_dir, datestr)
 
             try:
-                run_module(module_name, args, controller, socks_port, stats)
+                run_module(module_name, args, controller, socks_port, stats,
+                           requested_exits=requested_exits)
             except error.ExitSelectionError as err:
                 log.error("Failed to run because : %s", err)
 
@@ -387,7 +400,86 @@ def lookup_destinations(args, module):
     return destinations
 
 
-def select_exits(args, module):
+def _normalize_fingerprint(fingerprint):
+    """
+    Strip optional ``$`` prefix and validate a 40-char hex fingerprint.
+
+    :param str fingerprint: raw relay fingerprint string
+    :returns: uppercase 40-char hex fingerprint, or ``None`` if invalid
+    :rtype: str or None
+    """
+    if not isinstance(fingerprint, str):
+        return None
+    fp = fingerprint.strip()
+    if fp.startswith("$"):
+        fp = fp[1:]
+    if (not stem.util.tor_tools.is_valid_fingerprint(fp) or
+            not all(c in string.hexdigits for c in fp)):
+        return None
+    return fp.upper()
+
+
+def _parse_exit_file(exit_file):
+    """
+    Read, validate, normalize, and deduplicate exit relay fingerprints.
+
+    :param str exit_file: path to file containing one fingerprint per line
+    :returns: deduplicated uppercase 40-char hex fingerprints
+    :rtype: list
+    """
+    requested_exits = []
+    seen = set()
+    try:
+        with open(exit_file, encoding="utf-8-sig") as f:
+            for raw_line in f:
+                entry = raw_line.split("#", 1)[0].strip()
+                if not entry:
+                    continue
+                fp = _normalize_fingerprint(entry)
+                if fp is None:
+                    log.warning(
+                        "Ignoring invalid relay fingerprint \"%s\" in %s.",
+                        entry, exit_file
+                    )
+                    continue
+                if fp not in seen:
+                    seen.add(fp)
+                    requested_exits.append(fp)
+    except OSError as err:
+        log.error("Could not read %s: %s", exit_file, err.strerror)
+        sys.exit(1)
+    except Exception as err:
+        log.error("Could not read %s: %s", exit_file, err)
+        sys.exit(1)
+
+    if not requested_exits:
+        log.error("Exit file \"%s\" contains no valid relay fingerprints.",
+                  exit_file)
+        sys.exit(1)
+
+    return requested_exits
+
+
+def _get_requested_exits(args):
+    """
+    Return validated, normalized requested exit fingerprints for ``args``.
+
+    :param argparse.Namespace args: parsed command-line arguments
+    :returns: list of uppercase fingerprints, or ``None`` if unfiltered
+    :rtype: list or None
+    """
+    if args.exit is not None:
+        fp = _normalize_fingerprint(args.exit)
+        if fp is None:
+            log.error("Invalid exit relay fingerprint \"%s\".", args.exit)
+            sys.exit(1)
+        return [fp]
+    if args.exit_file is not None:
+        return _parse_exit_file(args.exit_file)
+    return None
+
+
+def select_exits(args, module, requested_exits=None):
     """
     Select exit relays which allow exiting to the module's scan destinations.
 
@@ -399,22 +491,8 @@ def select_exits(args, module):
     before = datetime.datetime.now()
     destinations = lookup_destinations(args, module)
 
-    if args.exit:
-        # '-e' was used to specify a single exit relay.
-        requested_exits = [args.exit]
-    elif args.exit_file:
-        # '-E' was used to specify a file containing exit relays.
-        try:
-            with open(args.exit_file) as f:
-                requested_exits = [line.strip() for line in f]
-        except OSError as err:
-            log.error("Could not read %s: %s", args.exit_file, err.strerror)
-            sys.exit(1)
-        except Exception as err:
-            log.error("Could not read %s: %s", args.exit_file, err)
-            sys.exit(1)
-    else:
-        requested_exits = None
+    if requested_exits is None:
+        requested_exits = _get_requested_exits(args)
 
     exit_destinations = relayselector.get_exits(
         args.tor_dir,
@@ -430,7 +508,8 @@ def select_exits(args, module):
     return exit_destinations
 
 
-def run_module(module_name, args, controller, socks_port, stats):
+def run_module(module_name, args, controller, socks_port, stats,
+               requested_exits=None):
     """
     Run an exitmap module over all available exit relays.
     """
@@ -465,7 +544,8 @@ def run_module(module_name, args, controller, socks_port, stats):
             can_teardown = True
             module.setup(**setup_kwargs)
 
-        exit_destinations = select_exits(args, module)
+        exit_destinations = select_exits(args, module,
+                                         requested_exits=requested_exits)
 
         exit_relays = list(exit_destinations.keys())
         random.shuffle(exit_relays)

@@ -280,3 +280,136 @@ def test_main_closes_controller_when_first_hop_not_in_consensus(args, tmp_path):
     assert ret == 1
     mock_run_module.assert_not_called()
     controller.close.assert_called_once()
+
+
+def test_select_exits_normalizes_lowercase_and_dollar_exit(args):
+    dummy_mod = types.SimpleNamespace(destinations=None)
+    lower_args = argparse.Namespace(**vars(args))
+    lower_args.exit = "$%s" % args.exit.lower()
+    with patch.object(exitmap, "lookup_destinations",
+                      return_value={("93.184.215.14", 8000)}):
+        exits = exitmap.select_exits(lower_args, dummy_mod)
+    assert list(exits.keys()) == [args.exit.upper()]
+
+
+def test_select_exits_parses_exit_file_with_comments_and_bom(args, tmp_path, caplog):
+    fp1 = "50485e03ca39d393bd54d315ceba65e6dd0fddb9"
+    fp2 = "FAF0A8829E39063669FA609B904E0FB8D5E1F23F"
+    exit_file = tmp_path / "exits.txt"
+    exit_file.write_bytes((
+        "\ufeff# header comment\n"
+        "\n"
+        "  $%s  # inline comment\n"
+        "not-a-fingerprint\n"
+        "%s\n"
+        "%s\n" % (fp1, fp1.upper(), fp2)
+    ).encode("utf-8"))
+
+    file_args = argparse.Namespace(**vars(args))
+    file_args.exit = None
+    file_args.exit_file = str(exit_file)
+
+    with patch.object(exitmap, "lookup_destinations", return_value=set()), \
+         patch.object(exitmap.relayselector, "get_exits", return_value={}) as mock_get:
+        exitmap.select_exits(file_args, types.SimpleNamespace(destinations=None))
+
+    assert mock_get.call_args.kwargs["requested_exits"] == [fp1.upper(), fp2]
+    assert 'Ignoring invalid relay fingerprint "not-a-fingerprint"' in caplog.text
+    assert "header comment" not in caplog.text
+
+
+def test_normalize_fingerprint_rejects_empty_and_prefix_or_non_hex_tricks():
+    for bad in ("", "   ", "short", "0x" + "A" * 38, "+" + "A" * 39,
+                "A" * 19 + "_" + "A" * 20, "G" * 40, "\uff10" * 40):
+        assert exitmap._normalize_fingerprint(bad) is None
+
+
+def test_select_exits_rejects_empty_and_invalid_inputs(args, tmp_path):
+    empty_file = tmp_path / "empty.txt"
+    empty_file.write_text("# comment only\n   \n\n")
+
+    file_args = argparse.Namespace(**vars(args))
+    file_args.exit = None
+    file_args.exit_file = str(empty_file)
+
+    with patch.object(exitmap, "lookup_destinations", return_value=set()):
+        with pytest.raises(SystemExit) as exc:
+            exitmap.select_exits(file_args, types.SimpleNamespace(destinations=None))
+    assert exc.value.code == 1
+
+    for bad_exit in ("", "invalid-fp", "0x" + "A" * 38):
+        bad_args = argparse.Namespace(**vars(args))
+        bad_args.exit = bad_exit
+        with patch.object(exitmap, "lookup_destinations", return_value=set()):
+            with pytest.raises(SystemExit) as exc:
+                exitmap.select_exits(bad_args, types.SimpleNamespace(destinations=None))
+        assert exc.value.code == 1
+
+
+def test_main_validates_fingerprints_before_tor_bootstrap(args):
+    for bad_exit in ("", "not-valid"):
+        bad_exit_args = argparse.Namespace(**vars(args))
+        bad_exit_args.tor_dir = None
+        bad_exit_args.exit = bad_exit
+
+        with patch.object(exitmap, "parse_cmd_args", return_value=bad_exit_args), \
+             patch.object(exitmap, "bootstrap_tor") as mock_boot:
+            with pytest.raises(SystemExit) as exc:
+                exitmap.main()
+        assert exc.value.code == 1
+        mock_boot.assert_not_called()
+
+    bad_exit_file_args = argparse.Namespace(**vars(args))
+    bad_exit_file_args.tor_dir = None
+    bad_exit_file_args.exit = None
+    bad_exit_file_args.exit_file = ""
+    with patch.object(exitmap, "parse_cmd_args", return_value=bad_exit_file_args), \
+         patch.object(exitmap, "bootstrap_tor") as mock_boot:
+        with pytest.raises(SystemExit) as exc:
+            exitmap.main()
+    assert exc.value.code == 1
+    mock_boot.assert_not_called()
+
+    for bad_first in ("", "bad-first-hop", "+" + "A" * 39):
+        bad_first_args = argparse.Namespace(**vars(args))
+        bad_first_args.tor_dir = None
+        bad_first_args.first_hop = bad_first
+
+        with patch.object(exitmap, "parse_cmd_args", return_value=bad_first_args), \
+             patch.object(exitmap, "bootstrap_tor") as mock_boot:
+            assert exitmap.main() == 1
+        mock_boot.assert_not_called()
+
+
+def test_main_normalizes_first_hop_and_passes_requested_exits(args, tmp_path):
+    parent_dir = tmp_path / "run"
+    parent_dir.mkdir(mode=0o700)
+    os.chmod(parent_dir, 0o700)
+    tor_dir = parent_dir / "tor"
+
+    run_args = argparse.Namespace(**vars(args))
+    run_args.tor_dir = str(tor_dir)
+    run_args.first_hop = "$%s" % args.first_hop.lower()
+    run_args.exit = args.exit.lower()
+    mock_ctrl = Mock()
+    mock_ctrl.is_alive.return_value = True
+
+    prev_umask = os.umask(0o077)
+    os.umask(prev_umask)
+    stem_logger = exitmap.logging.getLogger("stem")
+    prev_level = stem_logger.level
+    try:
+        with patch.object(exitmap, "parse_cmd_args", return_value=run_args), \
+             patch.object(exitmap, "bootstrap_tor", return_value=(9050, 9051)), \
+             patch.object(exitmap.Controller, "from_port", return_value=mock_ctrl), \
+             patch.object(exitmap.stem.connection, "authenticate"), \
+             patch.object(exitmap.util, "relay_in_consensus", return_value=True), \
+             patch.object(exitmap, "run_module") as mock_run:
+            assert exitmap.main() == 0
+    finally:
+        os.umask(prev_umask)
+        stem_logger.setLevel(prev_level)
+
+    assert run_args.first_hop == args.first_hop.upper()
+    assert mock_run.call_args.kwargs["requested_exits"] == [args.exit.upper()]
+    mock_ctrl.close.assert_called_once()
