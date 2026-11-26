@@ -224,7 +224,7 @@ class EventHandler(object):
         self.finished_event = threading.Event()
 
         self.queue_thread = threading.Thread(target=self.queue_reader)
-        self.queue_thread.daemon = False
+        self.queue_thread.daemon = True
         self.queue_thread.start()
 
     def queue_reader(self):
@@ -392,11 +392,24 @@ class EventHandler(object):
 
         # Signal queue reader to stop
         try:
-            self.queue.put(None)
+            self.queue.put(None, timeout=1.0)
         except Exception:
             pass
 
-        self.queue_thread.join()
+        self.queue_thread.join(timeout=5.0)
+        if self.queue_thread.is_alive():
+            log.warning(
+                "Queue reader thread did not exit in time; "
+                "cancelling queue join."
+            )
+            try:
+                self.queue.close()
+            except Exception:
+                pass
+            try:
+                self.queue.cancel_join_thread()
+            except Exception:
+                pass
 
     def _close_queue(self):
         """
@@ -451,7 +464,10 @@ class EventHandler(object):
                 log.error("Error while closing circuit: %s!", err, exc_info=True)
             # Add this circuit to finished_streams so check_finished()
             # doesn't block waiting for a sentinel that will never arrive.
-            self.queue.put((circ_event.id, None))
+            try:
+                self.queue.put((circ_event.id, None))
+            except (ValueError, OSError):
+                pass
             return
 
         proc = multiprocessing.Process(target=module_call, args=(

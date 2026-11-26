@@ -161,3 +161,59 @@ def test_shutdown_terminates_reaps_and_kills_stalled_children():
     ][2:]
     assert max(kill_indices) < min(second_joins)
     assert not handler.queue_thread.is_alive()
+
+
+def test_shutdown_stops_queue_thread():
+    handler = _make_handler()
+    try:
+        assert handler.queue_thread.daemon is True
+        handler.shutdown()
+        assert not handler.queue_thread.is_alive()
+    finally:
+        if handler.queue_thread.is_alive():
+            try:
+                handler.queue.put(None, timeout=1.0)
+            except Exception:
+                pass
+            handler.queue_thread.join(timeout=1.0)
+
+
+def test_shutdown_cancels_queue_join_when_reader_wedged():
+    handler = _make_handler()
+    real_queue = handler.queue
+    real_thread = handler.queue_thread
+    try:
+        real_queue.put(None)
+        real_thread.join(timeout=5.0)
+    finally:
+        if real_thread.is_alive():
+            real_queue.cancel_join_thread()
+
+    handler.queue = Mock()
+    handler.queue.put.side_effect = RuntimeError("queue full")
+    handler.queue_thread = Mock()
+    handler.queue_thread.is_alive.return_value = True
+
+    handler.shutdown()
+
+    handler.queue_thread.join.assert_called_once_with(timeout=5.0)
+    handler.queue.close.assert_called_once()
+    handler.queue.cancel_join_thread.assert_called_once()
+
+
+def test_new_circuit_ignores_closed_queue_when_descriptor_missing():
+    handler = _make_handler()
+    handler.exit_destinations = {"B" * 40: frozenset()}
+    try:
+        event = Mock()
+        event.status = CircStatus.BUILT
+        event.id = "99"
+        event.path = [("A" * 40, "guard"), ("B" * 40, "exit")]
+
+        with patch.object(handler.queue, "put",
+                          side_effect=ValueError("queue closed")) as mock_put, \
+             patch.object(eventhandler, "get_relay_desc", return_value=None):
+            handler.new_circuit(event)
+        mock_put.assert_called_once_with(("99", None))
+    finally:
+        handler.shutdown()
