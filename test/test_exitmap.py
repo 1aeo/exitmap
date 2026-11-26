@@ -255,3 +255,28 @@ def test_run_module_calls_teardown_if_shutdown_raises(args, stats_obj, monkeypat
         exitmap.run_module("dummy_mr6_shut", args, ctrl, 9050, stats_obj)
 
     assert teardown_calls == [True]
+
+
+def test_main_closes_controller_when_first_hop_not_in_consensus(args, tmp_path):
+    run_args = argparse.Namespace(**vars(args))
+    run_args.tor_dir = str(tmp_path)
+    run_args.first_hop = "A" * 40
+    run_args.analysis_dir = None
+    controller = Mock()
+
+    stem_logger = exitmap.logging.getLogger("stem")
+    prev_level = stem_logger.level
+    try:
+        with patch.object(exitmap, "parse_cmd_args", return_value=run_args), \
+             patch.object(exitmap, "bootstrap_tor", return_value=(9050, 9051)), \
+             patch.object(exitmap.Controller, "from_port", return_value=controller), \
+             patch.object(exitmap.stem.connection, "authenticate"), \
+             patch.object(exitmap.util, "relay_in_consensus", return_value=False), \
+             patch.object(exitmap, "run_module") as mock_run_module:
+            ret = exitmap.main()
+    finally:
+        stem_logger.setLevel(prev_level)
+
+    assert ret == 1
+    mock_run_module.assert_not_called()
+    controller.close.assert_called_once()
