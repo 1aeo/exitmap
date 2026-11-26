@@ -547,11 +547,11 @@ def iter_exit_relays(exit_relays, controller, stats, args):
         assert len(hops) > 1
 
         try:
-            controller.new_circuit(hops)
+            circuit_id = controller.new_circuit(hops)
+            stats.pending_circuits[circuit_id] = hops
         except stem.ControllerError as err:
             stats.failed_circuits += 1
-            log.debug("Circuit with exit relay \"%s\" could not be "
-                      "created: %s", exit_relay, err)
+            stats.record_failed_circuit(hops, "CREATION_FAILED (%s)" % err)
 
         if i != (count - 1):
             sleep(args.build_delay, args.delay_noise)

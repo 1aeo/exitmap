@@ -22,6 +22,7 @@ Implements unit tests.
 """
 
 import unittest
+from unittest.mock import Mock
 import stem.control
 from stem import CircStatus
 import sys
@@ -41,6 +42,7 @@ class TestStats(unittest.TestCase):
         self.assertTrue(str(self.stats))
 
         circ_event = stem.response.events.CircuitEvent("foo", "bar")
+        circ_event.id = "23"
         circ_event.status = CircStatus.FAILED
         circ_event.reason = "foo"
 
@@ -51,6 +53,24 @@ class TestStats(unittest.TestCase):
 
         self.stats.update_circs(circ_event)
         self.assertEqual(self.stats.successful_circuits, 1)
+
+
+def test_stats_failed_circuit(caplog, stats_obj):
+    first_hop, exit_relay = "A" * 40, "B" * 40
+    stats_obj.pending_circuits["23"] = [first_hop, exit_relay]
+    stats_obj.pending_circuits["42"] = [first_hop, "C" * 40]
+    stats_obj.update_circs(
+        Mock(id="23", status=CircStatus.FAILED, reason="TIMEOUT")
+    )
+    stats_obj.update_circs(Mock(id="42", status=CircStatus.BUILT))
+    assert {} == stats_obj.pending_circuits
+    assert {
+        exit_relay: {"first_hop": first_hop, "reason": "TIMEOUT"}
+    } == stats_obj.failed_circuit_relays
+    assert (
+        'Circuit with exit relay "%s" and first hop "%s" failed because: '
+        'TIMEOUT' % (exit_relay, first_hop) in caplog.text
+    )
 
 
 def test_stats_print_progress(caplog, stats_obj):
