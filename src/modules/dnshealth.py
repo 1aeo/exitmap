@@ -36,6 +36,7 @@ import os
 import re
 import signal
 import socket
+import struct
 import time
 import uuid
 from collections import Counter
@@ -81,19 +82,25 @@ _SOCKS_ERROR_MAP = {
     8: "socks_address_unsupported",
 }
 
-# Descriptive error messages per plan:
-# https://github.com/1aeo/exitmap/blob/cursor/tor-exit-relay-dns-plan-bd42/PLAN_TOR_EXIT_DNS_VALIDATOR.md
-# All DNS-layer errors are prefixed with "DNS Error:" to distinguish from Tor Circuit Errors
+# Protocol-layer error prefixes for operator troubleshooting (SOCKS5 RESOLVE 0xF0):
+#   DNS Error:     - exit relay's DNS resolution failed, timed out, or returned wrong IP
+#   Tor Error:     - Tor SOCKS/overlay failure before a DNS answer returned
+#   Tor Circuit:   - Tor circuit construction failed before DNS could be probed
+#   Exitmap Error: - scanner/local-Tor failure, not the exit relay's fault
 _SOCKS_ERROR_MESSAGES = {
-    1: "DNS Error: SOCKS 1 - General failure",
-    2: "DNS Error: SOCKS 2 - Not allowed by ruleset",
+    1: "Tor Error: SOCKS 1 - General failure",
+    2: "Tor Error: SOCKS 2 - Not allowed by ruleset",
     3: "DNS Error: SOCKS 3 - Network unreachable",
     4: "DNS Error: SOCKS 4 - Domain not found (NXDOMAIN)",
-    5: "DNS Error: SOCKS 5 - Connection refused",
-    6: "DNS Error: SOCKS 6 - TTL expired",
-    7: "DNS Error: SOCKS 7 - Command not supported",
-    8: "DNS Error: SOCKS 8 - Address type not supported",
+    5: "Tor Error: SOCKS 5 - Connection refused (circuit closed before reply)",
+    6: "DNS Error: SOCKS 6 - TTL expired (DNS timeout)",
+    7: "Tor Error: SOCKS 7 - Command not supported",
+    8: "Tor Error: SOCKS 8 - Address type not supported",
 }
+
+# SOCKS5 error codes that will not succeed on retry (policy / unsupported command or ATYP).
+# Code 4 is handled explicitly in resolve_with_retry().
+_NON_RETRYABLE_SOCKS_CODES = frozenset({2, 7, 8})
 
 # Regex to extract SOCKS error code (compiled once)
 _SOCKS_ERROR_RE = re.compile(r"(?:error\s*|0x0)([1-8])", re.IGNORECASE)
@@ -270,9 +277,11 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
     for attempt in range(1, retries + 1):
         result["attempt"] = attempt
+        result["error"] = None
         sock = None
         total_start = time.time()
         status = error_msg = None
+        retryable = True
 
         try:
             sock = torsocks.torsocket()
@@ -305,7 +314,7 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             if err_code == 4:
                 if expected_ip:
                     result["status"] = "dns_fail"
-                    result["error"] = "DNS Error: SOCKS 4 - Domain not found (NXDOMAIN)"
+                    result["error"] = _SOCKS_ERROR_MESSAGES[4]
                     log.warning("%s NXDOMAIN for wildcard", exit_url)
                 else:
                     result["status"] = "success"
@@ -315,29 +324,34 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
             # Other SOCKS errors - use descriptive messages with first hop
             status = _SOCKS_ERROR_MAP.get(err_code, "socks_error")
-            base_msg = _SOCKS_ERROR_MESSAGES.get(err_code, f"DNS Error: SOCKS {err_code} - Unknown error")
+            if err_code in _SOCKS_ERROR_MESSAGES:
+                base_msg = _SOCKS_ERROR_MESSAGES[err_code]
+            else:
+                base_msg = "Tor Error: SOCKS - %s" % (err_str or "Unknown error")
             error_msg = _fmt_with_hop(base_msg, first_hop)
+            retryable = err_code not in _NON_RETRYABLE_SOCKS_CODES
 
         except socket.timeout:
             status = "timeout"
             error_msg = _fmt_with_hop("DNS Error: Timeout after %ds" % QUERY_TIMEOUT, first_hop)
 
-        except EOFError:
+        except (EOFError, struct.error):
+            # struct.error: truncated 2-byte port read in torsocks.resolve()
             status = "eof_error"
-            error_msg = _fmt_with_hop("DNS Error: Connection closed unexpectedly", first_hop)
+            error_msg = _fmt_with_hop("Tor Error: Connection closed unexpectedly", first_hop)
 
         except FileNotFoundError:
             # Tor SOCKS socket gone - process likely crashed
             status = "tor_connection_lost"
             error_msg = _fmt_with_hop(
-                "DNS Error: Lost connection to Tor (socket gone) while testing exit %s" % exit_desc.fingerprint[:8],
+                "Exitmap Error: Lost connection to Tor (socket gone) while testing exit %s" % exit_desc.fingerprint[:8],
                 first_hop)
 
         except ConnectionRefusedError:
             # Tor not accepting connections
             status = "tor_connection_refused"
             error_msg = _fmt_with_hop(
-                "DNS Error: Tor refused connection (may be restarting) while testing exit %s" % exit_desc.fingerprint[:8],
+                "Exitmap Error: Tor refused connection (may be restarting) while testing exit %s" % exit_desc.fingerprint[:8],
                 first_hop)
 
         except HardTimeoutError:
@@ -346,7 +360,8 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
 
         except Exception as err:
             status = "exception"
-            error_msg = _fmt_exception(err)
+            error_msg = "Exitmap Error: %s" % _fmt_exception(err)
+            retryable = False
 
         finally:
             # Ensure socket is closed even on error
@@ -362,6 +377,9 @@ def resolve_with_retry(exit_desc, domain, expected_ip=None, retries=MAX_RETRIES,
             result["status"] = status
             result["error"] = error_msg
             log.warning("Attempt %d/%d: %s [%s] %s", attempt, retries, exit_url, status, error_msg)
+
+            if not retryable:
+                return result
 
             if attempt < retries:
                 time.sleep(RETRY_DELAY)
@@ -388,7 +406,7 @@ def do_validation(exit_desc, query_domain, expected_ip, first_hop=None):
                                   attempt=MAX_RETRIES,
                                   first_hop=first_hop)
         except Exception as e:
-            error_msg = _fmt_exception(e)
+            error_msg = "Exitmap Error: %s" % _fmt_exception(e)
             log.error("EXCEPTION %s: %s (first_hop=%s)",
                       exiturl(fp), error_msg, _fmt_first_hop(first_hop))
             result = _make_result(exit_desc, query_domain, expected_ip,
@@ -414,22 +432,22 @@ _UNKNOWN_RELAY = ("unknown", "unknown")
 
 # Mapping from Tor circuit failure reasons to JSON keys and error messages
 _CIRCUIT_FAILURE_MAP = {
-    "TIMEOUT": ("circuit_timeout", "Tor Circuit Error: Construction timed out"),
-    "CONNECTFAILED": ("relay_connect_failed", "Tor Circuit Error: Could not connect to relay"),
-    "NOPATH": ("circuit_no_path", "Tor Circuit Error: No path available"),
-    "RESOURCELIMIT": ("relay_resource_limit", "Tor Circuit Error: Relay at capacity"),
-    "HIBERNATING": ("relay_hibernating", "Tor Circuit Error: Relay is hibernating"),
-    "DESTROYED": ("circuit_destroyed", "Tor Circuit Error: Circuit was closed"),
-    "FINISHED": ("circuit_finished", "Tor Circuit Error: Circuit finished normally"),
-    "OR_CONN_CLOSED": ("relay_connection_closed", "Tor Circuit Error: Connection to relay closed"),
-    "CHANNEL_CLOSED": ("channel_closed", "Tor Circuit Error: Relay channel closed unexpectedly"),
-    "IOERROR": ("io_error", "Tor Circuit Error: I/O error on connection"),
-    "TORPROTOCOL": ("tor_protocol_error", "Tor Circuit Error: Protocol violation"),
-    "INTERNAL": ("tor_internal_error", "Tor Circuit Error: Internal error"),
-    "REQUESTED": ("circuit_requested", "Tor Circuit Error: Circuit close requested"),
-    "NOSUCHSERVICE": ("no_such_service", "Tor Circuit Error: Hidden service not found"),
-    "MEASUREMENT_EXPIRED": ("measurement_expired", "Tor Circuit Error: Measurement expired"),
-    "GUARD_LIMIT_REACHED": ("guard_limit", "Tor Circuit Error: Guard circuit limit reached"),
+    "TIMEOUT": ("circuit_timeout", "Tor Circuit: Construction timed out"),
+    "CONNECTFAILED": ("relay_connect_failed", "Tor Circuit: Could not connect to relay"),
+    "NOPATH": ("circuit_no_path", "Tor Circuit: No path available"),
+    "RESOURCELIMIT": ("relay_resource_limit", "Tor Circuit: Relay at capacity"),
+    "HIBERNATING": ("relay_hibernating", "Tor Circuit: Relay is hibernating"),
+    "DESTROYED": ("circuit_destroyed", "Tor Circuit: Circuit was closed"),
+    "FINISHED": ("circuit_finished", "Tor Circuit: Circuit finished normally"),
+    "OR_CONN_CLOSED": ("relay_connection_closed", "Tor Circuit: Connection to relay closed"),
+    "CHANNEL_CLOSED": ("channel_closed", "Tor Circuit: Relay channel closed unexpectedly"),
+    "IOERROR": ("io_error", "Tor Circuit: I/O error on connection"),
+    "TORPROTOCOL": ("tor_protocol_error", "Tor Circuit: Protocol violation"),
+    "INTERNAL": ("tor_internal_error", "Tor Circuit: Internal error"),
+    "REQUESTED": ("circuit_requested", "Tor Circuit: Circuit close requested"),
+    "NOSUCHSERVICE": ("no_such_service", "Tor Circuit: Hidden service not found"),
+    "MEASUREMENT_EXPIRED": ("measurement_expired", "Tor Circuit: Measurement expired"),
+    "GUARD_LIMIT_REACHED": ("guard_limit", "Tor Circuit: Guard circuit limit reached"),
 }
 
 
@@ -445,7 +463,7 @@ def _get_circuit_failure_info(info):
             detail = raw_reason.split("(", 1)[1][:-1]
         return (
             "circuit_creation_failed",
-            "Tor Circuit Error: Failed to create circuit (%s)" % (detail or ""),
+            "Tor Circuit: Failed to create circuit (%s)" % (detail or ""),
             "CREATION_FAILED",
         )
     if reason_upper in _CIRCUIT_FAILURE_MAP:
@@ -453,7 +471,7 @@ def _get_circuit_failure_info(info):
         return reason_key, error_msg, reason_upper
     return (
         "circuit_failed",
-        "Tor Circuit Error: Unknown failure (%s)" % raw_reason,
+        "Tor Circuit: Unknown failure (%s)" % raw_reason,
         raw_reason,
     )
 
@@ -566,7 +584,7 @@ def _write_terminated_relays(relays, controller=None):
         _write_result({
             "exit_fingerprint": fp, "exit_nickname": nickname, "exit_address": address,
             "status": "timeout", "run_id": _run_id, "timestamp": now,
-            "error": "DNS Error: Timeout (terminated during retry)",
+            "error": "Exitmap Error: Probe terminated during shutdown grace timeout",
             "tor_metrics_url": TOR_METRICS_URL.format(fp),
             "query_domain": None, "expected_ip": None, "resolved_ip": None,
             "timing": None, "mode": None, "first_hop": None, "attempt": None,
