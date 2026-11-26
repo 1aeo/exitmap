@@ -2,6 +2,8 @@ import argparse
 import sys
 import time
 import warnings
+
+import pytest
 # hacky, until exitmap is an installable package
 sys.path.insert(0, 'src/')  # noqa
 import exitmap
@@ -40,6 +42,21 @@ def test_parser_cmd_args(mock_argv, args_default):
     parsed_args = exitmap.parse_cmd_args()
     parsed_args.tor_dir = None
     assert args_default == parsed_args
+
+
+def test_parse_cmd_args_config_booleans(tmp_path, monkeypatch):
+    config_file = tmp_path / "exitmaprc"
+    config_file.write_text("[Defaults]\nbad_exits = false\nall_exits = true\n")
+    monkeypatch.setattr(
+        sys, "argv", ["exitmap.py", "-f", str(config_file), "checktest"]
+    )
+    parsed_args = exitmap.parse_cmd_args()
+    assert parsed_args.bad_exits is False
+    assert parsed_args.all_exits is True
+
+    config_file.write_text("[Defaults]\nbad_exits = foo\n")
+    with pytest.raises(SystemExit):
+        exitmap.parse_cmd_args()
 
 
 def test_select_exits(args, modules):
