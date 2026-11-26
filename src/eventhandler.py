@@ -329,7 +329,10 @@ class EventHandler(object):
         """
         Wait for the scan to finish.
         """
-        self.finished_event.wait()
+        while not self.finished_event.wait(timeout=1.0):
+            if not self.controller.is_alive():
+                self.check_finished()
+                break
 
     def shutdown(self):
         """

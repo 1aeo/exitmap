@@ -337,6 +337,10 @@ def main():
                 run_module(module_name, args, controller, socks_port, stats)
             except error.ExitSelectionError as err:
                 log.error("Failed to run because : %s", err)
+
+            if not controller.is_alive():
+                log.error("Tor controller disconnected; aborting scan.")
+                return 1
     finally:
         try:
             # Silence stem's SocketClosed reader-thread spam: after
@@ -528,6 +532,11 @@ def iter_exit_relays(exit_relays, controller, stats, args):
 
     for i, exit_relay in enumerate(exit_relays):
 
+        if not controller.is_alive():
+            log.error("Terminating circuit creation because the controller "
+                      "is not alive.")
+            break
+
         # Determine the hops in our next circuit.
 
         if args.first_hop:
@@ -549,6 +558,10 @@ def iter_exit_relays(exit_relays, controller, stats, args):
         try:
             controller.new_circuit(hops)
         except stem.ControllerError as err:
+            if not controller.is_alive():
+                log.error("Terminating circuit creation because the "
+                          "controller is not alive.")
+                break
             stats.failed_circuits += 1
             log.debug("Circuit with exit relay \"%s\" could not be "
                       "created: %s", exit_relay, err)

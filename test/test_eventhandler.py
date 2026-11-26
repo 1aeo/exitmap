@@ -86,3 +86,17 @@ def test_new_circuit_ignores_unselected_exit():
 
     assert handler.stats.successful_circuits == 0
     mock_proc.assert_not_called()
+
+
+def test_wait_unblocks_when_controller_dies():
+    handler = _make_handler()
+    handler.controller.is_alive.return_value = False
+
+    try:
+        with patch.object(handler.finished_event, "wait",
+                          return_value=False) as mock_wait:
+            handler.wait()
+        mock_wait.assert_called_once_with(timeout=1.0)
+        assert handler.finished_event.is_set()
+    finally:
+        handler.shutdown()

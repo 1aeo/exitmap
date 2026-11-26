@@ -4,10 +4,11 @@ import importlib.util
 import os
 import sys
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import warnings
 
 import pytest
+import stem
 # hacky, until exitmap is an installable package
 sys.path.insert(0, 'src/')  # noqa
 import exitmap
@@ -107,3 +108,50 @@ def test_bin_exitmap_preserves_exit_status_and_exceptions(args):
         with pytest.raises(RuntimeError, match="boom"):
             bin_mod.main()
     mock_rm.assert_called_once_with(args.tor_dir)
+
+
+def test_iter_exit_relays_stops_when_controller_dies(args, stats_obj):
+    run_args = argparse.Namespace(**vars(args))
+
+    pre_dead = Mock()
+    pre_dead.is_alive.return_value = False
+    with patch.object(exitmap, "sleep") as mock_sleep:
+        exitmap.iter_exit_relays(["A" * 40, "B" * 40], pre_dead, stats_obj, run_args)
+    pre_dead.new_circuit.assert_not_called()
+    assert stats_obj.failed_circuits == 0
+    mock_sleep.assert_not_called()
+
+    mid_dead = Mock()
+    mid_dead.is_alive.side_effect = [True, False]
+    mid_dead.new_circuit.side_effect = stem.SocketClosed("closed")
+    with patch.object(exitmap, "sleep") as mock_sleep:
+        exitmap.iter_exit_relays(["A" * 40, "B" * 40], mid_dead, stats_obj, run_args)
+    assert mid_dead.new_circuit.call_count == 1
+    assert stats_obj.failed_circuits == 0
+    mock_sleep.assert_not_called()
+
+
+def test_main_returns_nonzero_and_skips_modules_when_controller_dies(args, tmp_path):
+    run_args = argparse.Namespace(**vars(args))
+    run_args.tor_dir = str(tmp_path)
+    run_args.first_hop = None
+    run_args.analysis_dir = None
+    run_args.module = ["checktest", "dnsresolution"]
+    controller = Mock()
+    controller.is_alive.return_value = False
+
+    stem_logger = exitmap.logging.getLogger("stem")
+    prev_level = stem_logger.level
+    try:
+        with patch.object(exitmap, "parse_cmd_args", return_value=run_args), \
+             patch.object(exitmap, "bootstrap_tor", return_value=(9050, 9051)), \
+             patch.object(exitmap.Controller, "from_port", return_value=controller), \
+             patch.object(exitmap.stem.connection, "authenticate"), \
+             patch.object(exitmap, "run_module") as mock_run_module:
+            ret = exitmap.main()
+    finally:
+        stem_logger.setLevel(prev_level)
+
+    assert ret == 1
+    mock_run_module.assert_called_once()
+    controller.close.assert_called_once()
