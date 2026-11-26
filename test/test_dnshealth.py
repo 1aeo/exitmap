@@ -30,9 +30,10 @@ Tests cover:
 """
 
 import json
+import socket
+import struct
 import sys
 import time
-import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -602,6 +603,7 @@ class TestResolveWithRetry:
 
         assert result["status"] == "success"
         assert result["attempt"] == 2
+        assert result["error"] is None
 
     def test_socket_closed_on_error(self, mock_exit_desc, mock_torsocket):
         """Socket should be closed even on error."""
@@ -796,8 +798,10 @@ class TestTeardown:
         assert failures[exit_a]["first_hop"] == guard
         assert failures[exit_a]["exit_nickname"] == "ExitA"
         assert failures[exit_a]["first_hop_nickname"] == "GuardG"
+        assert failures[exit_a]["error"].startswith("Tor Circuit: ")
         assert failures[exit_b]["circuit_reason"] == "circuit_creation_failed"
         assert failures[exit_b]["tor_reason"] == "CREATION_FAILED"
+        assert failures[exit_b]["error"].startswith("Tor Circuit: ")
         assert "No path" in failures[exit_b]["error"]
 
         with open(stats_path) as f:
@@ -820,7 +824,11 @@ class TestTeardown:
 
         out_path = temp_analysis_dir / ("dnshealth_%s.json" % fp_new)
         assert out_path.exists()
-        assert json.loads(out_path.read_text())["status"] == "timeout"
+        with open(out_path) as f:
+            out_data = json.load(f)
+        assert out_data["status"] == "timeout"
+        assert out_data["exit_fingerprint"] == fp_new
+        assert out_data["error"].startswith("Exitmap Error: ")
         assert json.loads(existing_path.read_text())["status"] == "success"
 
     def test_teardown_counts_worker_result_files(self, temp_analysis_dir, caplog):
@@ -836,6 +844,223 @@ class TestTeardown:
 
         assert "3 total | 2 success (66.7%)" in caplog.text
         assert "'dns_fail': 1" in caplog.text
+
+
+# === Test: Protocol-layer error prefixes and retry policy ===
+
+class TestErrorPrefixesAndRetryPolicy:
+    """Tests for 4-layer error prefixes, stale error clearing, and retry behavior."""
+
+    @pytest.mark.parametrize("exc,expected_status,expected_prefix", [
+        (error.SOCKSv5Error("SOCKS Server error 4"), "dns_fail", "DNS Error: "),
+        (error.SOCKSv5Error("SOCKS Server error 3"), "network_unreachable", "DNS Error: "),
+        (error.SOCKSv5Error("SOCKS Server error 6"), "ttl_expired", "DNS Error: "),
+        (socket.timeout(), "timeout", "DNS Error: "),
+        (error.SOCKSv5Error("SOCKS Server error 1"), "socks_general_failure", "Tor Error: "),
+        (error.SOCKSv5Error("SOCKS Server error 2"), "socks_ruleset_blocked", "Tor Error: "),
+        (error.SOCKSv5Error("SOCKS Server error 5"), "connection_refused", "Tor Error: "),
+        (error.SOCKSv5Error("SOCKS Server error 7"), "socks_command_unsupported", "Tor Error: "),
+        (error.SOCKSv5Error("SOCKS Server error 8"), "socks_address_unsupported", "Tor Error: "),
+        (EOFError("eof"), "eof_error", "Tor Error: "),
+        (FileNotFoundError("no socket"), "tor_connection_lost", "Exitmap Error: "),
+        (ConnectionRefusedError("refused"), "tor_connection_refused", "Exitmap Error: "),
+        (RuntimeError("boom"), "exception", "Exitmap Error: "),
+    ])
+    def test_resolve_error_prefixes(
+        self, mock_exit_desc, mock_torsocket, exc, expected_status, expected_prefix
+    ):
+        """Each failure mode should emit its accurate protocol-layer prefix."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = exc
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1
+            )
+
+        assert result["status"] == expected_status
+        assert result["error"].startswith(expected_prefix)
+
+    def test_wrong_ip_prefix(self, mock_exit_desc, mock_torsocket):
+        """Wrong IP response should use the DNS Error prefix."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.return_value = "1.2.3.4"
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1
+            )
+
+        assert result["status"] == "wrong_ip"
+        assert result["error"].startswith("DNS Error: ")
+
+    def test_do_validation_hard_timeout_and_exception_prefixes(
+        self, mock_exit_desc, temp_analysis_dir
+    ):
+        """Hard timeout uses DNS Error and outer exception uses Exitmap Error."""
+        dnshealth.setup()
+
+        with patch.object(dnshealth, "resolve_with_retry", side_effect=dnshealth.HardTimeoutError()):
+            dnshealth.do_validation(mock_exit_desc, "test.example.com", "64.65.4.1")
+        with open(temp_analysis_dir / f"dnshealth_{mock_exit_desc.fingerprint}.json") as f:
+            hard_res = json.load(f)
+        assert hard_res["status"] == "hard_timeout"
+        assert hard_res["error"].startswith("DNS Error: ")
+
+        with patch.object(dnshealth, "resolve_with_retry", side_effect=RuntimeError("unexpected")):
+            dnshealth.do_validation(mock_exit_desc, "test.example.com", "64.65.4.1")
+        with open(temp_analysis_dir / f"dnshealth_{mock_exit_desc.fingerprint}.json") as f:
+            exc_res = json.load(f)
+        assert exc_res["status"] == "exception"
+        assert exc_res["error"] == "Exitmap Error: RuntimeError: unexpected"
+
+    @pytest.mark.parametrize("raw_msg", ["SOCKS Server error", "SOCKS Server error 9"])
+    def test_unparsed_socks_error_preserves_raw_message(
+        self, mock_exit_desc, mock_torsocket, raw_msg
+    ):
+        """Unparsed SOCKS errors should use Tor Error and keep the raw message without SOCKS None."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = error.SOCKSv5Error(raw_msg)
+
+        with use_socket():
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=1
+            )
+
+        assert result["status"] == "socks_error"
+        assert result["error"].startswith("Tor Error: SOCKS - ")
+        assert raw_msg in result["error"]
+        assert "SOCKS None" not in result["error"]
+
+    def test_circuit_failure_prefixes_and_reason_keys(self, temp_analysis_dir):
+        """Circuit failure mapping should use Tor Circuit prefix and preserve reason_key."""
+        known_key, known_msg, known_tor = dnshealth._get_circuit_failure_info({"reason": "TIMEOUT"})
+        assert known_key == "circuit_timeout"
+        assert known_msg == "Tor Circuit: Construction timed out"
+        assert known_tor == "TIMEOUT"
+
+        create_key, create_msg, create_tor = dnshealth._get_circuit_failure_info(
+            {"reason": "CREATION_FAILED", "error": "No path"}
+        )
+        assert create_key == "circuit_creation_failed"
+        assert create_msg == "Tor Circuit: Failed to create circuit (No path)"
+        assert create_tor == "CREATION_FAILED"
+
+        unk_key, unk_msg, unk_tor = dnshealth._get_circuit_failure_info({"reason": "SOME_NEW_REASON"})
+        assert unk_key == "circuit_failed"
+        assert unk_msg == "Tor Circuit: Unknown failure (SOME_NEW_REASON)"
+        assert unk_tor == "SOME_NEW_REASON"
+
+        fp = "T" * 40
+        dnshealth.setup()
+        assert dnshealth._write_terminated_relays([fp]) == 1
+        with open(temp_analysis_dir / f"dnshealth_{fp}.json") as f:
+            term = json.load(f)
+        assert term["status"] == "timeout"
+        assert term["error"] == "Exitmap Error: Probe terminated during shutdown grace timeout"
+
+    def test_stale_error_cleared_when_retry_succeeds(self, mock_exit_desc, mock_torsocket):
+        """An error on attempt 1 must be cleared when attempt 2 succeeds (wildcard and NXDOMAIN)."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = [socket.timeout(), "64.65.4.1"]
+
+        with use_socket(), patch.object(dnshealth.time, "sleep"):
+            wildcard_res = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3
+            )
+
+        assert wildcard_res["status"] == "success"
+        assert wildcard_res["attempt"] == 2
+        assert wildcard_res["error"] is None
+
+        mock_socket.resolve.side_effect = [
+            socket.timeout(),
+            error.SOCKSv5Error("SOCKS Server error 4"),
+        ]
+        with use_socket(), patch.object(dnshealth.time, "sleep"):
+            nxdomain_res = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip=None, retries=3
+            )
+
+        assert nxdomain_res["status"] == "success"
+        assert nxdomain_res["resolved_ip"] == "NXDOMAIN"
+        assert nxdomain_res["attempt"] == 2
+        assert nxdomain_res["error"] is None
+
+    @pytest.mark.parametrize("exc", [
+        error.SOCKSv5Error("SOCKS Server error 2"),
+        error.SOCKSv5Error("SOCKS Server error 7"),
+        error.SOCKSv5Error("SOCKS Server error 8"),
+        RuntimeError("unexpected exception"),
+    ])
+    def test_non_retryable_errors_stop_after_one_attempt(
+        self, mock_exit_desc, mock_torsocket, exc
+    ):
+        """Non-retryable SOCKS codes (2, 7, 8) and generic exceptions should not retry."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = exc
+
+        with use_socket(), patch.object(dnshealth.time, "sleep") as mock_sleep:
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3
+            )
+
+        assert mock_socket.resolve.call_count == 1
+        assert result["attempt"] == 1
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.parametrize("exc", [
+        error.SOCKSv5Error("SOCKS Server error 1"),
+        error.SOCKSv5Error("SOCKS Server error 3"),
+        error.SOCKSv5Error("SOCKS Server error 5"),
+        error.SOCKSv5Error("SOCKS Server error 6"),
+        error.SOCKSv5Error("SOCKS Server error"),
+        socket.timeout(),
+        EOFError("eof"),
+        struct.error("unpack requires a buffer of 2 bytes"),
+        FileNotFoundError("no socket"),
+        ConnectionRefusedError("refused"),
+    ])
+    def test_retryable_errors_retry_up_to_limit(
+        self, mock_exit_desc, mock_torsocket, exc
+    ):
+        """Transient SOCKS and transport/connection errors should retry up to retries."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = exc
+
+        with use_socket(), patch.object(dnshealth.time, "sleep") as mock_sleep:
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3
+            )
+
+        assert mock_socket.resolve.call_count == 3
+        assert result["attempt"] == 3
+        assert mock_sleep.call_count == 2
+
+    def test_struct_error_treated_as_retryable_eof_error(
+        self, mock_exit_desc, mock_torsocket
+    ):
+        """Truncated SOCKS port unpack (struct.error) should classify as eof_error and retry."""
+        dnshealth.setup()
+        mock_socket, use_socket = mock_torsocket
+        mock_socket.resolve.side_effect = struct.error("unpack requires a buffer of 2 bytes")
+
+        with use_socket(), patch.object(dnshealth.time, "sleep") as mock_sleep:
+            result = dnshealth.resolve_with_retry(
+                mock_exit_desc, "test.example.com", expected_ip="64.65.4.1", retries=3
+            )
+
+        assert mock_socket.resolve.call_count == 3
+        assert result["attempt"] == 3
+        assert result["status"] == "eof_error"
+        assert result["error"] == "Tor Error: Connection closed unexpectedly (first_hop=<random>)"
+        assert mock_sleep.call_count == 2
 
 
 # === Test: Environment variable configuration ===
