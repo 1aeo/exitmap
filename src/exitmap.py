@@ -52,6 +52,12 @@ from stats import Statistics
 
 log = logging.getLogger(__name__)
 
+MAX_PENDING_CIRCUITS = max(
+    1, min(1024, int(os.environ.get("MAX_PENDING_CIRCUITS", "128")))
+)
+RELIABLE_FIRST_HOP = os.environ.get(
+    "RELIABLE_FIRST_HOP", "").lower() in ("1", "true", "yes", "y")
+
 
 def bootstrap_tor(args):
     """
@@ -62,7 +68,7 @@ def bootstrap_tor(args):
              "might take a while.", args.tor_dir)
 
     if not args.first_hop:
-        if args.reliable_first_hop:
+        if args.reliable_first_hop or RELIABLE_FIRST_HOP:
             log.info("No first hop given.  Using filtered reliable guards "
                      "as first hops for circuits.")
         else:
@@ -80,7 +86,9 @@ def bootstrap_tor(args):
                 "DataDirectory": args.tor_dir,
                 "CookieAuthentication": "1",
                 "LearnCircuitBuildTimeout": "0",
-                "CircuitBuildTimeout": "40",
+                "CircuitBuildTimeout": os.environ.get(
+                    "TOR_CIRCUIT_BUILD_TIMEOUT", "20"
+                ),
                 # #36: Set this option at runtime, otherwise it doesn't
                 # bootstrap with an existing DataDirectory
                 # "__DisablePredictedCircuits": "1",
@@ -89,7 +97,7 @@ def bootstrap_tor(args):
                 "UseMicroDescriptors": "0",
                 "PathsNeededToBuildCircuits": "0.95",
             },
-            timeout=300,
+            timeout=int(os.environ.get("TOR_BOOTSTRAP_TIMEOUT", "90")),
             take_ownership=True,
             completion_percent=75,
             init_msg_handler=partial_parse_log_lines,
@@ -371,6 +379,9 @@ def main():
     controller.set_conf("FetchServerDescriptors", "0")
 
     try:
+        controller.set_conf("MaxClientCircuitsPending",
+                            str(MAX_PENDING_CIRCUITS))
+        log.debug("Set MaxClientCircuitsPending to %d", MAX_PENDING_CIRCUITS)
         cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
         if args.first_hop and (
                 not util.relay_in_consensus(args.first_hop,
@@ -666,7 +677,7 @@ def _select_first_hops(args):
     :rtype: list
     """
     cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
-    if args.reliable_first_hop:
+    if args.reliable_first_hop or RELIABLE_FIRST_HOP:
         fingerprints = list(dict.fromkeys(relayselector.get_fingerprints(
             cached_consensus_path,
             include_flags={
