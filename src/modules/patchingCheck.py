@@ -102,7 +102,7 @@ def setup(**kwargs):
         check_files[url] = [tmp_file, sha256_file(tmp_file)]
 
 
-def teardown():
+def teardown(**kwargs):
     """
     Perform one-off teardown tasks, i.e., remove reference files.
     """

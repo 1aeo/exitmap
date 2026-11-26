@@ -613,3 +613,32 @@ def test_run_module_resets_and_logs_failed_circuits_per_module(args, stats_obj, 
 
     assert stats_obj.failed_circuit_relays == {}
     assert "C" * 40 not in caplog.text
+
+
+def test_run_module_passes_stats_to_teardown_and_patchingcheck_compat(
+        args, stats_obj, monkeypatch):
+    seen = []
+
+    def capture_teardown(stats=None, **kwargs):
+        seen.append(stats)
+
+    dummy_mod = types.SimpleNamespace(
+        teardown=capture_teardown,
+        probe=lambda **kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "modules.dummy_teardown_stats", dummy_mod)
+    monkeypatch.setattr(
+        exitmap.modules, "dummy_teardown_stats", dummy_mod, raising=False
+    )
+
+    with patch.object(exitmap, "select_exits", return_value={"E" * 40: frozenset()}), \
+         patch.object(exitmap, "EventHandler"), \
+         patch.object(exitmap, "iter_exit_relays"):
+        exitmap.run_module("dummy_teardown_stats", args, Mock(), 9050, stats_obj)
+
+    assert seen == [stats_obj]
+
+    import modules.patchingCheck as patchingCheck
+    monkeypatch.setattr(patchingCheck, "check_files", {})
+    patchingCheck.teardown()
+    patchingCheck.teardown(stats=stats_obj)

@@ -59,3 +59,10 @@ If `target_host` and/or a  `target_port` are defined in the command line, values
     destinations = None
 
 In that case, all available relays will be selected without influence of the target host and port.
+
+Modules may also optionally define `setup()` and `teardown()` lifecycle hooks:
+
+- `setup(consensus=..., target=..., **kwargs)`: Called once before exit
+  selection.  Modules should accept `**kwargs` for forward compatibility.
+- `teardown(stats=..., **kwargs)`: Called once after the module run finishes.
+  Modules should accept `**kwargs` for forward compatibility.

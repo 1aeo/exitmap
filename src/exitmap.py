@@ -628,7 +628,7 @@ def run_module(module_name, args, controller, socks_port, stats,
         if can_teardown and hasattr(module, "teardown"):
             log.debug("Calling module's teardown() function.")
             try:
-                module.teardown()
+                module.teardown(stats=stats)
             except Exception as err:
                 log.warning("Module teardown() failed: %s", err)
 
