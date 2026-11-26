@@ -186,6 +186,12 @@ def parse_cmd_args():
                              "is used as first hop.  This relay should be "
                              "under your control.")
 
+    parser.add_argument("-r", "--reliable-first-hop", action="store_true",
+                        help="Only use fast, stable and authority-measured "
+                             "guards with a consensus bandwidth of at least "
+                             "5000 KB/s as random first hops.  By default, "
+                             "all relays in the consensus are used.")
+
     parser.add_argument("-o", "--logfile", type=str, default=None,
                         help="Filename to which log output should be written "
                              "to.")
@@ -225,7 +231,15 @@ def parse_cmd_args():
 
     parser.set_defaults(**defaults)
 
-    return parser.parse_args(remaining_argv)
+    args = parser.parse_args(remaining_argv)
+
+    # argparse cannot check this for us, as the first hop might be set in the
+    # configuration file.
+    if args.first_hop and args.reliable_first_hop:
+        parser.error("-r/--reliable-first-hop cannot be used together with "
+                     "-i/--first-hop")
+
+    return args
 
 
 def get_modules():
@@ -536,7 +550,25 @@ def iter_exit_relays(exit_relays, controller, stats, args):
 
     before = datetime.datetime.now()
     cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
-    fingerprints = relayselector.get_fingerprints(cached_consensus_path)
+    if args.reliable_first_hop:
+        fingerprints = relayselector.get_fingerprints(
+            cached_consensus_path,
+            include_flags={stem.Flag.GUARD, stem.Flag.STABLE, stem.Flag.FAST,
+                           stem.Flag.RUNNING, stem.Flag.VALID},
+            exclude_flags={stem.Flag.BADEXIT},
+            min_bandwidth_kb=5000,
+            require_measured_relays=True)
+        # We need two of them, as an exit relay is not its own first hop.
+        if len(fingerprints) > 1:
+            log.info("Using %d reliable guards for first hop.",
+                     len(fingerprints))
+        else:
+            log.warning("Fewer than two reliable guards in the consensus.  "
+                        "Using all relays as first hops.")
+            fingerprints = relayselector.get_fingerprints(
+                cached_consensus_path)
+    else:
+        fingerprints = relayselector.get_fingerprints(cached_consensus_path)
     count = len(exit_relays)
 
     # Start building a circuit for every exit relay we got.
