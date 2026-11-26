@@ -319,14 +319,14 @@ def main():
 
     controller.set_conf("FetchServerDescriptors", "0")
 
-    cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
-    if args.first_hop and (not util.relay_in_consensus(args.first_hop,
-                                                       cached_consensus_path)):
-        log.critical("Given first hop \"%s\" not found in consensus.  Is it"
-                     " offline?", args.first_hop)
-        return 1
-
     try:
+        cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
+        if args.first_hop and (not util.relay_in_consensus(args.first_hop,
+                                                           cached_consensus_path)):
+            log.critical("Given first hop \"%s\" not found in consensus.  Is it"
+                         " offline?", args.first_hop)
+            return 1
+
         for module_name in args.module:
 
             if args.analysis_dir is not None:
