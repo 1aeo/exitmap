@@ -39,6 +39,14 @@ def test_get_exits(tor_dir):
     assert len(exits) > 0
 
 
+def test_get_exits_requested_exits_empty_and_lowercase(tor_dir):
+    assert relayselector.get_exits(tor_dir, requested_exits=[]) == {}
+
+    fpr = "50485E03CA39D393BD54D315CEBA65E6DD0FDDB9"
+    exits = relayselector.get_exits(tor_dir, requested_exits=[fpr.lower()])
+    assert list(exits.keys()) == [fpr]
+
+
 def test_get_exit_policies(cached_descriptors_path):
     exit_policies = relayselector.get_exit_policies(cached_descriptors_path)
     assert isinstance(
