@@ -54,3 +54,16 @@ If `target_host` and/or a  `target_port` are defined in the command line, values
     destinations = None
 
 In that case, all available relays will be selected without influence of the target host and port.
+
+Your module can also define the functions `setup()` and `teardown()`.  They are
+called with keyword arguments only and should accept `**kwargs`, as further
+arguments might be added in the future:
+
+1. `setup()` is called once before the scan starts.  Its arguments are
+   `consensus`, a dictionary which maps the fingerprints of all relays in the
+   consensus to their router status entries, and `target`, the host defined on
+   the command line with -H.  `target` is only passed if -H is used.
+
+2. `teardown()` is called once after the scan is finished.  Its argument is
+   `stats`, the `Statistics` object (see stats.py) which is shared by all
+   modules exitmap is run with.
