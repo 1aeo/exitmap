@@ -23,7 +23,7 @@ From an implementation point of view, there are two types of modules:
 
 The function signature of modules is:
 
-    def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor)
+    def probe(exit_desc, target_host, target_port, run_python_over_tor, run_cmd_over_tor, **kwargs)
 
 The arguments are:
 
@@ -41,6 +41,10 @@ The arguments are:
 5. `run_cmd_over_tor`: Expects a command (as first argument) and its parameters
    (as subsequent arguments).  The command's network interaction is then routed
    over Tor using `torsocks`.
+
+6. `**kwargs`: Further keyword arguments which your module does not have to
+   make use of.  One of them is `first_hop`, the fingerprint of the first hop
+   of the circuit to the exit relay.
 
 Finally, you must define the global variable `destinations` in your module.  It
 determines the default destinations---as tuples---your module will connect to.

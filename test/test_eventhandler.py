@@ -105,3 +105,21 @@ def test_queue_reader_notes_messages(handler):
                               return_value=23):
                 handler.queue_reader()
         assert 23 == handler.last_message
+
+
+def test_module_call_passes_first_hop():
+    probe = Mock()
+    eventhandler.module_call(
+        Mock(), probe, "23", 9050, None, None, None, None, None, "A" * 40
+    )
+    assert "A" * 40 == probe.call_args.kwargs["first_hop"]
+
+
+def test_new_circuit_passes_first_hop(handler):
+    first_hop, exit_relay = "A" * 40, "B" * 40
+    handler.exit_destinations[exit_relay] = set()
+    circ_event = Mock(status=CircStatus.BUILT,
+                      path=[(first_hop, "foo"), (exit_relay, "bar")])
+    with patch.object(eventhandler.multiprocessing, "Process") as process:
+        handler.new_circuit(circ_event)
+    assert first_hop in process.call_args.kwargs["args"]

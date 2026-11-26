@@ -144,7 +144,7 @@ class Attacher(object):
 
 def module_call(queue, module, circ_id, socks_port,
                 exit_desc, run_cmd_over_tor, destinations,
-                target_host, target_port):
+                target_host, target_port, first_hop):
     """
     Run the module and then inform the event handler.
 
@@ -186,7 +186,8 @@ def module_call(queue, module, circ_id, socks_port,
             run_cmd_over_tor=run_cmd_over_tor,
             destinations=destinations,
             target_host=target_host,
-            target_port=target_port
+            target_port=target_port,
+            first_hop=first_hop
         )
     except KeyboardInterrupt:
         log.debug("Ignoring `KeyboardInterrupt`")
@@ -465,7 +466,8 @@ class EventHandler(object):
             run_cmd_over_tor,
             self.exit_destinations[exit_fpr],
             self.target_host,
-            self.target_port
+            self.target_port,
+            circ_event.path[0][0]
         ))
         proc.daemon = True
         # A process which is forked while another thread is writing a log
