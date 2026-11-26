@@ -223,7 +223,7 @@ class EventHandler(object):
         self.finished_event = threading.Event()
 
         self.queue_thread = threading.Thread(target=self.queue_reader)
-        self.queue_thread.daemon = False
+        self.queue_thread.daemon = True
         self.queue_thread.start()
 
     def queue_reader(self):
@@ -369,7 +369,11 @@ class EventHandler(object):
         except Exception:
             pass
 
-        self.queue_thread.join()
+        self.queue_thread.join(timeout=5)
+        if self.queue_thread.is_alive():
+            log.warning("Thread reading from IPC queue did not terminate.")
+            # Don't wait for the queue's feeder thread at exit, either.
+            self.queue.cancel_join_thread()
 
     def _close_queue(self):
         """
