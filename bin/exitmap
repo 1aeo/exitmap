@@ -36,9 +36,7 @@ def main():
     failed = 0
 
     try:
-        exitmap_main()
-        # Here there is no need for sys.exit(0) when exitmap_main doesn't raise
-        # an exception.
+        failed = exitmap_main()
 
     except KeyboardInterrupt:
         failed = 1
@@ -50,7 +48,7 @@ def main():
             print(
               f"Warning: could not remove {args.tor_dir}: {e}", file=sys.stderr
             )
-        sys.exit(failed)
+    sys.exit(failed)
 
 if __name__ == "__main__":
     main()
