@@ -107,6 +107,15 @@ def test_queue_reader_notes_messages(handler):
         assert 23 == handler.last_message
 
 
+def test_shutdown_reaps_terminated_processes(handler):
+    proc = Mock(pid=1)
+    with patch.object(eventhandler.multiprocessing, "active_children",
+                      return_value=[proc]):
+        handler.shutdown()
+    proc.terminate.assert_called_once()
+    proc.join.assert_called_once()
+
+
 def test_module_call_passes_first_hop():
     probe = Mock()
     eventhandler.module_call(

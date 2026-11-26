@@ -381,6 +381,8 @@ class EventHandler(object):
                 proc.pid, proc.name
             )
             proc.terminate()
+            # Wait for the process, so it does not remain as a zombie.
+            proc.join(timeout=1)
 
         if hasattr(self.module, "teardown"):
             log.debug("Calling module's teardown() function.")
