@@ -413,3 +413,21 @@ def test_main_normalizes_first_hop_and_passes_requested_exits(args, tmp_path):
     assert run_args.first_hop == args.first_hop.upper()
     assert mock_run.call_args.kwargs["requested_exits"] == [args.exit.upper()]
     mock_ctrl.close.assert_called_once()
+
+
+def test_parse_cmd_args_config_booleans(tmp_path, monkeypatch, caplog):
+    cfg = tmp_path / "exitmaprc"
+    cfg.write_text("[Defaults]\nbad_exits = false\nall_exits = true\n")
+    monkeypatch.setattr(sys, "argv", ["exitmap", "-f", str(cfg), "checktest"])
+    parsed = exitmap.parse_cmd_args()
+    assert parsed.bad_exits is False
+    assert parsed.all_exits is True
+
+    bad_cfg = tmp_path / "bad_exitmaprc"
+    bad_cfg.write_text("[Defaults]\nbad_exits = maybe\n")
+    monkeypatch.setattr(
+        sys, "argv", ["exitmap", "-f", str(bad_cfg), "checktest"]
+    )
+    parsed_bad = exitmap.parse_cmd_args()
+    assert parsed_bad.bad_exits is False
+    assert 'Invalid boolean for "bad_exits"' in caplog.text

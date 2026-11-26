@@ -133,7 +133,6 @@ def parse_cmd_args():
         defaults = {}
 
     parser = argparse.ArgumentParser(parents=[parser])
-    parser.set_defaults(**defaults)
 
     # Now, load the arguments given over the command line.
 
@@ -216,6 +215,21 @@ def parse_cmd_args():
     parser.add_argument("module", nargs='+',
                         help="Run the given module (available: %s)." %
                         ", ".join(get_modules()))
+
+    bool_opts = {
+        action.dest for action in parser._actions
+        if isinstance(action.default, bool)
+    }
+    for bool_opt in bool_opts:
+        if bool_opt in defaults and not isinstance(defaults[bool_opt], bool):
+            try:
+                defaults[bool_opt] = config_parser.getboolean(
+                    "Defaults", bool_opt
+                )
+            except ValueError as err:
+                log.warning("Invalid boolean for \"%s\" in \"%s\": %s",
+                            bool_opt, config_file, err)
+                del defaults[bool_opt]
 
     parser.set_defaults(**defaults)
 
