@@ -302,13 +302,12 @@ class EventHandler(object):
 
             # Did all circuits either build or fail?
             circs_done = ((self.stats.failed_circuits +
-                           self.stats.successful_circuits) ==
+                           self.stats.successful_circuits) >=
                           self.stats.total_circuits)
 
-            # Was every built circuit attached to a stream?
+            # Was every built circuit finished by a stream/module?
             streams_done = (self.stats.finished_streams >=
-                            (self.stats.successful_circuits -
-                             self.stats.failed_circuits))
+                            self.stats.successful_circuits)
 
             log.debug("failedCircs=%d, builtCircs=%d, totalCircs=%d, "
                       "finishedStreams=%d",
@@ -381,6 +380,12 @@ class EventHandler(object):
         """
         Invoke a new probing module when a new circuit becomes ready.
         """
+        if circ_event.status in [CircStatus.BUILT]:
+            if (not circ_event.path or
+                    circ_event.path[-1][0] not in self.exit_destinations):
+                log.debug("Ignoring built circuit %s for unselected exit.",
+                          circ_event.id)
+                return
 
         self.stats.update_circs(circ_event)
         self.check_finished()
