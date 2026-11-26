@@ -102,9 +102,11 @@ def get_fingerprints(cached_consensus_path, exclude=[],
             continue
         if exclude_flags and exclude_flags.intersection(desc.flags):
             continue
-        if min_bandwidth_kb and desc.bandwidth < min_bandwidth_kb:
+        if min_bandwidth_kb and (desc.bandwidth is None or
+                                 desc.bandwidth < min_bandwidth_kb):
             continue
-        if require_measured_relays and getattr(desc, 'is_unmeasured', False):
+        if require_measured_relays and (desc.bandwidth is None or
+                                        getattr(desc, 'is_unmeasured', False)):
             continue
         if country_relays and desc.fingerprint not in country_relays:
             continue

@@ -62,8 +62,12 @@ def bootstrap_tor(args):
              "might take a while.", args.tor_dir)
 
     if not args.first_hop:
-        log.info("No first hop given.  Using randomly determined first "
-                 "hops for circuits.")
+        if args.reliable_first_hop:
+            log.info("No first hop given.  Using filtered reliable guards "
+                     "as first hops for circuits.")
+        else:
+            log.info("No first hop given.  Using randomly determined first "
+                     "hops for circuits.")
 
     ports = {}
     partial_parse_log_lines = functools.partial(util.parse_log_lines, ports)
@@ -183,10 +187,18 @@ def parse_cmd_args():
                              "in ascending order: debug, info, warning, "
                              "error, critical).  The default is info.")
 
-    parser.add_argument("-i", "--first-hop", type=str, default=None,
-                        help="The 20-byte fingerprint of the Tor relay which "
-                             "is used as first hop.  This relay should be "
-                             "under your control.")
+    first_hops = parser.add_mutually_exclusive_group()
+
+    first_hops.add_argument("-i", "--first-hop", type=str, default=None,
+                            help="The 20-byte fingerprint of the Tor relay which "
+                                 "is used as first hop.  This relay should be "
+                                 "under your control.")
+
+    first_hops.add_argument("--reliable-first-hop", action="store_true",
+                            default=False,
+                            help="Filter random first hops to stable, fast, "
+                                 "measured guards with >= 5000 KB/s consensus "
+                                 "weight.")
 
     parser.add_argument("-o", "--logfile", type=str, default=None,
                         help="Filename to which log output should be written "
@@ -231,9 +243,22 @@ def parse_cmd_args():
                             bool_opt, config_file, err)
                 del defaults[bool_opt]
 
+    cfg_first_hop = defaults.pop("first_hop", None)
+    cfg_reliable = defaults.pop("reliable_first_hop", False)
+
     parser.set_defaults(**defaults)
 
-    return parser.parse_args(remaining_argv)
+    args = parser.parse_args(remaining_argv)
+    if args.first_hop is None and not args.reliable_first_hop:
+        if cfg_first_hop and cfg_reliable:
+            parser.error(
+                "argument --reliable-first-hop: not allowed with "
+                "argument -i/--first-hop"
+            )
+        if cfg_first_hop is not None:
+            args.first_hop = cfg_first_hop
+        args.reliable_first_hop = bool(cfg_reliable)
+    return args
 
 
 def get_modules():
@@ -630,14 +655,45 @@ def sleep(delay, delay_noise):
     time.sleep(delay)
 
 
+def _select_first_hops(args):
+    """
+    Return deduplicated candidate first-hop fingerprints for random selection.
+
+    :param argparse.Namespace args: parsed command-line arguments
+    :returns: deduplicated candidate first-hop fingerprints
+    :rtype: list
+    """
+    cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
+    if args.reliable_first_hop:
+        fingerprints = list(dict.fromkeys(relayselector.get_fingerprints(
+            cached_consensus_path,
+            include_flags={
+                stem.Flag.GUARD, stem.Flag.STABLE, stem.Flag.FAST,
+                stem.Flag.RUNNING, stem.Flag.VALID,
+            },
+            exclude_flags={stem.Flag.BADEXIT},
+            min_bandwidth_kb=5000,
+            require_measured_relays=True,
+        )))
+        if len(fingerprints) >= 2:
+            log.info("Using %d reliable guards for first hop.",
+                     len(fingerprints))
+            return fingerprints
+        log.warning("Only %d reliable guards available; falling back "
+                    "to unfiltered first-hop selection.", len(fingerprints))
+
+    return list(dict.fromkeys(
+        relayselector.get_fingerprints(cached_consensus_path)
+    ))
+
+
 def iter_exit_relays(exit_relays, controller, stats, args):
     """
     Invoke circuits for all selected exit relays.
     """
 
     before = datetime.datetime.now()
-    cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
-    fingerprints = relayselector.get_fingerprints(cached_consensus_path)
+    fingerprints = [] if args.first_hop else _select_first_hops(args)
     count = len(exit_relays)
 
     # Start building a circuit for every exit relay we got.
@@ -661,6 +717,10 @@ def iter_exit_relays(exit_relays, controller, stats, args):
             except ValueError:
                 # Catch exception when exit is not in the cached_consensus
                 pass
+            if not all_hops:
+                raise error.ExitSelectionError(
+                    "No candidate first-hop relays available in consensus."
+                )
             first_hop = random.choice(all_hops)
             log.debug("Using random first hop %s for circuit.", first_hop)
             hops = [first_hop, exit_relay]

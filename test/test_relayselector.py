@@ -20,6 +20,7 @@
 """ Unit tests for the relay selector module."""
 
 import sys
+from unittest.mock import Mock, patch
 sys.path.insert(0, 'src/')
 import relayselector
 from stem import exit_policy
@@ -75,3 +76,22 @@ def test_router_statuses_with_exit_flag(cached_consensus):
     rs = relayselector.router_statuses_with_exit_flag(cached_consensus)
     assert isinstance(rs, dict)
     assert 2297 == len(rs)
+
+
+def test_get_fingerprints_handles_none_bandwidth():
+    unweighted = Mock(
+        fingerprint="A" * 40,
+        flags=set(),
+        bandwidth=None,
+        is_unmeasured=False,
+    )
+    weighted = Mock(
+        fingerprint="B" * 40,
+        flags=set(),
+        bandwidth=6000,
+        is_unmeasured=False,
+    )
+    with patch.object(relayselector.stem.descriptor, "parse_file",
+                      return_value=[unweighted, weighted]):
+        assert relayselector.get_fingerprints("dummy", min_bandwidth_kb=5000) == ["B" * 40]
+        assert relayselector.get_fingerprints("dummy", require_measured_relays=True) == ["B" * 40]

@@ -431,3 +431,143 @@ def test_parse_cmd_args_config_booleans(tmp_path, monkeypatch, caplog):
     parsed_bad = exitmap.parse_cmd_args()
     assert parsed_bad.bad_exits is False
     assert 'Invalid boolean for "bad_exits"' in caplog.text
+
+
+def test_parse_cmd_args_reliable_first_hop_and_config_conflict(
+        tmp_path, monkeypatch, caplog):
+    cfg = tmp_path / "exitmaprc"
+    cfg.write_text("[Defaults]\nreliable_first_hop = false\n")
+    monkeypatch.setattr(sys, "argv", [
+        "exitmap.py", "-f", str(cfg), "checktest",
+    ])
+    parsed = exitmap.parse_cmd_args()
+    assert parsed.reliable_first_hop is False
+    assert parsed.first_hop is None
+
+    cfg.write_text("[Defaults]\nreliable_first_hop = true\n")
+    parsed_true = exitmap.parse_cmd_args()
+    assert parsed_true.reliable_first_hop is True
+    assert parsed_true.first_hop is None
+
+    # CLI -i overrides reliable_first_hop = true from config.
+    monkeypatch.setattr(sys, "argv", [
+        "exitmap.py", "-f", str(cfg), "-i", "B" * 40, "checktest",
+    ])
+    parsed_cli_first = exitmap.parse_cmd_args()
+    assert parsed_cli_first.first_hop == "B" * 40
+    assert parsed_cli_first.reliable_first_hop is False
+
+    # CLI --reliable-first-hop overrides first_hop from config.
+    cfg.write_text("[Defaults]\nfirst_hop = %s\n" % ("A" * 40))
+    monkeypatch.setattr(sys, "argv", [
+        "exitmap.py", "-f", str(cfg), "--reliable-first-hop", "checktest",
+    ])
+    parsed_cli_rel = exitmap.parse_cmd_args()
+    assert parsed_cli_rel.reliable_first_hop is True
+    assert parsed_cli_rel.first_hop is None
+
+    # Setting both in config triggers mutual-exclusion parser error.
+    cfg.write_text(
+        "[Defaults]\nfirst_hop = %s\nreliable_first_hop = true\n" % ("A" * 40)
+    )
+    monkeypatch.setattr(sys, "argv", ["exitmap.py", "-f", str(cfg), "checktest"])
+    with pytest.raises(SystemExit):
+        exitmap.parse_cmd_args()
+
+    # Invalid boolean logs warning and falls back to False.
+    cfg.write_text("[Defaults]\nreliable_first_hop = invalid\n")
+    parsed_bad = exitmap.parse_cmd_args()
+    assert parsed_bad.reliable_first_hop is False
+    assert 'Invalid boolean for "reliable_first_hop"' in caplog.text
+
+    monkeypatch.setattr(sys, "argv", [
+        "exitmap.py", "-f", str(cfg), "--first-hop", "A" * 40,
+        "--reliable-first-hop", "checktest",
+    ])
+    with pytest.raises(SystemExit):
+        exitmap.parse_cmd_args()
+
+
+def test_iter_exit_relays_reliable_first_hop(args, stats_obj):
+    run_args = argparse.Namespace(**vars(args))
+    run_args.first_hop = None
+    run_args.reliable_first_hop = True
+    mock_ctrl = Mock()
+    guards = ["G" * 40, "H" * 40]
+
+    with patch.object(exitmap.relayselector, "get_fingerprints",
+                      return_value=guards) as mock_fps, \
+         patch.object(exitmap, "sleep"):
+        exitmap.iter_exit_relays(["E" * 40], mock_ctrl, stats_obj, run_args)
+
+    mock_fps.assert_called_once_with(
+        os.path.join(run_args.tor_dir, "cached-consensus"),
+        include_flags={
+            stem.Flag.GUARD, stem.Flag.STABLE, stem.Flag.FAST,
+            stem.Flag.RUNNING, stem.Flag.VALID,
+        },
+        exclude_flags={stem.Flag.BADEXIT},
+        min_bandwidth_kb=5000,
+        require_measured_relays=True,
+    )
+    hops = mock_ctrl.new_circuit.call_args.args[0]
+    assert hops[0] in guards
+    assert hops[1] == "E" * 40
+
+
+def test_iter_exit_relays_static_first_hop_skips_consensus(args, stats_obj):
+    run_args = argparse.Namespace(**vars(args))
+    run_args.reliable_first_hop = True
+    mock_ctrl = Mock()
+
+    with patch.object(exitmap.relayselector, "get_fingerprints") as mock_fps, \
+         patch.object(exitmap, "sleep"):
+        exitmap.iter_exit_relays(["E" * 40], mock_ctrl, stats_obj, run_args)
+
+    mock_fps.assert_not_called()
+    mock_ctrl.new_circuit.assert_called_once_with([run_args.first_hop, "E" * 40])
+
+
+def test_iter_exit_relays_reliable_first_hop_fallback(args, stats_obj, caplog):
+    run_args = argparse.Namespace(**vars(args))
+    run_args.first_hop = None
+    run_args.reliable_first_hop = True
+    mock_ctrl = Mock()
+    fallback = ["A" * 40, "B" * 40]
+
+    with patch.object(exitmap.relayselector, "get_fingerprints",
+                      side_effect=[["1" * 40], fallback]) as mock_fps, \
+         patch.object(exitmap, "sleep"):
+        exitmap.iter_exit_relays(["E" * 40], mock_ctrl, stats_obj, run_args)
+
+    assert mock_fps.call_count == 2
+    assert "falling back to unfiltered first-hop selection" in caplog.text
+
+
+def test_iter_exit_relays_raises_when_no_first_hop_candidates(args, stats_obj):
+    run_args = argparse.Namespace(**vars(args))
+    run_args.first_hop = None
+    run_args.reliable_first_hop = False
+    exit_fp = "E" * 40
+    mock_ctrl = Mock()
+
+    with patch.object(exitmap.relayselector, "get_fingerprints",
+                      return_value=[exit_fp]):
+        with pytest.raises(error.ExitSelectionError):
+            exitmap.iter_exit_relays([exit_fp], mock_ctrl, stats_obj, run_args)
+
+
+def test_iter_exit_relays_dedupes_consensus_fingerprints(args, stats_obj):
+    run_args = argparse.Namespace(**vars(args))
+    run_args.first_hop = None
+    run_args.reliable_first_hop = False
+    exit_fp = "E" * 40
+    guard_fp = "G" * 40
+    mock_ctrl = Mock()
+
+    with patch.object(exitmap.relayselector, "get_fingerprints",
+                      return_value=[exit_fp, exit_fp, guard_fp]), \
+         patch.object(exitmap, "sleep"):
+        exitmap.iter_exit_relays([exit_fp], mock_ctrl, stats_obj, run_args)
+
+    mock_ctrl.new_circuit.assert_called_once_with([guard_fp, exit_fp])
