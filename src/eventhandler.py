@@ -21,6 +21,7 @@ Handles Tor controller events.
 """
 
 import functools
+import time
 import socket
 import threading
 import multiprocessing
@@ -345,12 +346,43 @@ class EventHandler(object):
         except Exception:
             pass
 
-        for proc in multiprocessing.active_children():
+        children = multiprocessing.active_children()
+        for proc in children:
             log.debug(
                 "Terminating remaining PID %d with name %s.",
                 proc.pid, proc.name
             )
-            proc.terminate()
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+
+        deadline = time.monotonic() + 3.0
+        still_alive = []
+        for proc in children:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                proc.join(timeout=remaining)
+                if proc.is_alive():
+                    still_alive.append(proc)
+            except (OSError, ValueError):
+                pass
+
+        for proc in still_alive:
+            log.debug(
+                "Killing unresponsive PID %d with name %s.",
+                proc.pid, proc.name
+            )
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+        for proc in still_alive:
+            try:
+                proc.join(timeout=1.0)
+            except (OSError, ValueError):
+                pass
 
         if hasattr(self.module, "teardown"):
             log.debug("Calling module's teardown() function.")

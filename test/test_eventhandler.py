@@ -100,3 +100,64 @@ def test_wait_unblocks_when_controller_dies():
         assert handler.finished_event.is_set()
     finally:
         handler.shutdown()
+
+
+def test_shutdown_terminates_reaps_and_kills_stalled_children():
+    handler = _make_handler()
+    call_order = []
+
+    clean_proc = Mock()
+    clean_proc.pid = 1001
+    clean_proc.name = "clean-probe"
+    clean_proc.is_alive.return_value = False
+
+    stubborn_1 = Mock()
+    stubborn_1.pid = 1002
+    stubborn_1.name = "stubborn-1"
+    stubborn_1.is_alive.return_value = True
+    stubborn_1.kill.side_effect = lambda: call_order.append(("kill", 1002))
+    stubborn_1.join.side_effect = (
+        lambda timeout=None: call_order.append(("join", 1002))
+    )
+
+    stubborn_2 = Mock()
+    stubborn_2.pid = 1003
+    stubborn_2.name = "stubborn-2"
+    stubborn_2.is_alive.return_value = True
+    stubborn_2.kill.side_effect = lambda: call_order.append(("kill", 1003))
+    stubborn_2.join.side_effect = (
+        lambda timeout=None: call_order.append(("join", 1003))
+    )
+
+    closed_proc = Mock()
+    closed_proc.pid = 1004
+    closed_proc.name = "closed-probe"
+    closed_proc.join.side_effect = ValueError("already closed")
+
+    try:
+        with patch.object(
+            eventhandler.multiprocessing, "active_children",
+            return_value=[clean_proc, stubborn_1, stubborn_2, closed_proc],
+        ):
+            handler.shutdown()
+    finally:
+        if handler.queue_thread.is_alive():
+            handler.shutdown()
+
+    clean_proc.terminate.assert_called_once()
+    clean_proc.join.assert_called_once()
+    clean_proc.kill.assert_not_called()
+
+    for proc in (stubborn_1, stubborn_2):
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+        assert proc.join.call_count == 2
+
+    # All SIGKILLs are dispatched before waiting in join(timeout=1.0).
+    kill_indices = [i for i, (op, _) in enumerate(call_order) if op == "kill"]
+    second_joins = [
+        i for i, (op, pid) in enumerate(call_order)
+        if op == "join" and pid in (1002, 1003)
+    ][2:]
+    assert max(kill_indices) < min(second_joins)
+    assert not handler.queue_thread.is_alive()
