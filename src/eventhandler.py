@@ -330,7 +330,11 @@ class EventHandler(object):
         """
         Wait for the scan to finish.
         """
-        self.finished_event.wait()
+        # Nobody notifies us if the controller dies, so check that regularly.
+        while not self.finished_event.wait(timeout=1):
+            if not self.controller.is_alive():
+                self.check_finished()
+                break
 
     def shutdown(self):
         """
@@ -339,7 +343,10 @@ class EventHandler(object):
         # Remove event listener first — scan is complete, no more events needed.
         # This prevents event callbacks from racing with resource cleanup.
         try:
-            self.controller.remove_event_listener(self.new_event)
+            # This blocks forever if the controller died while one of our
+            # event callbacks was waiting for a reply.
+            if self.controller.is_alive():
+                self.controller.remove_event_listener(self.new_event)
         except Exception:
             pass
 
