@@ -217,3 +217,48 @@ def test_new_circuit_ignores_closed_queue_when_descriptor_missing():
         mock_put.assert_called_once_with(("99", None))
     finally:
         handler.shutdown()
+
+
+def test_module_call_forwards_first_hop():
+    received = {}
+
+    def fake_probe(**kwargs):
+        received.update(kwargs)
+
+    q = eventhandler.multiprocessing.Queue()
+    try:
+        eventhandler.module_call(
+            q, fake_probe, "12", 9050, Mock(), Mock(),
+            frozenset(), "example.com", 8000, "F" * 40,
+        )
+        assert q.get(timeout=2) == ("12", None)
+    finally:
+        q.close()
+        q.join_thread()
+
+    assert received["first_hop"] == "F" * 40
+
+
+def test_new_circuit_passes_first_hop_to_module_call():
+    first_hop = "F" * 40
+    exit_fpr = "E" * 40
+    handler = _make_handler()
+    handler.exit_destinations = {exit_fpr: frozenset()}
+
+    circ_event = Mock()
+    circ_event.status = CircStatus.BUILT
+    circ_event.id = "55"
+    circ_event.path = [(first_hop, "guard"), (exit_fpr, "exit")]
+
+    fake_proc = Mock()
+    fake_desc = Mock()
+
+    try:
+        with patch.object(eventhandler, "get_relay_desc", return_value=fake_desc), \
+             patch.object(eventhandler.multiprocessing, "Process", return_value=fake_proc) as mock_proc_cls:
+            handler.new_circuit(circ_event)
+    finally:
+        handler.shutdown()
+
+    assert mock_proc_cls.call_args.kwargs["args"][-1] == first_hop
+    fake_proc.start.assert_called_once()
