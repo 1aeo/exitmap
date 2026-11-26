@@ -556,6 +556,7 @@ def run_module(module_name, args, controller, socks_port, stats,
     log.info("Running module '%s'.", module_name)
     log.info("with host '%s'.", args.host)
     stats.modules_run += 1
+    stats.reset_failed_circuits()
 
     try:
         module = __import__("modules.%s" % module_name, fromlist=[module_name])
@@ -623,6 +624,7 @@ def run_module(module_name, args, controller, socks_port, stats,
                 handler.shutdown()
             except Exception as err:
                 log.warning("Error during handler shutdown: %s", err)
+        stats.log_failed_circuits()
         if can_teardown and hasattr(module, "teardown"):
             log.debug("Calling module's teardown() function.")
             try:
@@ -728,13 +730,14 @@ def iter_exit_relays(exit_relays, controller, stats, args):
         assert len(hops) > 1
 
         try:
-            controller.new_circuit(hops)
+            circuit_id = controller.new_circuit(hops)
+            stats.register_circuit(circuit_id, hops[0], hops[1])
         except stem.ControllerError as err:
             if not controller.is_alive():
                 log.error("Terminating circuit creation because the "
                           "controller is not alive.")
                 break
-            stats.failed_circuits += 1
+            stats.record_immediate_failure(hops[0], hops[1], err)
             log.debug("Circuit with exit relay \"%s\" could not be "
                       "created: %s", exit_relay, err)
 

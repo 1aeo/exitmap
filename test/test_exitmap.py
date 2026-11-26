@@ -571,3 +571,45 @@ def test_iter_exit_relays_dedupes_consensus_fingerprints(args, stats_obj):
         exitmap.iter_exit_relays([exit_fp], mock_ctrl, stats_obj, run_args)
 
     mock_ctrl.new_circuit.assert_called_once_with([guard_fp, exit_fp])
+
+
+def test_iter_exit_relays_tracks_circuits_and_immediate_failures(args, stats_obj):
+    run_args = argparse.Namespace(**vars(args))
+    exit_ok = "A" * 40
+    exit_fail = "B" * 40
+
+    mock_ctrl = Mock()
+    mock_ctrl.new_circuit.side_effect = ["101", stem.ControllerError("boom")]
+
+    with patch.object(exitmap, "sleep"):
+        exitmap.iter_exit_relays([exit_ok, exit_fail], mock_ctrl, stats_obj, run_args)
+
+    assert stats_obj._pending_circuits["101"] == (run_args.first_hop, exit_ok)
+    assert stats_obj.failed_circuit_relays[exit_fail] == {
+        "reason": "CREATION_FAILED (boom)",
+        "first_hop": run_args.first_hop,
+    }
+
+
+def test_run_module_resets_and_logs_failed_circuits_per_module(args, stats_obj, monkeypatch, caplog):
+    stats_obj.register_circuit("stale", "F" * 40, "C" * 40)
+    stats_obj.update_circs(
+        Mock(id="stale", status=exitmap.stem.CircStatus.FAILED, reason="TIMEOUT")
+    )
+
+    dummy_mod = types.SimpleNamespace(probe=lambda **kwargs: None)
+    monkeypatch.setitem(sys.modules, "modules.dummy_failed_circs", dummy_mod)
+    monkeypatch.setattr(
+        exitmap.modules, "dummy_failed_circs", dummy_mod, raising=False
+    )
+
+    with patch.object(exitmap, "select_exits", return_value={"E" * 40: frozenset()}), \
+         patch.object(exitmap, "EventHandler"), \
+         patch.object(exitmap, "iter_exit_relays"):
+        with caplog.at_level("INFO"):
+            exitmap.run_module(
+                "dummy_failed_circs", args, Mock(), 9050, stats_obj
+            )
+
+    assert stats_obj.failed_circuit_relays == {}
+    assert "C" * 40 not in caplog.text
