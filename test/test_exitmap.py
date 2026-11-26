@@ -98,6 +98,21 @@ def test_iter_exit_relays_controller_not_alive(stats_obj, args):
     controller.new_circuit.assert_not_called()
 
 
+def test_iter_exit_relays_remembers_circuits(stats_obj, args):
+    hops = [args.first_hop, args.exit]
+    controller = Mock()
+    controller.new_circuit.return_value = "23"
+    exitmap.iter_exit_relays([args.exit], controller, stats_obj, args)
+    assert {"23": hops} == stats_obj.pending_circuits
+
+    controller.new_circuit.side_effect = exitmap.stem.ControllerError("foo")
+    exitmap.iter_exit_relays([args.exit], controller, stats_obj, args)
+    assert {
+        args.exit: {"first_hop": args.first_hop,
+                    "reason": "CREATION_FAILED (foo)"}
+    } == stats_obj.failed_circuit_relays
+
+
 def test_sleep(args):
     start = time.monotonic()
     exitmap.sleep(args.build_delay, args.delay_noise)

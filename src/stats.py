@@ -46,6 +46,23 @@ class Statistics(object):
         self.modules_run = 0
         self.finished_streams = 0
         self.failed_streams = 0
+        # Maps the IDs of circuits which are not built yet to their hops.
+        self.pending_circuits = {}
+        # Maps the exit relays to which we were unable to create a circuit to
+        # the first hop of that circuit and the reason for the failure.
+        self.failed_circuit_relays = {}
+
+    def record_failed_circuit(self, hops, reason):
+        """
+        Log and remember that the circuit with the given hops failed.
+        """
+
+        log.info("Circuit with exit relay \"%s\" and first hop \"%s\" failed "
+                 "because: %s", hops[-1], hops[0], reason)
+        self.failed_circuit_relays[hops[-1]] = {
+            "first_hop": hops[0],
+            "reason": str(reason),
+        }
 
     def update_circs(self, circ_event):
         """
@@ -56,10 +73,14 @@ class Statistics(object):
 
             log.debug("Circuit failed because: %s", str(circ_event.reason))
             self.failed_circuits += 1
+            hops = self.pending_circuits.pop(circ_event.id, None)
+            if hops is not None:
+                self.record_failed_circuit(hops, circ_event.reason)
 
         elif circ_event.status in [CircStatus.BUILT]:
 
             self.successful_circuits += 1
+            self.pending_circuits.pop(circ_event.id, None)
 
     def print_progress(self, sampling=50):
         """
