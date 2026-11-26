@@ -39,6 +39,10 @@ def test_get_exits(tor_dir):
     assert len(exits) > 0
 
 
+def test_get_exits_no_requested_exits(tor_dir):
+    assert {} == relayselector.get_exits(tor_dir, requested_exits=[])
+
+
 def test_get_exit_policies(cached_descriptors_path):
     exit_policies = relayselector.get_exit_policies(cached_descriptors_path)
     assert isinstance(

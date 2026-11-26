@@ -310,13 +310,14 @@ def get_exits(data_dir,
         return {}
 
     # Filter conditions are checked from cheapest to most expensive.
-    if address or nickname or version or requested_exits:
+    if address or nickname or version or requested_exits is not None:
         exit_candidates = [
             desc for desc in exit_candidates
             if ((not address or address in desc.address) and
                 (not nickname or nickname in desc.nickname) and
                 (not version or version == str(desc.tor_version)) and
-                (not requested_exits or desc.fingerprint in requested_exits))
+                (requested_exits is None or
+                 desc.fingerprint in requested_exits))
         ]
     if not exit_candidates:
         log.warning("No exit relays meet basic filter conditions.")
