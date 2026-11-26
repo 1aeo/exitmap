@@ -1,9 +1,13 @@
 import argparse
 import sys
 import time
+from unittest.mock import Mock
 import warnings
+
+import pytest
 # hacky, until exitmap is an installable package
 sys.path.insert(0, 'src/')  # noqa
+import error
 import exitmap
 
 
@@ -51,6 +55,15 @@ def test_select_exits(args, modules):
         dest = exits['50485E03CA39D393BD54D315CEBA65E6DD0FDDB9']
         list_destinations = list(dest)  # list cause dest is frozenset
         assert 8000 == list_destinations[0][1]  # [("host", port),]
+
+
+def test_run_module_teardown_without_exits(args, stats_obj, monkeypatch):
+    module = Mock()
+    monkeypatch.setitem(sys.modules, "modules.mock", module)
+    monkeypatch.setattr(exitmap, "select_exits", lambda args, module: {})
+    with pytest.raises(error.ExitSelectionError):
+        exitmap.run_module("mock", args, Mock(), 9050, stats_obj)
+    module.teardown.assert_called_once()
 
 
 def test_iter_exit_relays(exit_relays, controller, stats_obj, args, caplog):
