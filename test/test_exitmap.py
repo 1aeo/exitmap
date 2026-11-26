@@ -1,7 +1,13 @@
 import argparse
+import importlib.machinery
+import importlib.util
+import os
 import sys
 import time
+from unittest.mock import patch
 import warnings
+
+import pytest
 # hacky, until exitmap is an installable package
 sys.path.insert(0, 'src/')  # noqa
 import exitmap
@@ -66,3 +72,38 @@ def test_sleep(args):
     delta = stop - start
     assert delta != 3
     assert delta > 3
+
+
+def test_bin_exitmap_preserves_exit_status_and_exceptions(args):
+    bin_path = os.path.join(os.path.dirname(__file__), "..", "bin", "exitmap")
+    loader = importlib.machinery.SourceFileLoader("exitmap_bin_test", bin_path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    bin_mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(bin_mod)
+
+    for outcome, expected_code in [
+        (0, 0),
+        (1, 1),
+        (SystemExit(1), 1),
+        (SystemExit(None), None),
+        (KeyboardInterrupt(), 1),
+    ]:
+        kw = (
+            {"return_value": outcome}
+            if isinstance(outcome, int)
+            else {"side_effect": outcome}
+        )
+        with patch.object(bin_mod, "parse_cmd_args", return_value=args), \
+             patch.object(bin_mod.shutil, "rmtree") as mock_rm, \
+             patch.object(bin_mod, "exitmap_main", **kw):
+            with pytest.raises(SystemExit) as exc:
+                bin_mod.main()
+        assert exc.value.code == expected_code
+        mock_rm.assert_called_once_with(args.tor_dir)
+
+    with patch.object(bin_mod, "parse_cmd_args", return_value=args), \
+         patch.object(bin_mod.shutil, "rmtree") as mock_rm, \
+         patch.object(bin_mod, "exitmap_main", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError, match="boom"):
+            bin_mod.main()
+    mock_rm.assert_called_once_with(args.tor_dir)
