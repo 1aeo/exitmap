@@ -4,6 +4,7 @@ import importlib.util
 import os
 import sys
 import time
+import types
 from unittest.mock import Mock, patch
 import warnings
 
@@ -11,6 +12,7 @@ import pytest
 import stem
 # hacky, until exitmap is an installable package
 sys.path.insert(0, 'src/')  # noqa
+import error
 import exitmap
 
 
@@ -155,3 +157,101 @@ def test_main_returns_nonzero_and_skips_modules_when_controller_dies(args, tmp_p
     assert ret == 1
     mock_run_module.assert_called_once()
     controller.close.assert_called_once()
+
+
+def test_run_module_calls_teardown_across_outcomes(args, stats_obj, monkeypatch):
+    teardown_calls = []
+    dummy_mod = types.SimpleNamespace(
+        setup=lambda **kwargs: None,
+        teardown=lambda **kwargs: teardown_calls.append(True),
+        probe=lambda **kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "modules.dummy_mr5", dummy_mod)
+    monkeypatch.setattr(exitmap.modules, "dummy_mr5", dummy_mod, raising=False)
+
+    with patch.object(exitmap.relayselector, "get_cached_consensus",
+                      side_effect=RuntimeError("no consensus")):
+        with pytest.raises(RuntimeError, match="no consensus"):
+            exitmap.run_module("dummy_mr5", args, Mock(), 9050, stats_obj)
+    assert teardown_calls == []
+
+    with patch.object(exitmap.relayselector, "get_cached_consensus", return_value={}), \
+         patch.object(exitmap, "select_exits", return_value={}):
+        with pytest.raises(error.ExitSelectionError):
+            exitmap.run_module("dummy_mr5", args, Mock(), 9050, stats_obj)
+
+    with patch.object(exitmap.relayselector, "get_cached_consensus", return_value={}), \
+         patch.object(exitmap, "select_exits", side_effect=RuntimeError("lookup failed")):
+        with pytest.raises(RuntimeError, match="lookup failed"):
+            exitmap.run_module("dummy_mr5", args, Mock(), 9050, stats_obj)
+
+    assert teardown_calls == [True, True]
+
+
+def test_run_module_teardown_error_does_not_mask_or_abort(args, stats_obj, monkeypatch):
+    def failing_teardown(**kwargs):
+        raise RuntimeError("cleanup failed")
+
+    dummy_mod = types.SimpleNamespace(
+        teardown=failing_teardown,
+        probe=lambda **kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "modules.dummy_mr5_err", dummy_mod)
+    monkeypatch.setattr(exitmap.modules, "dummy_mr5_err", dummy_mod, raising=False)
+
+    with patch.object(exitmap, "select_exits", return_value={}):
+        with pytest.raises(error.ExitSelectionError):
+            exitmap.run_module("dummy_mr5_err", args, Mock(), 9050, stats_obj)
+
+    ctrl = Mock()
+    ctrl.is_alive.return_value = True
+    with patch.object(exitmap, "select_exits", return_value={"E" * 40: frozenset()}), \
+         patch.object(exitmap, "iter_exit_relays"), \
+         patch.object(exitmap, "EventHandler") as mock_eh:
+        mock_eh.return_value.wait.return_value = None
+        exitmap.run_module("dummy_mr5_err", args, ctrl, 9050, stats_obj)
+
+    mock_eh.return_value.shutdown.assert_called_once()
+
+
+def test_run_module_shuts_down_handler_if_add_listener_fails(args, stats_obj, monkeypatch):
+    teardown_calls = []
+    dummy_mod = types.SimpleNamespace(
+        teardown=lambda **kwargs: teardown_calls.append(True),
+        probe=lambda **kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "modules.dummy_mr5_listener", dummy_mod)
+    monkeypatch.setattr(exitmap.modules, "dummy_mr5_listener", dummy_mod, raising=False)
+
+    ctrl = Mock()
+    ctrl.add_event_listener.side_effect = stem.ControllerError("listener error")
+
+    with patch.object(exitmap, "select_exits", return_value={"E" * 40: frozenset()}), \
+         patch.object(exitmap, "EventHandler") as mock_eh:
+        with pytest.raises(stem.ControllerError):
+            exitmap.run_module("dummy_mr5_listener", args, ctrl, 9050, stats_obj)
+
+    mock_eh.return_value.shutdown.assert_called_once()
+    assert teardown_calls == [True]
+    assert stats_obj.total_circuits == 0
+
+
+def test_run_module_calls_teardown_if_shutdown_raises(args, stats_obj, monkeypatch):
+    teardown_calls = []
+    dummy_mod = types.SimpleNamespace(
+        setup=lambda **kwargs: None,
+        teardown=lambda **kwargs: teardown_calls.append(True),
+        probe=lambda **kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "modules.dummy_mr6_shut", dummy_mod)
+    monkeypatch.setattr(exitmap.modules, "dummy_mr6_shut", dummy_mod, raising=False)
+
+    ctrl = Mock()
+    with patch.object(exitmap.relayselector, "get_cached_consensus", return_value={}), \
+         patch.object(exitmap, "select_exits", return_value={"E" * 40: frozenset()}), \
+         patch.object(exitmap, "iter_exit_relays"), \
+         patch.object(exitmap, "EventHandler") as mock_eh:
+        mock_eh.return_value.shutdown.side_effect = RuntimeError("shutdown boom")
+        exitmap.run_module("dummy_mr6_shut", args, ctrl, 9050, stats_obj)
+
+    assert teardown_calls == [True]

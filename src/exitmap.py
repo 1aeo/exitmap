@@ -444,54 +444,71 @@ def run_module(module_name, args, controller, socks_port, stats):
         log.error("Failed to load module because: %s", err)
         return
 
-    # Let module perform one-off setup tasks.
-    if hasattr(module, "setup"):
-        # Let's pass the consensus to the module so it can make use of it, if
-        # needed, for further analysis or narrowing down of potential results.
-        cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
-        cached_consensus = relayselector.get_cached_consensus(cached_consensus_path)
-        log.debug("Calling module's setup() function.")
-        setup_kwargs = {"consensus": cached_consensus}
-        if args.host is not None:
-            setup_kwargs["target"] = args.host
-        module.setup(**setup_kwargs)
-
-    exit_destinations = select_exits(args, module)
-
-    exit_relays = list(exit_destinations.keys())
-    random.shuffle(exit_relays)
-
-    target_host = args.host
-    target_port = args.port
-
-    log.debug("Running actually the module.")
-    count = len(exit_relays)
-    stats.total_circuits += count
-
-    if count < 1:
-        raise error.ExitSelectionError("Exit selection yielded %d exits "
-                                       "but need at least one." % count)
-
-    handler = EventHandler(controller, module, socks_port, stats,
-                           exit_destinations=exit_destinations,
-                           target_host=target_host,
-                           target_port=target_port)
-
-    controller.add_event_listener(handler.new_event,
-                                  EventType.CIRC, EventType.STREAM)
-
-    duration = count * args.build_delay
-    log.info("Scan is estimated to take around %s." %
-             datetime.timedelta(seconds=duration))
-
-    log.info("Beginning to trigger %d circuit creation(s).", count)
-
+    handler = None
+    can_teardown = not hasattr(module, "setup")
     try:
+        # Let module perform one-off setup tasks.
+        if hasattr(module, "setup"):
+            # Let's pass the consensus to the module so it can make use of it,
+            # if needed, for further analysis or narrowing down of potential
+            # results.
+            cached_consensus_path = os.path.join(args.tor_dir,
+                                                 "cached-consensus")
+            cached_consensus = relayselector.get_cached_consensus(
+                cached_consensus_path
+            )
+            log.debug("Calling module's setup() function.")
+            setup_kwargs = {"consensus": cached_consensus}
+            if args.host is not None:
+                setup_kwargs["target"] = args.host
+            can_teardown = True
+            module.setup(**setup_kwargs)
+
+        exit_destinations = select_exits(args, module)
+
+        exit_relays = list(exit_destinations.keys())
+        random.shuffle(exit_relays)
+
+        target_host = args.host
+        target_port = args.port
+
+        log.debug("Running actually the module.")
+        count = len(exit_relays)
+
+        if count < 1:
+            raise error.ExitSelectionError("Exit selection yielded %d exits "
+                                           "but need at least one." % count)
+
+        handler = EventHandler(controller, module, socks_port, stats,
+                               exit_destinations=exit_destinations,
+                               target_host=target_host,
+                               target_port=target_port)
+
+        controller.add_event_listener(handler.new_event,
+                                      EventType.CIRC, EventType.STREAM)
+        stats.total_circuits += count
+
+        duration = count * args.build_delay
+        log.info("Scan is estimated to take around %s." %
+                 datetime.timedelta(seconds=duration))
+
+        log.info("Beginning to trigger %d circuit creation(s).", count)
+
         iter_exit_relays(exit_relays, controller, stats, args)
         handler.check_finished()
         handler.wait()
     finally:
-        handler.shutdown()
+        if handler is not None:
+            try:
+                handler.shutdown()
+            except Exception as err:
+                log.warning("Error during handler shutdown: %s", err)
+        if can_teardown and hasattr(module, "teardown"):
+            log.debug("Calling module's teardown() function.")
+            try:
+                module.teardown()
+            except Exception as err:
+                log.warning("Module teardown() failed: %s", err)
 
 
 def sleep(delay, delay_noise):

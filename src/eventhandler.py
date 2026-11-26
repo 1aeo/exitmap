@@ -384,10 +384,6 @@ class EventHandler(object):
             except (OSError, ValueError):
                 pass
 
-        if hasattr(self.module, "teardown"):
-            log.debug("Calling module's teardown() function.")
-            self.module.teardown()
-
         log.info(self.stats)
 
         # Signal queue reader to stop
