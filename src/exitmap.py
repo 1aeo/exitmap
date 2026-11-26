@@ -337,13 +337,20 @@ def main():
                 run_module(module_name, args, controller, socks_port, stats)
             except error.ExitSelectionError as err:
                 log.error("Failed to run because : %s", err)
+
+            # We can't run the remaining modules without a controller.
+            if not controller.is_alive():
+                log.error("Terminating because the controller is not alive.")
+                return 1
     finally:
         try:
             # Silence stem's SocketClosed reader-thread spam: after
             # handler.shutdown() the socket is about to close, and
             # stem's internal listener fires repeatedly until it notices.
             logging.getLogger("stem").setLevel(logging.ERROR)
-            controller.close()
+            # This blocks forever as well in the case described in shutdown().
+            if controller.is_alive():
+                controller.close()
         except Exception as err:
             log.debug("Failed to close controller: %s", err)
     return 0
@@ -527,6 +534,10 @@ def iter_exit_relays(exit_relays, controller, stats, args):
     # Start building a circuit for every exit relay we got.
 
     for i, exit_relay in enumerate(exit_relays):
+
+        if not controller.is_alive():
+            log.error("Terminating because the controller is not alive.")
+            break
 
         # Determine the hops in our next circuit.
 
