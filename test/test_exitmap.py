@@ -1,4 +1,5 @@
 import argparse
+import subprocess
 import sys
 import time
 import warnings
@@ -66,3 +67,17 @@ def test_sleep(args):
     delta = stop - start
     assert delta != 3
     assert delta > 3
+
+
+def test_bin_exitmap_exit_status(tmp_path, monkeypatch):
+    tor_dir = tmp_path / "tor"
+    cmd = [sys.executable, "bin/exitmap", "-t", str(tor_dir), "checktest"]
+    # main() calls sys.exit(1), since there is no tor executable.
+    monkeypatch.setenv("PATH", "")
+    assert 1 == subprocess.run(cmd).returncode
+    assert not tor_dir.exists()
+    # main() returns 1, since other users can access the parent of Tor's data
+    # directory, see #47.
+    tmp_path.chmod(0o755)
+    assert 1 == subprocess.run(cmd).returncode
+    assert not tor_dir.exists()
