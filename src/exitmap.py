@@ -494,6 +494,10 @@ def run_module(module_name, args, controller, socks_port, stats):
     stats.total_circuits += count
 
     if count < 1:
+        # The module is not run, but it might have to clean up after setup().
+        if hasattr(module, "teardown"):
+            log.debug("Calling module's teardown() function.")
+            module.teardown()
         raise error.ExitSelectionError("Exit selection yielded %d exits "
                                        "but need at least one." % count)
 
