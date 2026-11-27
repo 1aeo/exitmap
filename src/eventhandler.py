@@ -426,7 +426,17 @@ class EventHandler(object):
             self.target_port
         ))
         proc.daemon = True
-        proc.start()
+        # A process which is forked while another thread is writing a log
+        # message inherits the locked log stream and blocks as soon as it logs
+        # a message itself.
+        handlers = list(logging.getLogger().handlers)
+        for handler in handlers:
+            handler.acquire()
+        try:
+            proc.start()
+        finally:
+            for handler in handlers:
+                handler.release()
 
     def new_stream(self, stream_event):
         """
