@@ -26,6 +26,7 @@ import threading
 import multiprocessing
 import logging
 import queue
+import time
 import stem
 from stem import StreamStatus
 from stem import CircStatus
@@ -37,6 +38,10 @@ import command
 import util
 
 log = logging.getLogger(__name__)
+
+# wait() gives up once no module process has sent us a message for this many
+# seconds.
+IDLE_TIMEOUT = 300
 
 
 def get_relay_desc(controller, fpr):
@@ -245,6 +250,7 @@ class EventHandler(object):
 
             try:
                 item = self.queue.get()
+                self.last_message = time.monotonic()
                 # Sentinel value signals shutdown
                 if item is None:
                     log.debug("IPC queue received shutdown signal.")
@@ -330,7 +336,27 @@ class EventHandler(object):
         """
         Wait for the scan to finish.
         """
-        self.finished_event.wait()
+        # Only the time since all circuits were requested counts.
+        self.last_message = time.monotonic()
+        while not self.finished_event.wait(timeout=1):
+            # A module process which hangs or was killed never reports back.
+            if time.monotonic() - self.last_message >= IDLE_TIMEOUT:
+                # All modules of a run share the statistics, so count the
+                # circuits as failed and the module processes as finished,
+                # or the next module would wait for them again.
+                circuits = max(0, self.stats.total_circuits -
+                               self.stats.failed_circuits -
+                               self.stats.successful_circuits)
+                self.stats.failed_circuits += circuits
+                modules = max(0, self.stats.successful_circuits -
+                              self.stats.failed_circuits -
+                              self.stats.finished_streams)
+                self.stats.finished_streams += modules
+                log.warning("No message from a module process for %d seconds."
+                            "  No longer waiting for %d circuit(s) and %d "
+                            "module process(es).",
+                            IDLE_TIMEOUT, circuits, modules)
+                break
 
     def shutdown(self):
         """
