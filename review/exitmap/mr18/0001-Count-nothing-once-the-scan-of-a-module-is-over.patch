@@ -1,0 +1,159 @@
+From fc40ee8c57442ff050f29f3cb956bba0f0c322cb Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
+Date: Sat, 28 Nov 2026 08:04:50 +0000
+Subject: [PATCH] Count nothing once the scan of a module is over
+
+When wait() gives up, it counts the circuits which are neither built
+nor failed yet as failed, and the module processes which have not
+reported back as finished, because all modules of a run share the
+statistics.  But a module process can still report back, and Tor can
+still report one of these circuits, until shutdown() has removed the
+event listener and terminated the processes.  These are then counted a
+second time, and the next module of the run ends too early, before all
+its circuits are built or before all its module processes reported
+back.  If a circuit is built that late, exitmap also starts a module
+process for it, which shutdown() terminates before it can report back,
+and the next module waits for that process until wait() gives up again.
+
+After a hang, this needs a module process which reports back within
+the few milliseconds that shutdown() takes.  But if exitmap was
+stopped, e.g., with Ctrl-Z, for longer than the time limit, wait()
+gives up as soon as exitmap continues unless a message from a module
+process comes first.  The module processes continue as well and may
+report back just then.
+
+So once the scan of a module is over, because check_finished() found
+it finished, because the controller died or because wait() gave up,
+count no more reports and circuit events, and start no module process
+for a circuit which is reported after that.  wait() now corrects the
+counters while holding check_finished_lock, and the queue reader and
+new_circuit() hold it while they count, so that what arrives while
+wait() gives up is counted either before the correction or not at all.
+As check_finished() does, wait() also sets finished_event then.
+
+Failed circuits which we did not create can still end the scan before
+all circuits of the module are requested.  The exit relays whose
+circuits are built after that are now no longer probed.  So far their
+module processes were started, and one which had not finished when the
+last circuit was requested was terminated by shutdown(), after which
+the next module of the run waited for it until wait() gave up.
+---
+ src/eventhandler.py       | 38 ++++++++++++++++++++++++++------------
+ test/test_eventhandler.py | 32 ++++++++++++++++++++++++++++++++
+ 2 files changed, 58 insertions(+), 12 deletions(-)
+
+diff --git a/src/eventhandler.py b/src/eventhandler.py
+index 508b58d..7c885e9 100644
+--- a/src/eventhandler.py
++++ b/src/eventhandler.py
+@@ -284,7 +284,11 @@ class EventHandler(object):
+                 except Exception as err:
+                     log.debug("Exception while getting/closing circuit: %s!", err)
+ 
+-                self.stats.finished_streams += 1
++                with self.check_finished_lock:
++                    # Once the scan is over, e.g. because wait() gave up on
++                    # this process, it is not counted.
++                    if not self.already_finished:
++                        self.stats.finished_streams += 1
+                 self.stats.print_progress()
+                 self.check_finished()
+             else:
+@@ -345,16 +349,21 @@ class EventHandler(object):
+                 break
+             # A module process which hangs or was killed never reports back.
+             if time.monotonic() - self.last_message >= IDLE_TIMEOUT:
+-                # All modules of a run share the statistics, so count the
+-                # circuits as failed and the module processes as finished,
+-                # or the next module would wait for them again.
+-                circuits = max(0, self.stats.total_circuits -
+-                               self.stats.failed_circuits -
+-                               self.stats.successful_circuits)
+-                self.stats.failed_circuits += circuits
+-                modules = max(0, self.stats.successful_circuits -
+-                              self.stats.finished_streams)
+-                self.stats.finished_streams += modules
++                with self.check_finished_lock:
++                    # The scan is over, so count nothing which is reported
++                    # from now on.
++                    self.already_finished = True
++                    self.finished_event.set()
++                    # All modules of a run share the statistics, so count the
++                    # circuits as failed and the module processes as finished,
++                    # or the next module would wait for them again.
++                    circuits = max(0, self.stats.total_circuits -
++                                   self.stats.failed_circuits -
++                                   self.stats.successful_circuits)
++                    self.stats.failed_circuits += circuits
++                    modules = max(0, self.stats.successful_circuits -
++                                  self.stats.finished_streams)
++                    self.stats.finished_streams += modules
+                 log.warning("No message from a module process for %d seconds."
+                             "  No longer waiting for %d circuit(s) and %d "
+                             "module process(es).",
+@@ -427,7 +436,12 @@ class EventHandler(object):
+                       circ_event.id)
+             return
+ 
+-        self.stats.update_circs(circ_event)
++        with self.check_finished_lock:
++            # Once the scan is over, e.g. because wait() gave up on this
++            # circuit, neither count it nor start a module process for it.
++            if self.already_finished:
++                return
++            self.stats.update_circs(circ_event)
+         self.check_finished()
+ 
+         if circ_event.status not in [CircStatus.BUILT]:
+diff --git a/test/test_eventhandler.py b/test/test_eventhandler.py
+index 9f92e03..0e3f068 100644
+--- a/test/test_eventhandler.py
++++ b/test/test_eventhandler.py
+@@ -1,5 +1,6 @@
+ """Unit tests for the eventhandler module."""
+ 
++import logging
+ import sys
+ from unittest.mock import Mock, patch
+ 
+@@ -95,6 +96,37 @@ def test_wait_gives_up_on_silent_modules(handler, caplog):
+     assert not handler.finished_event.is_set()
+ 
+ 
++def test_nothing_counted_after_giving_up(handler, caplog):
++    exit_relay = "A" * 40
++    handler.exit_destinations[exit_relay] = set()
++    handler.stats.total_circuits = 5
++    handler.stats.failed_circuits = 1
++    handler.stats.successful_circuits = 2
++    handler.stats.finished_streams = 1
++    with patch.object(eventhandler.time, "monotonic", side_effect=[0, 300]):
++        with patch.object(handler.finished_event, "wait", return_value=False):
++            handler.wait()
++    # wait() counted two circuits as failed and one module process as
++    # finished.  Late events for the circuits and a late message from the
++    # module process change nothing.
++    for status in [CircStatus.FAILED, CircStatus.BUILT]:
++        circ_event = Mock(status=status,
++                          path=[("B" * 40, "foo"), (exit_relay, "bar")])
++        with patch.object(eventhandler.multiprocessing, "Process") as process:
++            handler.new_circuit(circ_event)
++        process.assert_not_called()
++    handler.queue.put(("23", None))
++    # shutdown() stops the thread reading from the queue only once it has
++    # read this message.
++    with caplog.at_level(logging.DEBUG):
++        handler.shutdown()
++    handler.controller.close_circuit.assert_called_once_with("23")
++    assert "IPC queue received shutdown signal." in caplog.messages
++    assert 3 == handler.stats.failed_circuits
++    assert 2 == handler.stats.successful_circuits
++    assert 2 == handler.stats.finished_streams
++
++
+ def test_queue_reader_notes_messages(handler):
+     handler.shutdown()
+     for item in [("23", None), ("23", ("127.0.0.1", 1234))]:
+-- 
+2.43.0
+

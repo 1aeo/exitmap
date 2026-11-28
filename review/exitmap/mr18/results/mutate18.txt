@@ -1,0 +1,27 @@
+tree: /tmp/claude-0/-home-user-exitmap/92448343-b341-53a0-aabb-7f5db8db7077/scratchpad/new/mr18-check/trees/mr18c
+give-up does not set already_finished            killed   1 failed, 6 passed in 0.06s
+give-up does not set finished_event              killed   1 failed, 5 passed in 0.06s
+reader counts every report                       killed   1 failed, 6 passed in 0.07s
+reader guard inverted                            killed   1 failed, 6 passed in 0.06s
+reader skips a late report                       killed   1 failed, 6 passed in 0.08s
+reader hangs on a late report                    killed   1 failed, 6 passed in 10.07s
+reader dies on a late report                     killed   1 failed, 6 passed, 1 warning in 0.06s
+new_circuit counts every event                   killed   1 failed, 6 passed in 0.09s
+new_circuit counts, then returns                 killed   1 failed, 6 passed in 0.07s
+new_circuit skips counting, still starts module  killed   1 failed, 6 passed in 0.09s
+new_circuit ignores only late BUILT              killed   1 failed, 6 passed in 0.06s
+new_circuit ignores only late FAILED             killed   1 failed, 6 passed in 0.10s
+race: reader without lock                        SURVIVED 12 passed in 0.07s | trace_pause: report COUNTED TWICE, built ok, failed ok
+race: new_circuit without lock                   SURVIVED 12 passed in 0.05s | trace_pause: report ok, built COUNTED TWICE, failed COUNTED TWICE
+race: give-up without lock                       SURVIVED 12 passed in 0.07s | trace_pause: report COUNTED TWICE, built COUNTED TWICE, failed COUNTED TWICE
+flag set after the corrections (same lock)       SURVIVED 12 passed in 0.05s | trace_pause: report ok, built ok, failed ok
+no failed correction                             killed   1 failed, 6 passed in 0.06s
+no finished correction                           killed   1 failed, 6 passed in 0.06s
+corrections swapped                              killed   1 failed, 6 passed in 0.07s
+one finished stream too many                     killed   1 failed, 5 passed in 0.06s
+failed = circuits                                killed   1 failed, 6 passed in 0.05s
+finished = modules                               killed   1 failed, 6 passed in 0.05s
+modules minus failed (upstream rule)             killed   1 failed, 6 passed in 0.06s
+no break after giving up                         killed   1 failed, 5 passed in 0.10s
+> instead of >=                                  killed   1 failed, 5 passed in 0.08s
+warning at debug level                           killed   1 failed, 5 passed in 0.06s

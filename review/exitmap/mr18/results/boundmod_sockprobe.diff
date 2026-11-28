@@ -1,0 +1,18 @@
+--- emulator/fakemods/boundmod.py	2026-11-28 10:20:11.931192563 +0000
++++ emulator-sock/fakemods/boundmod.py	2026-11-28 10:21:41.403056829 +0000
+@@ -84,7 +84,14 @@
+             time.sleep(1)
+     elif role == "silent":
+         time.sleep(12)
+-    time.sleep(float(os.environ.get("FAKEMOD_SLEEP", "0.5")))
++    # Variant: wait like a real probe, in a socket call with a timeout,
++    # instead of time.sleep().
++    ours, theirs = socket.socketpair()
++    ours.settimeout(float(os.environ.get("FAKEMOD_SLEEP", "0.5")))
++    try:
++        ours.recv(1)
++    except socket.timeout:
++        pass
+     with open(os.environ["FAKEMOD_OUT"], "a") as f:
+         f.write("%s %s\n" % (__name__, exit_desc.fingerprint))
+ 

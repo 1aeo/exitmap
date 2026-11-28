@@ -1,0 +1,157 @@
+From b9ce8071cf2ae315a74f727bd7300d67c20f51a1 Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
+Date: Fri, 27 Nov 2026 10:14:40 +0000
+Subject: [PATCH] Fix reader thread deadlock when tor disconnects
+
+When tor closes the control connection our reader thread usually is
+the first to notice, and closes the socket. BaseSocket.close() calls
+the controller's _close() while holding the send lock, and _close()
+joined the event thread there without a limit. The reader enqueues
+the SocketClosed that unblocks msg() callers only after close() has
+returned.
+
+An event listener that used the controller at that moment waited for
+a reply, for the send lock, or for the msg lock of a caller awaiting
+a reply. So the join never returned, and close(), msg() and
+remove_event_listener() blocked in every other thread from then on.
+
+The reader thread now waits for the event thread for at most a second
+(EVENT_THREAD_JOIN_TIMEOUT). Once we are closed the event thread
+counts EVENTS_LISTENING_TIMEOUT (0.1 seconds) from the first event it
+finishes, and stops after the event it is handling when that time is
+up. So this wait only runs out if the event thread is stuck, or a
+listener call takes about half a second or more.
+
+In that case State.CLOSED listeners and callers waiting in msg() are
+notified while the event thread is still busy, a later close() does
+not wait for it, and a later reconnect() begins while it runs rather
+than once it is done. If tor accepts the new connection, that
+reconnect() deadlocks with a listener call that goes on to use the
+controller, as they take the msg lock and the event listener lock in
+opposite order.
+
+Such a reconnect() also keeps the event thread, which could then stop
+after the first queued event at the next close. A listener that
+closes the controller itself could already cause that, so
+_event_loop() now forgets the earlier close once we are alive again.
+
+Other threads that close the socket join the event thread as before:
+a close() by the application, and a msg() caller that closes it
+before the reader does. Those can still deadlock while an event
+listener uses the controller. This is not changed here.
+
+Closes: #N.
+---
+ stem/control.py                       | 19 ++++++++++-
+ test/integ/control/base_controller.py | 48 +++++++++++++++++++++++++++
+ 2 files changed, 66 insertions(+), 1 deletion(-)
+
+diff --git a/stem/control.py b/stem/control.py
+index d2494ca9..978a3a9e 100644
+--- a/stem/control.py
++++ b/stem/control.py
+@@ -293,6 +293,13 @@ from stem.util import log
+ 
+ EVENTS_LISTENING_TIMEOUT = 0.1
+ 
++# When tor disconnects us our reader thread only waits this long for the event
++# thread to finish, see BaseController._close(). The event thread only checks
++# the timeout above between events, so it can take a listener call or two
++# longer than that.
++
++EVENT_THREAD_JOIN_TIMEOUT = 1.0
++
+ MALFORMED_EVENTS = 'MALFORMED_EVENTS'
+ 
+ # state changes a control socket can have
+@@ -856,10 +863,18 @@ class BaseController(object):
+     self._is_authenticated = False
+ 
+     # joins on our threads if it's safe to do so
++    #
++    # Our reader thread only gives the event thread EVENT_THREAD_JOIN_TIMEOUT
++    # to finish. It closes us when tor disconnects, while holding the socket's
++    # send lock and before it enqueues the SocketClosed that unblocks msg()
++    # callers. Event listeners that use the controller can't finish until
++    # then, so waiting for them without a limit would deadlock.
++
++    is_reader = threading.current_thread() == self._reader_thread
+ 
+     for t in (self._reader_thread, self._event_thread):
+       if t and t.is_alive() and threading.current_thread() != t:
+-        t.join()
++        t.join(EVENT_THREAD_JOIN_TIMEOUT if is_reader else None)
+ 
+     self._notify_status_listeners(State.CLOSED)
+ 
+@@ -986,6 +1001,8 @@ class BaseController(object):
+             socket_closed_at = time.time()
+           elif time.time() - socket_closed_at > EVENTS_LISTENING_TIMEOUT:
+             break
++        else:
++          socket_closed_at = None  # in case we got reconnected
+       except queue.Empty:
+         if not self.is_alive():
+           break
+diff --git a/test/integ/control/base_controller.py b/test/integ/control/base_controller.py
+index 294eaee3..10c432a8 100644
+--- a/test/integ/control/base_controller.py
++++ b/test/integ/control/base_controller.py
+@@ -181,6 +181,54 @@ class TestBaseController(unittest.TestCase):
+         self.assertTrue(conf_changed_event.raw_content().startswith('650-CONF_CHANGED\r\n650-NodeFamily='))
+         self.assertEqual(('650', '-'), conf_changed_event.content()[0][:2])
+ 
++  @test.require.controller
++  def test_event_handler_msg_after_disconnect(self):
++    """
++    Checks that an event handler which makes a request after tor disconnected
++    us gets a SocketClosed. Our reader thread used to wait without limit for
++    the event thread while holding the lock this request needs, so neither of
++    them finished.
++    """
++
++    class QuittingController(stem.control.BaseController):
++      """
++      Controller that has tor disconnect us when it gets an event, then makes
++      a request.
++      """
++
++      def __init__(self, control_socket):
++        stem.control.BaseController.__init__(self, control_socket)
++        self.handler_response = None
++        self.handler_done = threading.Event()
++
++      def _handle_event(self, event_message):
++        try:
++          self.msg('QUIT')
++
++          # our reader thread needs a moment to notice that tor hung up
++
++          deadline = time.time() + 5
++
++          while self.is_alive() and time.time() < deadline:
++            time.sleep(0.001)
++
++          self.handler_response = self.msg('GETINFO version')
++        except stem.ControllerError as exc:
++          self.handler_response = exc
++        finally:
++          self.handler_done.set()
++
++    # If this regresses then close() blocks as well, so we don't use a 'with'
++    # block and wait for the handler with a timeout.
++
++    controller = QuittingController(test.runner.get_runner().get_tor_socket())
++    controller.msg('SETEVENTS SIGNAL')
++    controller.msg('SIGNAL CLEARDNSCACHE')
++
++    self.assertTrue(controller.handler_done.wait(10), 'event handler is still blocked on its request')
++    self.assertEqual(stem.SocketClosed, type(controller.handler_response))
++    self.assertFalse(controller.is_alive())
++
+   @test.require.controller
+   def test_get_latest_heartbeat(self):
+     """
+-- 
+2.43.0
+

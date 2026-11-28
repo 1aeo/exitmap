@@ -1,0 +1,18 @@
+newmain5 r551_09_two {"trial": 0, "status": 0, "probes": 16, "per_module": {"fakemod": 6, "fakemod2": 10}, "invoked": 16, "built_events": 17, "closed": 16, "terminated": 0, "gave_up": [], "last_counts": [["4", "16", "20", "16"]]}
+    circ 1 at 0.248 exit 0138DDE9: invoked=2 probed=2 closed=True
+    circ 3 at 2.252 exit 02357911: invoked=2 probed=2 closed=True
+    circ 4 at 3.253 exit 0036FA36: invoked=2 probed=2 closed=True
+    circ 6 at 5.256 exit 034ED155: invoked=2 probed=2 closed=True
+    circ 7 at 6.258 exit 003A08F1: invoked=2 probed=2 closed=True
+    circ 8 at 7.260 exit 0077640E: invoked=2 probed=2 closed=True
+    circ 9 at 8.262 exit 04749CD6: invoked=1 probed=1 closed=False
+    circ 10 at 9.263 exit 01432641: invoked=1 probed=1 closed=True
+    circ 11 at 9.291 exit 0138DDE9: invoked=2 probed=2 closed=True
+    circ 12 at 10.292 exit 02357911: invoked=2 probed=2 closed=True
+    circ 13 at 11.294 exit 0036FA36: invoked=2 probed=2 closed=True
+    circ 14 at 12.296 exit 0165267F: invoked=1 probed=1 closed=True
+    circ 15 at 13.297 exit 04749CD6: invoked=1 probed=1 closed=True
+    circ 16 at 14.299 exit 003A08F1: invoked=2 probed=2 closed=True
+    circ 17 at 15.301 exit 02F4FB08: invoked=1 probed=1 closed=True
+    circ 18 at 16.302 exit 0077640E: invoked=2 probed=2 closed=True
+    circ 19 at 17.304 exit 034ED155: invoked=2 probed=2 closed=True

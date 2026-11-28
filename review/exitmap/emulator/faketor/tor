@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""
+A fake "tor" binary for exercising exitmap end to end without the Tor network.
+
+It speaks just enough of the control protocol for stem/exitmap and emits CIRC
+and STREAM events according to the JSON scenario in $FAKETOR_SCENARIO:
+
+  build_delay   seconds between EXTENDCIRCUIT and the BUILT/FAILED event
+  fail          1-based numbers of EXTENDCIRCUIT calls whose circuit FAILs
+  pending       numbers of EXTENDCIRCUIT calls whose circuit never completes
+  reject        numbers of EXTENDCIRCUIT calls answered with "552 No such router"
+  reject551     numbers answered with "551 Couldn't start circuit" + FAILED event
+  own           list of [after_extend_no, delay, status, last_hop_fpr]: events
+                for circuits which "tor" builds on its own
+  die           {"after_extend": n, "delay": s}: exit s seconds after the n-th
+                EXTENDCIRCUIT
+  die_on_unlisten  exit when the CIRC events are switched off again
+  no_desc       fingerprints for which GETINFO desc/id fails
+  desc_delay    seconds to wait before answering GETINFO desc/id
+  hang          {"match": prefix, "nth": n, "die_after": s}: do not answer the
+                n-th command line starting with prefix and exit s seconds
+                later (0: at once).  Events are still sent in the meantime.
+  stream_delay  seconds between a SOCKS request and its STREAM NEW event
+  burst         {"after_extend": n, "delay": s, "count": k, "fpr": f}: send k
+                BUILT events at once and exit right afterwards
+
+No scenario of run.py uses build_delay, reject551 or burst.
+
+Connections to the SOCKS port produce a STREAM NEW event and are completed
+once the controller sends ATTACHSTREAM for them.
+
+The configuration is read from stdin, which is how stem passes it.  Only
+DataDirectory is used: the files cached-consensus and cached-descriptors
+are copied there from the directory $FAKETOR_DATA.  GETINFO desc/id is
+answered from that cached-descriptors file.  The control port and the SOCKS
+port are chosen by the kernel and announced on stdout.  If $FAKETOR_LOG is
+set, the commands received and the events sent are logged to that file.
+"""
+import json
+import os
+import re
+import shutil
+import socket
+import struct
+import sys
+import threading
+import time
+
+if "--version" in sys.argv:
+    print("Tor version 0.4.8.10.")
+    sys.exit(0)
+
+scenario = json.loads(os.environ.get("FAKETOR_SCENARIO", "{}"))
+data_src = os.environ["FAKETOR_DATA"]
+logf = open(os.environ.get("FAKETOR_LOG", "/dev/null"), "a", buffering=1)
+t0 = time.time()
+
+
+def log(msg):
+    logf.write("%7.3f %s\n" % (time.time() - t0, msg))
+
+
+config = {}
+for line in sys.stdin.read().splitlines():
+    if " " in line:
+        key, value = line.split(" ", 1)
+        config[key] = value
+
+data_dir = config["DataDirectory"]
+os.makedirs(data_dir, mode=0o700, exist_ok=True)
+for name in ("cached-consensus", "cached-descriptors"):
+    shutil.copy(os.path.join(data_src, name), os.path.join(data_dir, name))
+
+descs = {}
+with open(os.path.join(data_src, "cached-descriptors")) as f:
+    for entry in re.split(r"(?m)^(?=@downloaded-at)", f.read()):
+        m = re.search(r"(?m)^fingerprint ((?:[0-9A-F]{4} ?){10})$", entry)
+        if m:
+            text = "".join(line for line in entry.splitlines(True)
+                           if not line.startswith("@"))
+            descs[m.group(1).replace(" ", "")] = text
+
+ctrl = socket.socket()
+ctrl.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+ctrl.bind(("127.0.0.1", 0))
+ctrl.listen(5)
+socks = socket.socket()
+socks.bind(("127.0.0.1", 0))
+socks.listen(50)
+
+print("Nov 26 00:00:00.000 [notice] Socks listener listening on port %d." %
+      socks.getsockname()[1])
+print("Nov 26 00:00:00.000 [notice] Control listener listening on port %d." %
+      ctrl.getsockname()[1])
+print("Nov 26 00:00:00.000 [notice] Bootstrapped 100% (done): Done")
+sys.stdout.flush()
+
+ppid = os.getppid()
+
+
+def watchdog():
+    while True:
+        time.sleep(0.5)
+        if os.getppid() != ppid or time.time() - t0 > 900:
+            log("watchdog: exiting")
+            os._exit(0)
+
+
+threading.Thread(target=watchdog, daemon=True).start()
+
+conn, _ = ctrl.accept()
+wlock = threading.Lock()
+events = set()
+circuits = {}       # id -> status line
+streams = {}        # id -> SOCKS client socket
+extend_count = 0
+next_id = [1]
+next_stream = [1]
+TS = "TIME_CREATED=2026-11-26T00:00:00.000000"
+
+
+def send(data):
+    with wlock:
+        try:
+            conn.sendall(data.encode())
+        except OSError as err:
+            log("send failed: %s" % err)
+
+
+def emit_circ(circ_id, status, path, extra=""):
+    line = "%s %s %s BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL %s%s" % (
+        circ_id, status, ",".join("$%s~relay" % fpr for fpr in path), TS, extra)
+    if status == "BUILT":
+        circuits[circ_id] = line
+    else:
+        circuits.pop(circ_id, None)
+    log("event CIRC %s %s %s" % (circ_id, status, path[-1][:8]))
+    if "CIRC" in events:
+        send("650 CIRC %s\r\n" % line)
+    else:
+        log("  (not sent: CIRC events are not enabled)")
+
+
+def emit_stream(stream_id, target, source_port):
+    log("event STREAM %s NEW %s from port %d" % (stream_id, target,
+                                                 source_port))
+    if "STREAM" in events:
+        send("650 STREAM %s NEW 0 %s SOURCE_ADDR=127.0.0.1:%d PURPOSE=USER"
+             "\r\n" % (stream_id, target, source_port))
+    else:
+        log("  (not sent: STREAM events are not enabled)")
+
+
+def later(delay, func, *args):
+    timer = threading.Timer(delay, func, args)
+    timer.daemon = True
+    timer.start()
+
+
+def die():
+    log("dying as requested")
+    os._exit(1)
+
+
+def recvall(sock, count):
+    data = b""
+    while len(data) < count:
+        chunk = sock.recv(count - len(data))
+        if not chunk:
+            raise EOFError("SOCKS client went away")
+        data += chunk
+    return data
+
+
+def socks_client(client, addr):
+    try:
+        _, nmethods = recvall(client, 2)
+        recvall(client, nmethods)
+        client.sendall(b"\x05\x00")
+        _, _, _, atyp = recvall(client, 4)
+        if atyp == 1:
+            host = socket.inet_ntoa(recvall(client, 4))
+        elif atyp == 3:
+            host = recvall(client, recvall(client, 1)[0]).decode()
+        else:
+            recvall(client, 16)
+            host = "[::]"
+        port = struct.unpack(">H", recvall(client, 2))[0]
+        stream_id = str(next_stream[0])
+        next_stream[0] += 1
+        streams[stream_id] = client
+        later(scenario.get("stream_delay", 0.2), emit_stream, stream_id,
+              "%s:%d" % (host, port), addr[1])
+    except Exception as err:
+        log("SOCKS client error: %r" % err)
+
+
+def socks_server():
+    while True:
+        client, addr = socks.accept()
+        threading.Thread(target=socks_client, args=(client, addr),
+                         daemon=True).start()
+
+
+threading.Thread(target=socks_server, daemon=True).start()
+
+
+def handle(line):
+    global extend_count
+    cmd, _, rest = line.partition(" ")
+    cmd = cmd.upper()
+    if cmd == "PROTOCOLINFO":
+        return ("250-PROTOCOLINFO 1\r\n250-AUTH METHODS=NULL\r\n"
+                "250-VERSION Tor=\"0.4.8.10\"\r\n250 OK\r\n")
+    if cmd in ("AUTHENTICATE", "SETCONF", "RESETCONF", "TAKEOWNERSHIP"):
+        return "250 OK\r\n"
+    if cmd == "ATTACHSTREAM":
+        client = streams.pop(rest.split()[0], None)
+        if client is None:
+            return "552 Unknown stream \"%s\"\r\n" % rest.split()[0]
+        try:
+            client.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+        except OSError as err:
+            log("SOCKS reply failed: %s" % err)
+        return "250 OK\r\n"
+    if cmd == "SETEVENTS":
+        if ("CIRC" in events and "CIRC" not in rest.split()
+                and scenario.get("die_on_unlisten")):
+            die()
+        events.clear()
+        events.update(rest.split())
+        return "250 OK\r\n"
+    if cmd == "GETCONF":
+        if rest.lower() == "usemicrodescriptors":
+            return "250 UseMicrodescriptors=0\r\n"
+        return "250 %s\r\n" % rest
+    if cmd == "GETINFO":
+        if rest == "version":
+            return "250-version=0.4.8.10\r\n250 OK\r\n"
+        if rest == "circuit-status":
+            if not circuits:
+                return "250-circuit-status=\r\n250 OK\r\n"
+            return ("250+circuit-status=\r\n" +
+                    "".join(v + "\r\n" for v in circuits.values()) +
+                    ".\r\n250 OK\r\n")
+        if rest.startswith("desc/id/"):
+            fpr = rest[len("desc/id/"):]
+            if scenario.get("desc_delay"):
+                time.sleep(scenario["desc_delay"])
+            if fpr in descs and fpr not in scenario.get("no_desc", []):
+                body = "".join(row.rstrip("\n") + "\r\n"
+                               for row in descs[fpr].splitlines())
+                return "250+%s=\r\n%s.\r\n250 OK\r\n" % (rest, body)
+        return "552 Unrecognized key \"%s\"\r\n" % rest
+    if cmd == "EXTENDCIRCUIT":
+        extend_count += 1
+        n = extend_count
+        path = rest.split()[1].split(",")
+        for after, delay, status, fpr in scenario.get("own", []):
+            if after == n:
+                own_id = str(1000 + next_id[0])
+                next_id[0] += 1
+                later(delay, emit_circ, own_id, status, [path[0], fpr],
+                      " REASON=TIMEOUT" if status == "FAILED" else "")
+        if scenario.get("die", {}).get("after_extend") == n:
+            later(scenario["die"].get("delay", 0), die)
+        burst = scenario.get("burst", {})
+        if burst.get("after_extend") == n:
+            # Send many events for circuits of our own at once, then die.
+            def send_burst():
+                for i in range(burst["count"]):
+                    emit_circ(str(5000 + i), "BUILT", [path[0], burst["fpr"]])
+                die()
+            later(burst["delay"], send_burst)
+        if n in scenario.get("reject", []):
+            return "552 No such router \"%s\"\r\n" % path[-1]
+        circ_id = str(next_id[0])
+        next_id[0] += 1
+        delay = scenario.get("build_delay", 0.2)
+        if n in scenario.get("reject551", []):
+            later(0, emit_circ, circ_id, "FAILED", path[:1],
+                  " REASON=CONNECTFAILED")
+            return "551 Couldn't start circuit\r\n"
+        if n in scenario.get("pending", []):
+            log("circuit %s (no. %d) stays pending" % (circ_id, n))
+        elif n in scenario.get("fail", []):
+            later(delay, emit_circ, circ_id, "FAILED", path[:1],
+                  " REASON=TIMEOUT")
+        else:
+            later(delay, emit_circ, circ_id, "BUILT", path)
+        return "250 EXTENDED %s\r\n" % circ_id
+    if cmd == "CLOSECIRCUIT":
+        circ_id = rest.split()[0]
+        if circ_id not in circuits:
+            return "552 Unknown circuit \"%s\"\r\n" % circ_id
+        circuits.pop(circ_id)
+        return "250 OK\r\n"
+    if cmd == "QUIT":
+        return "250 closing connection\r\n"
+    return "510 Unrecognized command \"%s\"\r\n" % cmd
+
+
+hang = scenario.get("hang")
+hang_seen = 0
+rfile = conn.makefile("r", newline="\r\n")
+for line in rfile:
+    line = line.rstrip("\r\n")
+    log("< " + line)
+    if hang and line.startswith(hang["match"]):
+        hang_seen += 1
+        if hang_seen == hang.get("nth", 1):
+            log("not answering this one; dying in %.2fs" %
+                hang.get("die_after", 0))
+            time.sleep(hang.get("die_after", 0))
+            die()
+    reply = handle(line)
+    send(reply)
+log("control connection closed, exiting")
+os._exit(0)

@@ -1,0 +1,8 @@
+newmain5 r551 {"trial": 0, "status": 0, "probes": 6, "per_module": {"fakemod": 6}, "invoked": 6, "built_events": 7, "closed": 6, "terminated": 0, "gave_up": [], "last_counts": [["4", "6", "10", "6"]]}
+    circ 1 at 0.242 exit 01432641: invoked=1 probed=1 closed=True
+    circ 3 at 2.245 exit 02F4FB08: invoked=1 probed=1 closed=True
+    circ 4 at 3.246 exit 0036FA36: invoked=1 probed=1 closed=True
+    circ 6 at 5.250 exit 003A08F1: invoked=1 probed=1 closed=True
+    circ 7 at 6.251 exit 0138DDE9: invoked=1 probed=1 closed=True
+    circ 8 at 7.252 exit 034ED155: invoked=1 probed=1 closed=True
+    circ 9 at 8.254 exit 0077640E: invoked=0 probed=0 closed=False

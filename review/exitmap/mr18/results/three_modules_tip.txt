@@ -1,0 +1,9 @@
+tip           late_failed n=1 interleaved | m1 late t1 f2 b0 s0 | m2 EARLY: ended right after requesting its  | m3 start t3 f2 b0 s0: ok
+tip           late_failed n=3 interleaved | m1 late t1 f2 b0 s0 | m2 EARLY: ended after circuit 102 was repor | m3 start t7 f2 b2 s2: ok
+tip           late_failed n=3 built-first | m1 late t1 f2 b0 s0 | m2 ok | m3 start t7 f2 b3 s3: ok
+tip           late_built  n=1 interleaved | m1 late t1 f1 b1 s0 | m2 HANG: never finished, wait() gave up (5  | m3 start t3 f1 b2 s2: EARLY: ended right after requesting its circuits; never built ['101'],
+tip           late_built  n=3 interleaved | m1 late t1 f1 b1 s0 | m2 HANG: never finished, wait() gave up (5  | m3 start t7 f1 b4 s4: EARLY: ended after circuit 102 was reported; never built ['103'], term
+tip           late_built  n=3 built-first | m1 late t1 f1 b1 s0 | m2 HANG: never finished, wait() gave up (5  | m3 start t7 f1 b4 s4: ok
+tip           late_report n=1 interleaved | m1 late t1 f0 b1 s2 | m2 EARLY: ended after circuit 101 was built | m3 start t3 f0 b2 s2: ok
+tip           late_report n=3 interleaved | m1 late t1 f0 b1 s2 | m2 EARLY: ended after circuit 103 was built | m3 start t7 f0 b4 s4: ok
+tip           late_report n=3 built-first | m1 late t1 f0 b1 s2 | m2 EARLY: ended after circuit 102 was repor | m3 start t7 f0 b4 s4: ok

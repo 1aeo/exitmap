@@ -1,0 +1,13 @@
+`shutdown()` waits without a timeout for the thread reading from the IPC queue. And as this is not a daemon thread, exitmap cannot exit as long as the thread is running. The thread does not terminate if
+
+- `shutdown()` is left before it stops the thread, e.g., because the module's `teardown()` function raises an exception,
+- the thread is blocked in a request to the controller, e.g., because Tor died while an event callback was waiting for a reply, in which case stem never releases the lock the thread needs, or
+- the sentinel which stops the thread cannot be delivered, because a module process was terminated while it was writing to the queue.
+
+Make it a daemon thread, stop waiting for it after five seconds, and do not wait for the queue's feeder thread at exit in that case.
+
+In the second case, this only helps together with the change which terminates the scan when the controller is not alive: without it, exitmap does not get as far as stopping the thread.
+
+Closes #71.
+
+Goes together with !62, which is that change.
