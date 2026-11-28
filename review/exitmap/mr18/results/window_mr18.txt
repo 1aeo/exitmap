@@ -1,0 +1,3 @@
+mr18           1 hung processes: listener removed after   0.08 ms, last process terminated after    1.12 ms, reader stopped by    2.08 ms
+mr18          10 hung processes: listener removed after   0.08 ms, last process terminated after    9.18 ms, reader stopped by   10.15 ms
+mr18          50 hung processes: listener removed after   0.10 ms, last process terminated after   45.21 ms, reader stopped by   46.20 ms

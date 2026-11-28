@@ -1,0 +1,4 @@
+auth 1AF5 6FB0 D273 DF91 95F6 D9DA 5342 6FF9 6414 8CF1
+creating up       exit status 0               11.8 s after tor was killed | probes: quickmod 1, quickmod2 0 | 'Running module quickmod2': yes | 'controller is not alive': 2 | circuits that could not be created: 5
+creating mr03     exit status 0               2.9 s after tor was killed | probes: quickmod 1, quickmod2 0 | 'Running module quickmod2': no | 'controller is not alive': 3 | circuits that could not be created: 0
+creating mr01+mr03 exit status 1               2.9 s after tor was killed | probes: quickmod 1, quickmod2 0 | 'Running module quickmod2': no | 'controller is not alive': 3 | circuits that could not be created: 0

@@ -1,0 +1,15 @@
+auth D081 CFB3 204B A8E2 5FC8 E080 69C9 3703 0248 9D05
+consensus with 3 relays after 10s
+up: exitmap exited with 0 after 23s
+  rtt 57432B7C: 1 measurements
+  rtt D081CFB3: 1 measurements
+  rtt EFA8DBFA: 1 measurements
+  log: closure - Error in `module_call` closure: 0x06: TTL expired
+  log: closure - Error in `module_call` closure: 0x06: TTL expired
+  log: closure - Error in `module_call` closure: 0x06: TTL expired
+  'Unknown stream "None"' warnings: 3, circuits built: 3, 'Unknown circuit' warnings: 0
+fixed: exitmap exited with 0 after 5s
+  rtt 57432B7C: 10 measurements
+  rtt D081CFB3: 10 measurements
+  rtt EFA8DBFA: 10 measurements
+  'Unknown stream "None"' warnings: 0, circuits built: 3, 'Unknown circuit' warnings: 0

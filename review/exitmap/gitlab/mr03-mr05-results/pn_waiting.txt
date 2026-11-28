@@ -1,0 +1,4 @@
+auth F5B1 BFDF 6A04 91CB DFAE 49CD 9E90 3BA0 D02F D24A
+waiting  up       exit status HANG (killed)   90.1 s after tor was killed | probes: quickmod 1, quickmod2 0 | 'Running module quickmod2': no | 'controller is not alive': 0 | circuits that could not be created: 0
+waiting  mr03     exit status 0               1.0 s after tor was killed | probes: quickmod 1, quickmod2 0 | 'Running module quickmod2': no | 'controller is not alive': 1 | circuits that could not be created: 0
+waiting  mr01+mr03 exit status 1               1.0 s after tor was killed | probes: quickmod 1, quickmod2 0 | 'Running module quickmod2': no | 'controller is not alive': 1 | circuits that could not be created: 0

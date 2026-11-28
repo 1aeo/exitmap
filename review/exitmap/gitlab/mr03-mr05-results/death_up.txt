@@ -1,0 +1,61 @@
+exitmap: /tmp/claude-0/-home-user-exitmap/92448343-b341-53a0-aabb-7f5db8db7077/scratchpad/new/mr0305-review/up
+stem:    1.8.2 in /tmp/claude-0/-home-user-exitmap/92448343-b341-53a0-aabb-7f5db8db7077/scratchpad/venv/lib/python3.13/site-packages/stem
+python:  3.13.18, /tmp/claude-0/-home-user-exitmap/92448343-b341-53a0-aabb-7f5db8db7077/scratchpad/venv/bin/python
+H_die_in_getinfo            HANG (killed after 26s)    probes=0
+      main thread:         control.py:614 msg <- control.py:3669 extend_circuit <- control.py:3593 new_circuit <- exitmap.py:550 iter_exit_relays <- exitmap.py:486 run_module <- exitmap.py:337 main
+      queue reader thread: connection.py:400 _recv <- connection.py:435 _recv_bytes <- connection.py:221 recv_bytes <- queues.py:101 get <- eventhandler.py:247 queue_reader
+      stem event thread:   queue.py:199 get <- control.py:663 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:1952 get_server_descriptor <- control.py:489 wrapped
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+H2_die_in_getinfo_wait      HANG (killed after 26s)    probes=0
+      main thread:         eventhandler.py:333 wait <- exitmap.py:488 run_module <- exitmap.py:337 main <- exitmap:39 main <- exitmap:56 <module>
+      queue reader thread: connection.py:400 _recv <- connection.py:435 _recv_bytes <- connection.py:221 recv_bytes <- queues.py:101 get <- eventhandler.py:247 queue_reader
+      stem event thread:   queue.py:199 get <- control.py:663 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:1952 get_server_descriptor <- control.py:489 wrapped
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+H3_getinfo_prompt_iter      HANG (killed after 26s)    probes=0
+      main thread:         control.py:614 msg <- control.py:3669 extend_circuit <- control.py:3593 new_circuit <- exitmap.py:550 iter_exit_relays <- exitmap.py:486 run_module <- exitmap.py:337 main
+      queue reader thread: connection.py:400 _recv <- connection.py:435 _recv_bytes <- connection.py:221 recv_bytes <- queues.py:101 get <- eventhandler.py:247 queue_reader
+      stem event thread:   queue.py:199 get <- control.py:663 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:1952 get_server_descriptor <- control.py:489 wrapped
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+AT_evt_prompt_wait          HANG (killed after 26s)    probes=0
+      main thread:         control.py:3253 remove_event_listener <- eventhandler.py:342 shutdown <- exitmap.py:490 run_module <- exitmap.py:337 main <- exitmap:39 main <- exitmap:56 <module>
+      stem event thread:   queue.py:199 get <- control.py:663 msg <- control.py:3790 attach_stream <- eventhandler.py:129 _attach <- eventhandler.py:99 prepare <- eventhandler.py:451 new_stream
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+AT_evt_prompt_iter          HANG (killed after 26s)    probes=0
+      main thread:         control.py:614 msg <- control.py:3669 extend_circuit <- control.py:3593 new_circuit <- exitmap.py:550 iter_exit_relays <- exitmap.py:486 run_module <- exitmap.py:337 main
+      stem event thread:   queue.py:199 get <- control.py:663 msg <- control.py:3790 attach_stream <- eventhandler.py:129 _attach <- eventhandler.py:99 prepare <- eventhandler.py:451 new_stream
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+AT_evt_hang_qr_blocked      HANG (killed after 26s)    probes=0
+      main thread:         eventhandler.py:333 wait <- exitmap.py:488 run_module <- exitmap.py:337 main <- exitmap:39 main <- exitmap:56 <module>
+      queue reader thread: control.py:614 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:3564 get_circuits <- control.py:489 wrapped <- control.py:3543 get_circuit
+      stem event thread:   queue.py:199 get <- control.py:663 msg <- control.py:3790 attach_stream <- eventhandler.py:129 _attach <- eventhandler.py:99 prepare <- eventhandler.py:451 new_stream
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+H4_getinfo_hang_qr_blocked  HANG (killed after 26s)    probes=1
+      main thread:         eventhandler.py:333 wait <- exitmap.py:488 run_module <- exitmap.py:337 main <- exitmap:39 main <- exitmap:56 <module>
+      queue reader thread: control.py:614 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:3564 get_circuits <- control.py:489 wrapped <- control.py:3543 get_circuit
+      stem event thread:   queue.py:199 get <- control.py:663 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:1952 get_server_descriptor <- control.py:489 wrapped
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+CC_qr_prompt                exit 0 after  0.8s         probes=1
+GC_qr_prompt                exit 0 after  0.8s         probes=1
+AT_qr_prompt                exit 0 after  0.9s         probes=0
+CC_qr_hang_evt_blocked      HANG (killed after 26s)    probes=2
+      main thread:         eventhandler.py:333 wait <- exitmap.py:488 run_module <- exitmap.py:337 main <- exitmap:39 main <- exitmap:56 <module>
+      queue reader thread: queue.py:199 get <- control.py:663 msg <- control.py:3732 close_circuit <- eventhandler.py:272 queue_reader
+      stem event thread:   control.py:614 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:1952 get_server_descriptor <- control.py:489 wrapped <- eventhandler.py:49 get_relay_desc
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+GC_qr_hang_evt_blocked      HANG (killed after 26s)    probes=2
+      main thread:         eventhandler.py:333 wait <- exitmap.py:488 run_module <- exitmap.py:337 main <- exitmap:39 main <- exitmap:56 <module>
+      queue reader thread: queue.py:199 get <- control.py:663 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:3564 get_circuits <- control.py:489 wrapped
+      stem event thread:   control.py:614 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:1952 get_server_descriptor <- control.py:489 wrapped <- eventhandler.py:49 get_relay_desc
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+AT_qr_hang_evt_blocked      HANG (killed after 26s)    probes=0
+      main thread:         eventhandler.py:333 wait <- exitmap.py:488 run_module <- exitmap.py:337 main <- exitmap:39 main <- exitmap:56 <module>
+      queue reader thread: queue.py:199 get <- control.py:663 msg <- control.py:3790 attach_stream <- eventhandler.py:129 _attach <- eventhandler.py:97 prepare <- eventhandler.py:286 queue_reader
+      stem event thread:   control.py:614 msg <- control.py:1208 get_info <- control.py:489 wrapped <- control.py:1952 get_server_descriptor <- control.py:489 wrapped <- eventhandler.py:49 get_relay_desc
+      stem reader thread:  control.py:862 _close <- socket.py:229 close <- socket.py:292 _recv <- socket.py:474 recv <- control.py:948 _reader_loop
+F_die_creating              exit 0 after  9.3s         probes=3
+G_die_idle                  HANG (killed after 26s)    probes=3
+      main thread:         eventhandler.py:333 wait <- exitmap.py:488 run_module <- exitmap.py:337 main <- exitmap:39 main <- exitmap:56 <module>
+      queue reader thread: connection.py:400 _recv <- connection.py:435 _recv_bytes <- connection.py:221 recv_bytes <- queues.py:101 get <- eventhandler.py:247 queue_reader
+J_die_modules_running       exit 0 after  3.2s         probes=1
+Q_die_at_end                exit 0 after  2.2s         probes=5
+summary: 17 scenarios, 6 exits, 11 hangs (H_die_in_getinfo, H2_die_in_getinfo_wait, H3_getinfo_prompt_iter, AT_evt_prompt_wait, AT_evt_prompt_iter, AT_evt_hang_qr_blocked, H4_getinfo_hang_qr_blocked, CC_qr_hang_evt_blocked, GC_qr_hang_evt_blocked, AT_qr_hang_evt_blocked, G_die_idle)

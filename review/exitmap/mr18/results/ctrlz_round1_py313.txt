@@ -1,0 +1,21 @@
+# First round of ctrlz.py on Python 3.13 (2026-11-28, about 07:55 UTC), as printed;
+# the second round is in ctrlz_tip.txt and ctrlz_mr18.txt.  A single trial on the
+# tip before this round, not counted below: boundmod 10, fakemod2 10, no give-up.
+tip {"trial": 0, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 1, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 1, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 2, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 3, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 1, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 4, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 0, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 5, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 6, "status": 0, "stopped": true, "boundmod": 9, "fakemod2": 3, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 7, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip: second module ran all 10 probes in 4 of 8 runs; probes of the second module per run: [1, 10, 10, 1, 0, 10, 3, 10]
+mr18 {"trial": 0, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+mr18 {"trial": 1, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+mr18 {"trial": 2, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+mr18 {"trial": 3, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+mr18 {"trial": 4, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+mr18 {"trial": 5, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+mr18 {"trial": 6, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+mr18 {"trial": 7, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+mr18: second module ran all 10 probes in 8 of 8 runs; probes of the second module per run: [10, 10, 10, 10, 10, 10, 10, 10]
