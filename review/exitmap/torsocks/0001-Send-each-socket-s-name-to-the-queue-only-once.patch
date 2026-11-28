@@ -1,0 +1,92 @@
+From 2e4e15a6a55cad83651081117655158d06883995 Mon Sep 17 00:00:00 2001
+From: 1aeo <tor@1aeo.com>
+Date: Sat, 28 Nov 2026 03:24:42 +0000
+Subject: [PATCH] Send each socket's name to the queue only once
+
+Since the port to Python 3 (4d678bc), _Torsocket.__init__() replaces
+PySocks' SOCKS5 negotiation function with ourneg(), which sends the
+socket's name to the queue before it calls the original function, so
+that the event handler can attach the new stream to the probe's
+circuit.  But _proxy_negotiators is a class attribute of
+socks.socksocket, which all sockets share.  Every new socket thus wraps
+the ourneg() of the socket created before it, and the n-th socket of a
+probe process sends its name n times.
+
+The Attacher pairs each message with Tor's STREAM NEW event for the
+same source port.  For the second connection of a probe, the second
+message usually finds the entry the first one left, and exitmap tries
+to attach stream "None", which fails with 'Unknown stream "None"'.  The
+stream which Tor reports afterwards is never attached, and the
+connection fails with "0x06: TTL expired" once Tor's SocksTimeout of
+two minutes has passed, unless the module gives up earlier.  The
+fourth, sixth, etc. connection can fail in the same way, depending on
+when Tor's event arrives.
+
+This affects every module that opens more than one connection in a
+probe, e.g., to fetch several targets over one exit relay as in #46, or
+to follow a redirect.  It is what the log in !5 shows once that module
+fetched several targets per exit relay: "Attempting to attach stream
+None to circuit 4."  rtt, which opens ten connections per destination,
+only records its first connection per exit relay.  The DNS modules are
+not affected, as resolve() sends the socket's name itself.
+
+Give every socket its own copy of the dict, so that it wraps PySocks'
+function and sends its name once.
+
+Relates to #46.
+---
+ src/torsocks.py       |  3 +++
+ test/test_torsocks.py | 16 ++++++++++++++++
+ 2 files changed, 19 insertions(+)
+
+diff --git a/src/torsocks.py b/src/torsocks.py
+index fa229de..653cf6a 100644
+--- a/src/torsocks.py
++++ b/src/torsocks.py
+@@ -80,6 +80,9 @@ def send_queue(sock_name):
+ class _Torsocket(socks.socksocket):
+     def __init__(self, *args, **kwargs):
+         super(_Torsocket, self).__init__(*args, **kwargs)
++        # PySocks shares this dict among all sockets.  Use a copy, or every
++        # new socket would wrap the ourneg() of the previous one.
++        self._proxy_negotiators = dict(self._proxy_negotiators)
+         orig_neg = self._proxy_negotiators[2]  # This is the original function
+ 
+         def ourneg(*args, **kwargs):
+diff --git a/test/test_torsocks.py b/test/test_torsocks.py
+index b905fcb..c2e475f 100644
+--- a/test/test_torsocks.py
++++ b/test/test_torsocks.py
+@@ -24,6 +24,7 @@ import socket
+ import sys
+ 
+ import pytest
++import socks
+ 
+ sys.path.insert(0, 'src/')
+ import torsocks
+@@ -43,6 +44,21 @@ def test__torsocket():
+         _ = t.resolve("localhost")
+ 
+ 
++def test__torsocket_send_queue(monkeypatch):
++    # Every socket must send its name to the queue once, no matter how many
++    # sockets were created before.
++    sent = []
++    monkeypatch.setattr(torsocks, "send_queue", sent.append)
++    # Leave out the SOCKS handshake, there is no Tor to talk to.
++    monkeypatch.setitem(socks.socksocket._proxy_negotiators, socks.SOCKS5,
++                        lambda *args: None)
++    for _ in range(3):
++        with torsocks._Torsocket() as t:
++            # PySocks' connect() calls this once it is connected to the proxy.
++            t._proxy_negotiators[socks.SOCKS5](t, "192.0.2.1", 80)
++    assert len(sent) == 3
++
++
+ def test_torsocket():
+     ts = torsocks.torsocket()
+     assert isinstance(ts, torsocks._Torsocket)
+-- 
+2.43.0
+
