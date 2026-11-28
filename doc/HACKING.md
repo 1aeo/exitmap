@@ -42,10 +42,9 @@ The arguments are:
    (as subsequent arguments).  The command's network interaction is then routed
    over Tor using `torsocks`.
 
-6. `**kwargs`: Optional keyword arguments passed by exitmap, currently
-   `destinations` (the set of `(host, port)` pairs allowed by the relay's exit
-   policy) and `first_hop` (the 40-character fingerprint of the circuit's entry
-   relay).
+6. `**kwargs`: Further keyword arguments which your module does not have to
+   make use of.  One of them is `first_hop`, the fingerprint of the first hop
+   of the circuit to the exit relay.
 
 Finally, you must define the global variable `destinations` in your module.  It
 determines the default destinations---as tuples---your module will connect to.
@@ -60,9 +59,15 @@ If `target_host` and/or a  `target_port` are defined in the command line, values
 
 In that case, all available relays will be selected without influence of the target host and port.
 
-Modules may also optionally define `setup()` and `teardown()` lifecycle hooks:
+Your module can also define the functions `setup()` and `teardown()`.  They are
+called with keyword arguments only and should accept `**kwargs`, as further
+arguments might be added in the future:
 
-- `setup(consensus=..., target=..., **kwargs)`: Called once before exit
-  selection.  Modules should accept `**kwargs` for forward compatibility.
-- `teardown(stats=..., **kwargs)`: Called once after the module run finishes.
-  Modules should accept `**kwargs` for forward compatibility.
+1. `setup()` is called once before the scan starts.  Its arguments are
+   `consensus`, a dictionary which maps the fingerprints of all relays in the
+   consensus to their router status entries, and `target`, the host defined on
+   the command line with -H.  `target` is only passed if -H is used.
+
+2. `teardown()` is called once after the scan is finished.  Its argument is
+   `stats`, the `Statistics` object (see stats.py) which is shared by all
+   modules exitmap is run with.

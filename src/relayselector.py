@@ -102,11 +102,9 @@ def get_fingerprints(cached_consensus_path, exclude=[],
             continue
         if exclude_flags and exclude_flags.intersection(desc.flags):
             continue
-        if min_bandwidth_kb and (desc.bandwidth is None or
-                                 desc.bandwidth < min_bandwidth_kb):
+        if min_bandwidth_kb and desc.bandwidth < min_bandwidth_kb:
             continue
-        if require_measured_relays and (desc.bandwidth is None or
-                                        getattr(desc, 'is_unmeasured', False)):
+        if require_measured_relays and getattr(desc, 'is_unmeasured', False):
             continue
         if country_relays and desc.fingerprint not in country_relays:
             continue
@@ -312,17 +310,14 @@ def get_exits(data_dir,
         return {}
 
     # Filter conditions are checked from cheapest to most expensive.
-    requested_set = (
-        frozenset(fp.upper() for fp in requested_exits)
-        if requested_exits is not None else None
-    )
-    if address or nickname or version or (requested_set is not None):
+    if address or nickname or version or requested_exits is not None:
         exit_candidates = [
             desc for desc in exit_candidates
             if ((not address or address in desc.address) and
                 (not nickname or nickname in desc.nickname) and
                 (not version or version == str(desc.tor_version)) and
-                (requested_set is None or desc.fingerprint in requested_set))
+                (requested_exits is None or
+                 desc.fingerprint in requested_exits))
         ]
     if not exit_candidates:
         log.warning("No exit relays meet basic filter conditions.")

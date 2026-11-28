@@ -512,7 +512,10 @@ def _write_circuit_failures(stats, controller=None):
             extra_unresolved.append((fp, info))
         else:
             resolved.append((fp, info))
-    unresolved_count = len(extra_unresolved) + len(getattr(stats, "_early_failed", {}))
+    # Failed circuits which Statistics could not assign to an exit relay.
+    # (Exact if dnshealth is the only module of the run: the counters add up
+    # over all modules, while there is one entry per exit relay.)
+    unresolved_count = max(0, stats.failed_circuits - len(resolved))
 
     now = time.time()
     scan_stats = {

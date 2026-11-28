@@ -24,7 +24,6 @@ import sys
 import os
 import time
 import socket
-import string
 import pkgutil
 import argparse
 import datetime
@@ -39,7 +38,6 @@ import stem
 import stem.connection
 import stem.process
 import stem.descriptor
-import stem.util.tor_tools
 from stem.control import Controller, EventType
 
 import modules
@@ -68,12 +66,8 @@ def bootstrap_tor(args):
              "might take a while.", args.tor_dir)
 
     if not args.first_hop:
-        if args.reliable_first_hop or RELIABLE_FIRST_HOP:
-            log.info("No first hop given.  Using filtered reliable guards "
-                     "as first hops for circuits.")
-        else:
-            log.info("No first hop given.  Using randomly determined first "
-                     "hops for circuits.")
+        log.info("No first hop given.  Using randomly determined first "
+                 "hops for circuits.")
 
     ports = {}
     partial_parse_log_lines = functools.partial(util.parse_log_lines, ports)
@@ -195,18 +189,16 @@ def parse_cmd_args():
                              "in ascending order: debug, info, warning, "
                              "error, critical).  The default is info.")
 
-    first_hops = parser.add_mutually_exclusive_group()
+    parser.add_argument("-i", "--first-hop", type=str, default=None,
+                        help="The 20-byte fingerprint of the Tor relay which "
+                             "is used as first hop.  This relay should be "
+                             "under your control.")
 
-    first_hops.add_argument("-i", "--first-hop", type=str, default=None,
-                            help="The 20-byte fingerprint of the Tor relay which "
-                                 "is used as first hop.  This relay should be "
-                                 "under your control.")
-
-    first_hops.add_argument("--reliable-first-hop", action="store_true",
-                            default=False,
-                            help="Filter random first hops to stable, fast, "
-                                 "measured guards with >= 5000 KB/s consensus "
-                                 "weight.")
+    parser.add_argument("-r", "--reliable-first-hop", action="store_true",
+                        help="Only use fast, stable and authority-measured "
+                             "guards with a consensus bandwidth of at least "
+                             "5000 KB/s as random first hops.  By default, "
+                             "all relays in the consensus are used.")
 
     parser.add_argument("-o", "--logfile", type=str, default=None,
                         help="Filename to which log output should be written "
@@ -236,36 +228,25 @@ def parse_cmd_args():
                         help="Run the given module (available: %s)." %
                         ", ".join(get_modules()))
 
-    bool_opts = {
-        action.dest for action in parser._actions
-        if isinstance(action.default, bool)
-    }
-    for bool_opt in bool_opts:
-        if bool_opt in defaults and not isinstance(defaults[bool_opt], bool):
+    # The values from the configuration file are strings.  Convert the ones
+    # of boolean options, as, e.g., "false" would be considered true.
+    for option in defaults:
+        if isinstance(parser.get_default(option), bool):
             try:
-                defaults[bool_opt] = config_parser.getboolean(
-                    "Defaults", bool_opt
-                )
+                defaults[option] = config_parser.getboolean("Defaults", option)
             except ValueError as err:
-                log.warning("Invalid boolean for \"%s\" in \"%s\": %s",
-                            bool_opt, config_file, err)
-                del defaults[bool_opt]
-
-    cfg_first_hop = defaults.pop("first_hop", None)
-    cfg_reliable = defaults.pop("reliable_first_hop", False)
+                parser.error("%s in %s: %s" % (option, config_file, err))
 
     parser.set_defaults(**defaults)
 
     args = parser.parse_args(remaining_argv)
-    if args.first_hop is None and not args.reliable_first_hop:
-        if cfg_first_hop and cfg_reliable:
-            parser.error(
-                "argument --reliable-first-hop: not allowed with "
-                "argument -i/--first-hop"
-            )
-        if cfg_first_hop is not None:
-            args.first_hop = cfg_first_hop
-        args.reliable_first_hop = bool(cfg_reliable)
+
+    # argparse cannot check this for us, as the first hop might be set in the
+    # configuration file.
+    if args.first_hop and args.reliable_first_hop:
+        parser.error("-r/--reliable-first-hop cannot be used together with "
+                     "-i/--first-hop")
+
     return args
 
 
@@ -349,16 +330,6 @@ def main():
 
     log.debug("Command line arguments: %s", str(args))
 
-    if args.first_hop is not None:
-        first_hop = _normalize_fingerprint(args.first_hop)
-        if first_hop is None:
-            log.critical("Invalid first-hop relay fingerprint \"%s\".",
-                         args.first_hop)
-            return 1
-        args.first_hop = first_hop
-
-    requested_exits = _get_requested_exits(args)
-
     socks_port, control_port = bootstrap_tor(args)
     controller = Controller.from_port(port=control_port)
     stem.connection.authenticate(controller)
@@ -383,9 +354,8 @@ def main():
                             str(MAX_PENDING_CIRCUITS))
         log.debug("Set MaxClientCircuitsPending to %d", MAX_PENDING_CIRCUITS)
         cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
-        if args.first_hop and (
-                not util.relay_in_consensus(args.first_hop,
-                                            cached_consensus_path)):
+        if args.first_hop and (not util.relay_in_consensus(args.first_hop,
+                                                           cached_consensus_path)):
             log.critical("Given first hop \"%s\" not found in consensus.  Is it"
                          " offline?", args.first_hop)
             return 1
@@ -397,13 +367,13 @@ def main():
                 util.analysis_dir = os.path.join(args.analysis_dir, datestr)
 
             try:
-                run_module(module_name, args, controller, socks_port, stats,
-                           requested_exits=requested_exits)
+                run_module(module_name, args, controller, socks_port, stats)
             except error.ExitSelectionError as err:
                 log.error("Failed to run because : %s", err)
 
+            # We can't run the remaining modules without a controller.
             if not controller.is_alive():
-                log.error("Tor controller disconnected; aborting scan.")
+                log.error("Terminating because the controller is not alive.")
                 return 1
     finally:
         try:
@@ -411,7 +381,9 @@ def main():
             # handler.shutdown() the socket is about to close, and
             # stem's internal listener fires repeatedly until it notices.
             logging.getLogger("stem").setLevel(logging.ERROR)
-            controller.close()
+            # This blocks forever as well in the case described in shutdown().
+            if controller.is_alive():
+                controller.close()
         except Exception as err:
             log.debug("Failed to close controller: %s", err)
     return 0
@@ -450,86 +422,7 @@ def lookup_destinations(args, module):
     return destinations
 
 
-def _normalize_fingerprint(fingerprint):
-    """
-    Strip optional ``$`` prefix and validate a 40-char hex fingerprint.
-
-    :param str fingerprint: raw relay fingerprint string
-    :returns: uppercase 40-char hex fingerprint, or ``None`` if invalid
-    :rtype: str or None
-    """
-    if not isinstance(fingerprint, str):
-        return None
-    fp = fingerprint.strip()
-    if fp.startswith("$"):
-        fp = fp[1:]
-    if (not stem.util.tor_tools.is_valid_fingerprint(fp) or
-            not all(c in string.hexdigits for c in fp)):
-        return None
-    return fp.upper()
-
-
-def _parse_exit_file(exit_file):
-    """
-    Read, validate, normalize, and deduplicate exit relay fingerprints.
-
-    :param str exit_file: path to file containing one fingerprint per line
-    :returns: deduplicated uppercase 40-char hex fingerprints
-    :rtype: list
-    """
-    requested_exits = []
-    seen = set()
-    try:
-        with open(exit_file, encoding="utf-8-sig") as f:
-            for raw_line in f:
-                entry = raw_line.split("#", 1)[0].strip()
-                if not entry:
-                    continue
-                fp = _normalize_fingerprint(entry)
-                if fp is None:
-                    log.warning(
-                        "Ignoring invalid relay fingerprint \"%s\" in %s.",
-                        entry, exit_file
-                    )
-                    continue
-                if fp not in seen:
-                    seen.add(fp)
-                    requested_exits.append(fp)
-    except OSError as err:
-        log.error("Could not read %s: %s", exit_file, err.strerror)
-        sys.exit(1)
-    except Exception as err:
-        log.error("Could not read %s: %s", exit_file, err)
-        sys.exit(1)
-
-    if not requested_exits:
-        log.error("Exit file \"%s\" contains no valid relay fingerprints.",
-                  exit_file)
-        sys.exit(1)
-
-    return requested_exits
-
-
-def _get_requested_exits(args):
-    """
-    Return validated, normalized requested exit fingerprints for ``args``.
-
-    :param argparse.Namespace args: parsed command-line arguments
-    :returns: list of uppercase fingerprints, or ``None`` if unfiltered
-    :rtype: list or None
-    """
-    if args.exit is not None:
-        fp = _normalize_fingerprint(args.exit)
-        if fp is None:
-            log.error("Invalid exit relay fingerprint \"%s\".", args.exit)
-            sys.exit(1)
-        return [fp]
-    if args.exit_file is not None:
-        return _parse_exit_file(args.exit_file)
-    return None
-
-
-def select_exits(args, module, requested_exits=None):
+def select_exits(args, module):
     """
     Select exit relays which allow exiting to the module's scan destinations.
 
@@ -541,8 +434,22 @@ def select_exits(args, module, requested_exits=None):
     before = datetime.datetime.now()
     destinations = lookup_destinations(args, module)
 
-    if requested_exits is None:
-        requested_exits = _get_requested_exits(args)
+    if args.exit:
+        # '-e' was used to specify a single exit relay.
+        requested_exits = [args.exit.upper()]
+    elif args.exit_file:
+        # '-E' was used to specify a file containing exit relays.
+        try:
+            with open(args.exit_file) as f:
+                requested_exits = [line.strip().upper() for line in f]
+        except OSError as err:
+            log.error("Could not read %s: %s", args.exit_file, err.strerror)
+            sys.exit(1)
+        except Exception as err:
+            log.error("Could not read %s: %s", args.exit_file, err)
+            sys.exit(1)
+    else:
+        requested_exits = None
 
     exit_destinations = relayselector.get_exits(
         args.tor_dir,
@@ -558,8 +465,7 @@ def select_exits(args, module, requested_exits=None):
     return exit_destinations
 
 
-def run_module(module_name, args, controller, socks_port, stats,
-               requested_exits=None):
+def run_module(module_name, args, controller, socks_port, stats):
     """
     Run an exitmap module over all available exit relays.
     """
@@ -567,7 +473,6 @@ def run_module(module_name, args, controller, socks_port, stats,
     log.info("Running module '%s'.", module_name)
     log.info("with host '%s'.", args.host)
     stats.modules_run += 1
-    stats.reset_failed_circuits()
 
     try:
         module = __import__("modules.%s" % module_name, fromlist=[module_name])
@@ -575,73 +480,58 @@ def run_module(module_name, args, controller, socks_port, stats,
         log.error("Failed to load module because: %s", err)
         return
 
-    handler = None
-    can_teardown = not hasattr(module, "setup")
+    # Let module perform one-off setup tasks.
+    if hasattr(module, "setup"):
+        # Let's pass the consensus to the module so it can make use of it, if
+        # needed, for further analysis or narrowing down of potential results.
+        cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
+        cached_consensus = relayselector.get_cached_consensus(cached_consensus_path)
+        log.debug("Calling module's setup() function.")
+        setup_kwargs = {"consensus": cached_consensus}
+        if args.host is not None:
+            setup_kwargs["target"] = args.host
+        module.setup(**setup_kwargs)
+
+    exit_destinations = select_exits(args, module)
+
+    exit_relays = list(exit_destinations.keys())
+    random.shuffle(exit_relays)
+
+    target_host = args.host
+    target_port = args.port
+
+    log.debug("Running actually the module.")
+    count = len(exit_relays)
+    stats.total_circuits += count
+
+    if count < 1:
+        # The module is not run, but it might have to clean up after setup().
+        if hasattr(module, "teardown"):
+            log.debug("Calling module's teardown() function.")
+            module.teardown(stats=stats)
+        raise error.ExitSelectionError("Exit selection yielded %d exits "
+                                       "but need at least one." % count)
+
+    handler = EventHandler(controller, module, socks_port, stats,
+                           exit_destinations=exit_destinations,
+                           target_host=target_host,
+                           target_port=target_port)
+
+    controller.add_event_listener(handler.new_event,
+                                  EventType.CIRC, EventType.STREAM)
+
+    duration = count * args.build_delay
+    log.info("Scan is estimated to take around %s." %
+             datetime.timedelta(seconds=duration))
+
+    log.info("Beginning to trigger %d circuit creation(s).", count)
+
     try:
-        # Let module perform one-off setup tasks.
-        if hasattr(module, "setup"):
-            # Let's pass the consensus to the module so it can make use of it,
-            # if needed, for further analysis or narrowing down of potential
-            # results.
-            cached_consensus_path = os.path.join(args.tor_dir,
-                                                 "cached-consensus")
-            cached_consensus = relayselector.get_cached_consensus(
-                cached_consensus_path
-            )
-            log.debug("Calling module's setup() function.")
-            setup_kwargs = {"consensus": cached_consensus}
-            if args.host is not None:
-                setup_kwargs["target"] = args.host
-            can_teardown = True
-            module.setup(**setup_kwargs)
-
-        exit_destinations = select_exits(args, module,
-                                         requested_exits=requested_exits)
-
-        exit_relays = list(exit_destinations.keys())
-        random.shuffle(exit_relays)
-
-        target_host = args.host
-        target_port = args.port
-
-        log.debug("Running actually the module.")
-        count = len(exit_relays)
-
-        if count < 1:
-            raise error.ExitSelectionError("Exit selection yielded %d exits "
-                                           "but need at least one." % count)
-
-        handler = EventHandler(controller, module, socks_port, stats,
-                               exit_destinations=exit_destinations,
-                               target_host=target_host,
-                               target_port=target_port)
-
-        controller.add_event_listener(handler.new_event,
-                                      EventType.CIRC, EventType.STREAM)
-        stats.total_circuits += count
-
-        duration = count * args.build_delay
-        log.info("Scan is estimated to take around %s." %
-                 datetime.timedelta(seconds=duration))
-
-        log.info("Beginning to trigger %d circuit creation(s).", count)
-
         iter_exit_relays(exit_relays, controller, stats, args)
         handler.check_finished()
         handler.wait()
     finally:
-        if handler is not None:
-            try:
-                handler.shutdown()
-            except Exception as err:
-                log.warning("Error during handler shutdown: %s", err)
-        stats.log_failed_circuits()
-        if can_teardown and hasattr(module, "teardown"):
-            log.debug("Calling module's teardown() function.")
-            try:
-                module.teardown(stats=stats)
-            except Exception as err:
-                log.warning("Module teardown() failed: %s", err)
+        handler.shutdown()
 
 
 def sleep(delay, delay_noise):
@@ -668,45 +558,33 @@ def sleep(delay, delay_noise):
     time.sleep(delay)
 
 
-def _select_first_hops(args):
-    """
-    Return deduplicated candidate first-hop fingerprints for random selection.
-
-    :param argparse.Namespace args: parsed command-line arguments
-    :returns: deduplicated candidate first-hop fingerprints
-    :rtype: list
-    """
-    cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
-    if args.reliable_first_hop or RELIABLE_FIRST_HOP:
-        fingerprints = list(dict.fromkeys(relayselector.get_fingerprints(
-            cached_consensus_path,
-            include_flags={
-                stem.Flag.GUARD, stem.Flag.STABLE, stem.Flag.FAST,
-                stem.Flag.RUNNING, stem.Flag.VALID,
-            },
-            exclude_flags={stem.Flag.BADEXIT},
-            min_bandwidth_kb=5000,
-            require_measured_relays=True,
-        )))
-        if len(fingerprints) >= 2:
-            log.info("Using %d reliable guards for first hop.",
-                     len(fingerprints))
-            return fingerprints
-        log.warning("Only %d reliable guards available; falling back "
-                    "to unfiltered first-hop selection.", len(fingerprints))
-
-    return list(dict.fromkeys(
-        relayselector.get_fingerprints(cached_consensus_path)
-    ))
-
-
 def iter_exit_relays(exit_relays, controller, stats, args):
     """
     Invoke circuits for all selected exit relays.
     """
 
     before = datetime.datetime.now()
-    fingerprints = [] if args.first_hop else _select_first_hops(args)
+    cached_consensus_path = os.path.join(args.tor_dir, "cached-consensus")
+    if ((args.reliable_first_hop or RELIABLE_FIRST_HOP)
+            and not args.first_hop):
+        fingerprints = relayselector.get_fingerprints(
+            cached_consensus_path,
+            include_flags={stem.Flag.GUARD, stem.Flag.STABLE, stem.Flag.FAST,
+                           stem.Flag.RUNNING, stem.Flag.VALID},
+            exclude_flags={stem.Flag.BADEXIT},
+            min_bandwidth_kb=5000,
+            require_measured_relays=True)
+        # We need two of them, as an exit relay is not its own first hop.
+        if len(fingerprints) > 1:
+            log.info("Using %d reliable guards for first hop.",
+                     len(fingerprints))
+        else:
+            log.warning("Fewer than two reliable guards in the consensus.  "
+                        "Using all relays as first hops.")
+            fingerprints = relayselector.get_fingerprints(
+                cached_consensus_path)
+    else:
+        fingerprints = relayselector.get_fingerprints(cached_consensus_path)
     count = len(exit_relays)
 
     # Start building a circuit for every exit relay we got.
@@ -714,8 +592,7 @@ def iter_exit_relays(exit_relays, controller, stats, args):
     for i, exit_relay in enumerate(exit_relays):
 
         if not controller.is_alive():
-            log.error("Terminating circuit creation because the controller "
-                      "is not alive.")
+            log.error("Terminating because the controller is not alive.")
             break
 
         # Determine the hops in our next circuit.
@@ -730,10 +607,6 @@ def iter_exit_relays(exit_relays, controller, stats, args):
             except ValueError:
                 # Catch exception when exit is not in the cached_consensus
                 pass
-            if not all_hops:
-                raise error.ExitSelectionError(
-                    "No candidate first-hop relays available in consensus."
-                )
             first_hop = random.choice(all_hops)
             log.debug("Using random first hop %s for circuit.", first_hop)
             hops = [first_hop, exit_relay]
@@ -742,15 +615,10 @@ def iter_exit_relays(exit_relays, controller, stats, args):
 
         try:
             circuit_id = controller.new_circuit(hops)
-            stats.register_circuit(circuit_id, hops[0], hops[1])
+            stats.pending_circuits[circuit_id] = hops
         except stem.ControllerError as err:
-            if not controller.is_alive():
-                log.error("Terminating circuit creation because the "
-                          "controller is not alive.")
-                break
-            stats.record_immediate_failure(hops[0], hops[1], err)
-            log.debug("Circuit with exit relay \"%s\" could not be "
-                      "created: %s", exit_relay, err)
+            stats.failed_circuits += 1
+            stats.record_failed_circuit(hops, "CREATION_FAILED (%s)" % err)
 
         if i != (count - 1):
             sleep(args.build_delay, args.delay_noise)

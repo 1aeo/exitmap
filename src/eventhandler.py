@@ -21,12 +21,12 @@ Handles Tor controller events.
 """
 
 import functools
-import time
 import socket
 import threading
 import multiprocessing
 import logging
 import queue
+import time
 import stem
 from stem import StreamStatus
 from stem import CircStatus
@@ -38,6 +38,10 @@ import command
 import util
 
 log = logging.getLogger(__name__)
+
+# wait() gives up once no module process has sent us a message for this many
+# seconds.
+IDLE_TIMEOUT = 300
 
 
 def get_relay_desc(controller, fpr):
@@ -140,7 +144,7 @@ class Attacher(object):
 
 def module_call(queue, module, circ_id, socks_port,
                 exit_desc, run_cmd_over_tor, destinations,
-                target_host, target_port, first_hop_fpr=None):
+                target_host, target_port, first_hop):
     """
     Run the module and then inform the event handler.
 
@@ -183,7 +187,7 @@ def module_call(queue, module, circ_id, socks_port,
             destinations=destinations,
             target_host=target_host,
             target_port=target_port,
-            first_hop=first_hop_fpr
+            first_hop=first_hop
         )
     except KeyboardInterrupt:
         log.debug("Ignoring `KeyboardInterrupt`")
@@ -247,6 +251,7 @@ class EventHandler(object):
 
             try:
                 item = self.queue.get()
+                self.last_message = time.monotonic()
                 # Sentinel value signals shutdown
                 if item is None:
                     log.debug("IPC queue received shutdown signal.")
@@ -307,7 +312,7 @@ class EventHandler(object):
                            self.stats.successful_circuits) >=
                           self.stats.total_circuits)
 
-            # Was every built circuit finished by a stream/module?
+            # Did the module finish for every built circuit?
             streams_done = (self.stats.finished_streams >=
                             self.stats.successful_circuits)
 
@@ -331,9 +336,29 @@ class EventHandler(object):
         """
         Wait for the scan to finish.
         """
-        while not self.finished_event.wait(timeout=1.0):
+        # Only the time since all circuits were requested counts.
+        self.last_message = time.monotonic()
+        # Nobody notifies us if the controller dies, so check that regularly.
+        while not self.finished_event.wait(timeout=1):
             if not self.controller.is_alive():
                 self.check_finished()
+                break
+            # A module process which hangs or was killed never reports back.
+            if time.monotonic() - self.last_message >= IDLE_TIMEOUT:
+                # All modules of a run share the statistics, so count the
+                # circuits as failed and the module processes as finished,
+                # or the next module would wait for them again.
+                circuits = max(0, self.stats.total_circuits -
+                               self.stats.failed_circuits -
+                               self.stats.successful_circuits)
+                self.stats.failed_circuits += circuits
+                modules = max(0, self.stats.successful_circuits -
+                              self.stats.finished_streams)
+                self.stats.finished_streams += modules
+                log.warning("No message from a module process for %d seconds."
+                            "  No longer waiting for %d circuit(s) and %d "
+                            "module process(es).",
+                            IDLE_TIMEOUT, circuits, modules)
                 break
 
     def shutdown(self):
@@ -343,70 +368,39 @@ class EventHandler(object):
         # Remove event listener first — scan is complete, no more events needed.
         # This prevents event callbacks from racing with resource cleanup.
         try:
-            self.controller.remove_event_listener(self.new_event)
+            # This blocks forever if the controller died while one of our
+            # event callbacks was waiting for a reply.
+            if self.controller.is_alive():
+                self.controller.remove_event_listener(self.new_event)
         except Exception:
             pass
 
-        children = multiprocessing.active_children()
-        for proc in children:
+        for proc in multiprocessing.active_children():
             log.debug(
                 "Terminating remaining PID %d with name %s.",
                 proc.pid, proc.name
             )
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+            proc.terminate()
+            # Wait for the process, so it does not remain as a zombie.
+            proc.join(timeout=1)
 
-        deadline = time.monotonic() + 3.0
-        still_alive = []
-        for proc in children:
-            remaining = max(0.0, deadline - time.monotonic())
-            try:
-                proc.join(timeout=remaining)
-                if proc.is_alive():
-                    still_alive.append(proc)
-            except (OSError, ValueError):
-                pass
-
-        for proc in still_alive:
-            log.debug(
-                "Killing unresponsive PID %d with name %s.",
-                proc.pid, proc.name
-            )
-            try:
-                proc.kill()
-            except OSError:
-                pass
-
-        for proc in still_alive:
-            try:
-                proc.join(timeout=1.0)
-            except (OSError, ValueError):
-                pass
+        if hasattr(self.module, "teardown"):
+            log.debug("Calling module's teardown() function.")
+            self.module.teardown(stats=self.stats)
 
         log.info(self.stats)
 
         # Signal queue reader to stop
         try:
-            self.queue.put(None, timeout=1.0)
+            self.queue.put(None)
         except Exception:
             pass
 
-        self.queue_thread.join(timeout=5.0)
+        self.queue_thread.join(timeout=5)
         if self.queue_thread.is_alive():
-            log.warning(
-                "Queue reader thread did not exit in time; "
-                "cancelling queue join."
-            )
-            try:
-                self.queue.close()
-            except Exception:
-                pass
-            try:
-                self.queue.cancel_join_thread()
-            except Exception:
-                pass
+            log.warning("Thread reading from IPC queue did not terminate.")
+            # Don't wait for the queue's feeder thread at exit, either.
+            self.queue.cancel_join_thread()
 
     def _close_queue(self):
         """
@@ -425,12 +419,13 @@ class EventHandler(object):
         """
         Invoke a new probing module when a new circuit becomes ready.
         """
-        if circ_event.status in [CircStatus.BUILT]:
-            if (not circ_event.path or
-                    circ_event.path[-1][0] not in self.exit_destinations):
-                log.debug("Ignoring built circuit %s for unselected exit.",
-                          circ_event.id)
-                return
+
+        # Tor may also build circuits on its own.
+        if (circ_event.status in [CircStatus.BUILT] and
+                circ_event.path[-1][0] not in self.exit_destinations):
+            log.debug("Ignoring circuit %s which we did not create.",
+                      circ_event.id)
+            return
 
         self.stats.update_circs(circ_event)
         self.check_finished()
@@ -438,11 +433,10 @@ class EventHandler(object):
         if circ_event.status not in [CircStatus.BUILT]:
             return
 
-        first_hop_fpr = circ_event.path[0][0]
         last_hop = circ_event.path[-1]
         exit_fpr = last_hop[0]
-        log.debug("Circuit for exit relay \"%s\" is built (first hop: %s).  "
-                  "Now invoking probing module.", exit_fpr, first_hop_fpr)
+        log.debug("Circuit for exit relay \"%s\" is built.  "
+                  "Now invoking probing module.", exit_fpr)
 
         run_cmd_over_tor = command.Command(self.queue,
                                            circ_event.id,
@@ -462,10 +456,7 @@ class EventHandler(object):
                 log.error("Error while closing circuit: %s!", err, exc_info=True)
             # Add this circuit to finished_streams so check_finished()
             # doesn't block waiting for a sentinel that will never arrive.
-            try:
-                self.queue.put((circ_event.id, None))
-            except (ValueError, OSError):
-                pass
+            self.queue.put((circ_event.id, None))
             return
 
         proc = multiprocessing.Process(target=module_call, args=(
@@ -478,10 +469,20 @@ class EventHandler(object):
             self.exit_destinations[exit_fpr],
             self.target_host,
             self.target_port,
-            first_hop_fpr
+            circ_event.path[0][0]
         ))
         proc.daemon = True
-        proc.start()
+        # A process which is forked while another thread is writing a log
+        # message inherits the locked log stream and blocks as soon as it logs
+        # a message itself.
+        handlers = list(logging.getLogger().handlers)
+        for handler in handlers:
+            handler.acquire()
+        try:
+            proc.start()
+        finally:
+            for handler in handlers:
+                handler.release()
 
     def new_stream(self, stream_event):
         """

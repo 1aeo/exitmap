@@ -21,7 +21,6 @@ Provides functions to keep track of scanning statistics.
 """
 
 import logging
-import threading
 from datetime import datetime
 
 from stem import CircStatus
@@ -47,149 +46,41 @@ class Statistics(object):
         self.modules_run = 0
         self.finished_streams = 0
         self.failed_streams = 0
+        # Maps the IDs of circuits which are not built yet to their hops.
+        self.pending_circuits = {}
+        # Maps the exit relays to which we were unable to create a circuit to
+        # the first hop of that circuit and the reason for the failure.
         self.failed_circuit_relays = {}
-        self._pending_circuits = {}
-        self._early_failed = {}
-        self._early_closed = {}
-        self._early_built = set()
-        self._resolved_cids = set()
-        self._lock = threading.Lock()
 
-    def reset_failed_circuits(self):
+    def record_failed_circuit(self, hops, reason):
         """
-        Reset per-module failed-circuit tracking state before a scan.
+        Log and remember that the circuit with the given hops failed.
+        """
 
-        :returns: ``None``
-        """
-        with self._lock:
-            self.failed_circuit_relays.clear()
-            self._pending_circuits.clear()
-            self._early_failed.clear()
-            self._early_closed.clear()
-            self._early_built.clear()
-            self._resolved_cids.clear()
-
-    def register_circuit(self, circuit_id, first_hop, exit_relay):
-        """
-        Register an intended circuit path so failures can be attributed.
-
-        :param str circuit_id: circuit ID returned by controller.new_circuit()
-        :param str first_hop: fingerprint of the first-hop relay
-        :param str exit_relay: fingerprint of the exit relay
-        """
-        cid = str(circuit_id)
-        with self._lock:
-            if cid in self._early_built:
-                self._early_built.discard(cid)
-            elif cid in self._early_failed:
-                reason_str = self._early_failed.pop(cid)
-                self.failed_circuit_relays[exit_relay] = {
-                    "reason": reason_str,
-                    "first_hop": first_hop,
-                }
-            elif cid in self._early_closed:
-                reason_str = self._early_closed.pop(cid)
-                self.failed_circuits += 1
-                self.failed_circuit_relays[exit_relay] = {
-                    "reason": reason_str,
-                    "first_hop": first_hop,
-                }
-            else:
-                self._pending_circuits[cid] = (first_hop, exit_relay)
-
-    def record_immediate_failure(self, first_hop, exit_relay, err):
-        """
-        Record a circuit creation failure raised before a circuit ID exists.
-
-        :param str first_hop: fingerprint of the intended first-hop relay
-        :param str exit_relay: fingerprint of the intended exit relay
-        :param Exception err: exception raised by Stem
-        """
-        with self._lock:
-            self.failed_circuits += 1
-            self.failed_circuit_relays[exit_relay] = {
-                "reason": "CREATION_FAILED (%s)" % err,
-                "first_hop": first_hop,
-            }
+        log.info("Circuit with exit relay \"%s\" and first hop \"%s\" failed "
+                 "because: %s", hops[-1], hops[0], reason)
+        self.failed_circuit_relays[hops[-1]] = {
+            "first_hop": hops[0],
+            "reason": str(reason),
+        }
 
     def update_circs(self, circ_event):
         """
-        Update statistics and per-relay failure records from a circuit event.
-
-        :param stem.response.events.CircuitEvent circ_event: circuit event
+        Update statistics with the given circuit event."
         """
-        raw_id = getattr(circ_event, "id", None)
-        cid = str(raw_id) if raw_id is not None else None
 
         if circ_event.status in [CircStatus.FAILED]:
-            reason_str = str(circ_event.reason) if circ_event.reason else "UNKNOWN"
-            log.debug("Circuit failed because: %s", reason_str)
-            with self._lock:
-                self.failed_circuits += 1
-                if cid is not None:
-                    self._resolved_cids.add(cid)
-                pending = (
-                    self._pending_circuits.pop(cid, None)
-                    if cid is not None else None
-                )
-                if pending is not None:
-                    first_hop, exit_relay = pending
-                    self.failed_circuit_relays[exit_relay] = {
-                        "reason": reason_str,
-                        "first_hop": first_hop,
-                    }
-                elif cid is not None:
-                    self._early_failed[cid] = reason_str
+
+            log.debug("Circuit failed because: %s", str(circ_event.reason))
+            self.failed_circuits += 1
+            hops = self.pending_circuits.pop(circ_event.id, None)
+            if hops is not None:
+                self.record_failed_circuit(hops, circ_event.reason)
 
         elif circ_event.status in [CircStatus.BUILT]:
-            with self._lock:
-                self.successful_circuits += 1
-                if cid is not None:
-                    self._resolved_cids.add(cid)
-                    if self._pending_circuits.pop(cid, None) is None:
-                        self._early_built.add(cid)
 
-        elif circ_event.status in [CircStatus.CLOSED]:
-            if cid is not None:
-                with self._lock:
-                    pending = self._pending_circuits.pop(cid, None)
-                    reason_str = (
-                        str(circ_event.reason)
-                        if getattr(circ_event, "reason", None)
-                        else "CLOSED"
-                    )
-                    if pending is not None:
-                        self._resolved_cids.add(cid)
-                        first_hop, exit_relay = pending
-                        self.failed_circuits += 1
-                        self.failed_circuit_relays[exit_relay] = {
-                            "reason": reason_str,
-                            "first_hop": first_hop,
-                        }
-                    elif cid not in self._resolved_cids:
-                        self._resolved_cids.add(cid)
-                        self._early_closed[cid] = reason_str
-
-    def log_failed_circuits(self):
-        """
-        Log exit relay fingerprints whose circuits failed during the scan.
-
-        :returns: ``None``
-        """
-        with self._lock:
-            failed = dict(self.failed_circuit_relays)
-            unresolved_count = len(self._early_failed)
-
-        if failed:
-            log.info("Failed to build circuits for %d exit relay(s):",
-                     len(failed))
-            for exit_fpr, info in failed.items():
-                log.info("  %s (first hop: %s, reason: %s)",
-                         exit_fpr, info["first_hop"], info["reason"])
-
-        if unresolved_count:
-            log.debug("%d failed circuit(s) had no registered exit fingerprint.",
-                      unresolved_count)
+            self.successful_circuits += 1
+            self.pending_circuits.pop(circ_event.id, None)
 
     def print_progress(self, sampling=50):
         """

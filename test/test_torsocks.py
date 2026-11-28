@@ -24,6 +24,7 @@ import socket
 import sys
 
 import pytest
+import socks
 
 sys.path.insert(0, 'src/')
 import torsocks
@@ -41,6 +42,21 @@ def test__torsocket():
     t = torsocks._Torsocket()
     with pytest.raises(TypeError):
         _ = t.resolve("localhost")
+
+
+def test__torsocket_send_queue(monkeypatch):
+    # Every socket must send its name to the queue once, no matter how many
+    # sockets were created before.
+    sent = []
+    monkeypatch.setattr(torsocks, "send_queue", sent.append)
+    # Leave out the SOCKS handshake, there is no Tor to talk to.
+    monkeypatch.setitem(socks.socksocket._proxy_negotiators, socks.SOCKS5,
+                        lambda *args: None)
+    for _ in range(3):
+        with torsocks._Torsocket() as t:
+            # PySocks' connect() calls this once it is connected to the proxy.
+            t._proxy_negotiators[socks.SOCKS5](t, "192.0.2.1", 80)
+    assert len(sent) == 3
 
 
 def test_torsocket():

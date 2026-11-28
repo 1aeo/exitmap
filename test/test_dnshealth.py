@@ -761,13 +761,22 @@ class TestTeardown:
         exit_a = "A" * 40
         exit_b = "B" * 40
         guard = "G" * 40
-        stats_obj.register_circuit("10", guard, exit_a)
+        stats_obj.pending_circuits["10"] = [guard, exit_a]
         ev = CircuitEvent("foo", "bar")
         ev.id = "10"
         ev.status = CircStatus.FAILED
         ev.reason = "TIMEOUT"
         stats_obj.update_circs(ev)
-        stats_obj.record_immediate_failure(guard, exit_b, "No path")
+        stats_obj.failed_circuits += 1
+        stats_obj.record_failed_circuit(
+            [guard, exit_b], "CREATION_FAILED (No path)"
+        )
+        # A failed circuit which cannot be assigned to an exit relay.
+        ev = CircuitEvent("foo", "bar")
+        ev.id = "11"
+        ev.status = CircStatus.FAILED
+        ev.reason = "TIMEOUT"
+        stats_obj.update_circs(ev)
 
         consensus = {
             exit_a: SimpleNamespace(nickname="ExitA", address="192.0.2.10"),
@@ -794,6 +803,11 @@ class TestTeardown:
         assert failures[exit_b]["tor_reason"] == "CREATION_FAILED"
         assert failures[exit_b]["error"].startswith("Tor Circuit: ")
         assert "No path" in failures[exit_b]["error"]
+
+        with open(stats_path) as f:
+            scan_stats = json.load(f)
+        assert scan_stats["resolved_failures"] == 2
+        assert scan_stats["unresolved_failures"] == 1
 
     def test_writes_terminated_relays_without_clobbering_existing(self, temp_analysis_dir):
         """Teardown writes timeout files for terminated relays but preserves existing results."""
