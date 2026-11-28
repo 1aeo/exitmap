@@ -284,7 +284,11 @@ class EventHandler(object):
                 except Exception as err:
                     log.debug("Exception while getting/closing circuit: %s!", err)
 
-                self.stats.finished_streams += 1
+                with self.check_finished_lock:
+                    # Once the scan is over, e.g. because wait() gave up on
+                    # this process, it is not counted.
+                    if not self.already_finished:
+                        self.stats.finished_streams += 1
                 self.stats.print_progress()
                 self.check_finished()
             else:
@@ -345,16 +349,21 @@ class EventHandler(object):
                 break
             # A module process which hangs or was killed never reports back.
             if time.monotonic() - self.last_message >= IDLE_TIMEOUT:
-                # All modules of a run share the statistics, so count the
-                # circuits as failed and the module processes as finished,
-                # or the next module would wait for them again.
-                circuits = max(0, self.stats.total_circuits -
-                               self.stats.failed_circuits -
-                               self.stats.successful_circuits)
-                self.stats.failed_circuits += circuits
-                modules = max(0, self.stats.successful_circuits -
-                              self.stats.finished_streams)
-                self.stats.finished_streams += modules
+                with self.check_finished_lock:
+                    # The scan is over, so count nothing which is reported
+                    # from now on.
+                    self.already_finished = True
+                    self.finished_event.set()
+                    # All modules of a run share the statistics, so count the
+                    # circuits as failed and the module processes as finished,
+                    # or the next module would wait for them again.
+                    circuits = max(0, self.stats.total_circuits -
+                                   self.stats.failed_circuits -
+                                   self.stats.successful_circuits)
+                    self.stats.failed_circuits += circuits
+                    modules = max(0, self.stats.successful_circuits -
+                                  self.stats.finished_streams)
+                    self.stats.finished_streams += modules
                 log.warning("No message from a module process for %d seconds."
                             "  No longer waiting for %d circuit(s) and %d "
                             "module process(es).",
@@ -427,7 +436,12 @@ class EventHandler(object):
                       circ_event.id)
             return
 
-        self.stats.update_circs(circ_event)
+        with self.check_finished_lock:
+            # Once the scan is over, e.g. because wait() gave up on this
+            # circuit, neither count it nor start a module process for it.
+            if self.already_finished:
+                return
+            self.stats.update_circs(circ_event)
         self.check_finished()
 
         if circ_event.status not in [CircStatus.BUILT]:
