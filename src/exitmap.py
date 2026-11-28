@@ -615,7 +615,7 @@ def iter_exit_relays(exit_relays, controller, stats, args):
 
         try:
             circuit_id = controller.new_circuit(hops)
-            stats.pending_circuits[circuit_id] = hops
+            stats.add_pending_circuit(circuit_id, hops)
         except stem.ControllerError as err:
             stats.failed_circuits += 1
             stats.record_failed_circuit(hops, "CREATION_FAILED (%s)" % err)

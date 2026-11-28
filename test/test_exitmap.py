@@ -156,6 +156,23 @@ def test_iter_exit_relays_remembers_circuits(stats_obj, args):
     } == stats_obj.failed_circuit_relays
 
 
+def test_iter_exit_relays_attributes_early_failures(stats_obj, args):
+    def new_circuit(hops):
+        # Tor reports the failure before new_circuit() returns the ID.
+        stats_obj.update_circs(Mock(id="23",
+                                    status=exitmap.stem.CircStatus.FAILED,
+                                    reason="CHANNEL_CLOSED"))
+        return "23"
+
+    controller = Mock()
+    controller.new_circuit.side_effect = new_circuit
+    exitmap.iter_exit_relays([args.exit], controller, stats_obj, args)
+    assert {} == stats_obj.pending_circuits
+    assert {
+        args.exit: {"first_hop": args.first_hop, "reason": "CHANNEL_CLOSED"}
+    } == stats_obj.failed_circuit_relays
+
+
 def test_sleep(args):
     start = time.monotonic()
     exitmap.sleep(args.build_delay, args.delay_noise)

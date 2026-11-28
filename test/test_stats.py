@@ -64,6 +64,7 @@ def test_stats_failed_circuit(caplog, stats_obj):
     )
     stats_obj.update_circs(Mock(id="42", status=CircStatus.BUILT))
     assert {} == stats_obj.pending_circuits
+    assert {} == stats_obj._early_failed
     assert {
         exit_relay: {"first_hop": first_hop, "reason": "TIMEOUT"}
     } == stats_obj.failed_circuit_relays
@@ -71,6 +72,19 @@ def test_stats_failed_circuit(caplog, stats_obj):
         'Circuit with exit relay "%s" and first hop "%s" failed because: '
         'TIMEOUT' % (exit_relay, first_hop) in caplog.text
     )
+
+
+def test_stats_circuit_failed_before_new_circuit_returned(stats_obj):
+    first_hop, exit_relay = "A" * 40, "B" * 40
+    stats_obj.update_circs(
+        Mock(id="23", status=CircStatus.FAILED, reason="CHANNEL_CLOSED")
+    )
+    stats_obj.add_pending_circuit("23", [first_hop, exit_relay])
+    assert {} == stats_obj.pending_circuits
+    assert {} == stats_obj._early_failed
+    assert {
+        exit_relay: {"first_hop": first_hop, "reason": "CHANNEL_CLOSED"}
+    } == stats_obj.failed_circuit_relays
 
 
 def test_stats_print_progress(caplog, stats_obj):

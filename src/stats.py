@@ -21,6 +21,7 @@ Provides functions to keep track of scanning statistics.
 """
 
 import logging
+import threading
 from datetime import datetime
 
 from stem import CircStatus
@@ -48,9 +49,26 @@ class Statistics(object):
         self.failed_streams = 0
         # Maps the IDs of circuits which are not built yet to their hops.
         self.pending_circuits = {}
+        # Maps the IDs of circuits which failed before we knew their hops to
+        # the reason for the failure.
+        self._early_failed = {}
+        # Both are used by the event thread and the thread creating circuits.
+        self._lock = threading.Lock()
         # Maps the exit relays to which we were unable to create a circuit to
         # the first hop of that circuit and the reason for the failure.
         self.failed_circuit_relays = {}
+
+    def add_pending_circuit(self, circuit_id, hops):
+        """
+        Remember the hops of the circuit with the given ID.
+        """
+
+        with self._lock:
+            reason = self._early_failed.pop(circuit_id, None)
+            if reason is None:
+                self.pending_circuits[circuit_id] = hops
+        if reason is not None:
+            self.record_failed_circuit(hops, reason)
 
     def record_failed_circuit(self, hops, reason):
         """
@@ -73,14 +91,18 @@ class Statistics(object):
 
             log.debug("Circuit failed because: %s", str(circ_event.reason))
             self.failed_circuits += 1
-            hops = self.pending_circuits.pop(circ_event.id, None)
+            with self._lock:
+                hops = self.pending_circuits.pop(circ_event.id, None)
+                if hops is None:
+                    self._early_failed[circ_event.id] = str(circ_event.reason)
             if hops is not None:
                 self.record_failed_circuit(hops, circ_event.reason)
 
         elif circ_event.status in [CircStatus.BUILT]:
 
             self.successful_circuits += 1
-            self.pending_circuits.pop(circ_event.id, None)
+            with self._lock:
+                self.pending_circuits.pop(circ_event.id, None)
 
     def print_progress(self, sampling=50):
         """
