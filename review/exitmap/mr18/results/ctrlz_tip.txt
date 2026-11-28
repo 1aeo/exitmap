@@ -1,0 +1,9 @@
+tip {"trial": 0, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 0, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 1, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 0, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 2, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 0, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 3, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 4, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 0, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 5, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 6, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 1, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip {"trial": 7, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 0, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip: second module ran all 10 probes in 2 of 8 runs; probes of the second module per run: [0, 0, 0, 10, 0, 10, 1, 0]

@@ -1,0 +1,48 @@
+tip r551 {"trial": 0, "status": 0, "probes": 7, "invoked": 7, "built_events": 7, "closed": 7, "terminated": 0, "last_counts": [["4", "6", "10", "6"]]}
+    circ 1 at 0.244 exit 0036FA36: invoked=1 probed=1 closed=True
+    circ 3 at 2.247 exit 003A08F1: invoked=1 probed=1 closed=True
+    circ 4 at 3.248 exit 02357911: invoked=1 probed=1 closed=True
+    circ 6 at 5.251 exit 034ED155: invoked=1 probed=1 closed=True
+    circ 7 at 6.252 exit 02F4FB08: invoked=1 probed=1 closed=True
+    circ 8 at 7.254 exit 0138DDE9: invoked=1 probed=1 closed=True
+    circ 9 at 8.255 exit 0165267F: invoked=1 probed=1 closed=True
+tip r551 {"trial": 1, "status": 0, "probes": 7, "invoked": 7, "built_events": 7, "closed": 7, "terminated": 0, "last_counts": [["4", "6", "10", "6"]]}
+    circ 1 at 0.240 exit 0138DDE9: invoked=1 probed=1 closed=True
+    circ 3 at 2.243 exit 0077640E: invoked=1 probed=1 closed=True
+    circ 4 at 3.244 exit 034ED155: invoked=1 probed=1 closed=True
+    circ 6 at 5.247 exit 0036FA36: invoked=1 probed=1 closed=True
+    circ 7 at 6.249 exit 0165267F: invoked=1 probed=1 closed=True
+    circ 8 at 7.250 exit 04749CD6: invoked=1 probed=1 closed=True
+    circ 9 at 8.251 exit 02357911: invoked=1 probed=1 closed=True
+tip r551 {"trial": 2, "status": 0, "probes": 7, "invoked": 7, "built_events": 7, "closed": 7, "terminated": 0, "last_counts": [["4", "6", "10", "6"]]}
+    circ 1 at 0.249 exit 02F4FB08: invoked=1 probed=1 closed=True
+    circ 3 at 2.252 exit 0077640E: invoked=1 probed=1 closed=True
+    circ 4 at 3.253 exit 0138DDE9: invoked=1 probed=1 closed=True
+    circ 6 at 5.256 exit 02357911: invoked=1 probed=1 closed=True
+    circ 7 at 6.257 exit 003A08F1: invoked=1 probed=1 closed=True
+    circ 8 at 7.258 exit 0165267F: invoked=1 probed=1 closed=True
+    circ 9 at 8.260 exit 034ED155: invoked=1 probed=1 closed=True
+mr18 r551 {"trial": 0, "status": 0, "probes": 6, "invoked": 6, "built_events": 7, "closed": 6, "terminated": 0, "last_counts": [["4", "6", "10", "6"]]}
+    circ 1 at 0.255 exit 0077640E: invoked=1 probed=1 closed=True
+    circ 3 at 2.258 exit 034ED155: invoked=1 probed=1 closed=True
+    circ 4 at 3.259 exit 003A08F1: invoked=1 probed=1 closed=True
+    circ 6 at 5.262 exit 04749CD6: invoked=1 probed=1 closed=True
+    circ 7 at 6.264 exit 0165267F: invoked=1 probed=1 closed=True
+    circ 8 at 7.265 exit 01432641: invoked=1 probed=1 closed=True
+    circ 9 at 8.267 exit 0036FA36: invoked=0 probed=0 closed=False
+mr18 r551 {"trial": 1, "status": 0, "probes": 6, "invoked": 6, "built_events": 7, "closed": 6, "terminated": 0, "last_counts": [["4", "6", "10", "6"]]}
+    circ 1 at 0.237 exit 003A08F1: invoked=1 probed=1 closed=True
+    circ 3 at 2.240 exit 0077640E: invoked=1 probed=1 closed=True
+    circ 4 at 3.241 exit 02357911: invoked=1 probed=1 closed=True
+    circ 6 at 5.244 exit 034ED155: invoked=1 probed=1 closed=True
+    circ 7 at 6.248 exit 0138DDE9: invoked=1 probed=1 closed=True
+    circ 8 at 7.247 exit 0165267F: invoked=1 probed=1 closed=True
+    circ 9 at 8.248 exit 02F4FB08: invoked=0 probed=0 closed=False
+mr18 r551 {"trial": 2, "status": 0, "probes": 6, "invoked": 6, "built_events": 7, "closed": 6, "terminated": 0, "last_counts": [["4", "6", "10", "6"]]}
+    circ 1 at 0.239 exit 01432641: invoked=1 probed=1 closed=True
+    circ 3 at 2.241 exit 04749CD6: invoked=1 probed=1 closed=True
+    circ 4 at 3.243 exit 034ED155: invoked=1 probed=1 closed=True
+    circ 6 at 5.246 exit 0036FA36: invoked=1 probed=1 closed=True
+    circ 7 at 6.247 exit 0165267F: invoked=1 probed=1 closed=True
+    circ 8 at 7.249 exit 0138DDE9: invoked=1 probed=1 closed=True
+    circ 9 at 8.250 exit 0077640E: invoked=0 probed=0 closed=False

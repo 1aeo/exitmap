@@ -1,0 +1,3 @@
+mr18           failed  lock held while late event ran: True  | late event counted while wait() was in its block: False | event thread stuck: False | counters after wait(): t1 f1 b0 s0 | module processes at shutdown: 0
+mr18           built   lock held while late event ran: True  | late event counted while wait() was in its block: False | event thread stuck: False | counters after wait(): t1 f1 b0 s0 | module processes at shutdown: 0
+mr18           report  lock held while late event ran: True  | late event counted while wait() was in its block: False | event thread stuck: False | counters after wait(): t1 f0 b1 s1 | module processes at shutdown: 0

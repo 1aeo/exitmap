@@ -1,0 +1,21 @@
+exitmap: /tmp/claude-0/-home-user-exitmap/92448343-b341-53a0-aabb-7f5db8db7077/scratchpad/new/mr0305-review/both
+stem:    1.8.3 in /tmp/claude-0/-home-user-exitmap/92448343-b341-53a0-aabb-7f5db8db7077/scratchpad/stem/amcheck/stem
+python:  3.13.18, /tmp/claude-0/-home-user-exitmap/92448343-b341-53a0-aabb-7f5db8db7077/scratchpad/venv/bin/python
+H_die_in_getinfo            exit 0 after  2.2s         probes=0
+H2_die_in_getinfo_wait      exit 0 after  1.5s         probes=0
+H3_getinfo_prompt_iter      exit 0 after  0.9s         probes=0
+AT_evt_prompt_wait          exit 0 after  0.8s         probes=0
+AT_evt_prompt_iter          exit 0 after  0.9s         probes=0
+AT_evt_hang_qr_blocked      exit 0 after  2.8s         probes=0
+H4_getinfo_hang_qr_blocked  exit 0 after  2.7s         probes=1
+CC_qr_prompt                exit 0 after  0.9s         probes=1
+GC_qr_prompt                exit 0 after  0.9s         probes=1
+AT_qr_prompt                exit 0 after  1.0s         probes=0
+CC_qr_hang_evt_blocked      exit 0 after  2.9s         probes=2
+GC_qr_hang_evt_blocked      exit 0 after  2.9s         probes=2
+AT_qr_hang_evt_blocked      exit 0 after  3.0s         probes=0
+F_die_creating              exit 0 after  2.4s         probes=3
+G_die_idle                  exit 0 after  4.6s         probes=3
+J_die_modules_running       exit 0 after  2.0s         probes=1
+Q_die_at_end                exit 0 after  2.3s         probes=5
+summary: 17 scenarios, 17 exits, 0 hangs

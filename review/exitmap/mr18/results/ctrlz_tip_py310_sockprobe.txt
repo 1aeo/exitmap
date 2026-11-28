@@ -1,0 +1,6 @@
+tip-py3.10-sockprobe {"trial": 0, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 1, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip-py3.10-sockprobe {"trial": 1, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 0, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip-py3.10-sockprobe {"trial": 2, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 2, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip-py3.10-sockprobe {"trial": 3, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 10, "gave_up": [], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip-py3.10-sockprobe {"trial": 4, "status": 0, "stopped": true, "boundmod": 10, "fakemod2": 1, "gave_up": [["0", "10"]], "summaries": [["1", "0", "10"], ["2", "0", "20"]]}
+tip-py3.10-sockprobe: second module ran all 10 probes in 1 of 5 runs; probes of the second module per run: [1, 0, 2, 10, 1]

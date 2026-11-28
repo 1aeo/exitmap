@@ -1,0 +1,1 @@
+bin/exitmap exits with status 0 after errors

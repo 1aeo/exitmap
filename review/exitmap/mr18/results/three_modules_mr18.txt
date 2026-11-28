@@ -1,0 +1,9 @@
+mr18          late_failed n=1 interleaved | m1 late t1 f1 b0 s0 | m2 ok | m3 start t3 f1 b1 s1: ok
+mr18          late_failed n=3 interleaved | m1 late t1 f1 b0 s0 | m2 ok | m3 start t7 f1 b3 s3: ok
+mr18          late_failed n=3 built-first | m1 late t1 f1 b0 s0 | m2 ok | m3 start t7 f1 b3 s3: ok
+mr18          late_built  n=1 interleaved | m1 late t1 f1 b0 s0 | m2 ok | m3 start t3 f1 b1 s1: ok
+mr18          late_built  n=3 interleaved | m1 late t1 f1 b0 s0 | m2 ok | m3 start t7 f1 b3 s3: ok
+mr18          late_built  n=3 built-first | m1 late t1 f1 b0 s0 | m2 ok | m3 start t7 f1 b3 s3: ok
+mr18          late_report n=1 interleaved | m1 late t1 f0 b1 s1 | m2 ok | m3 start t3 f0 b2 s2: ok
+mr18          late_report n=3 interleaved | m1 late t1 f0 b1 s1 | m2 ok | m3 start t7 f0 b4 s4: ok
+mr18          late_report n=3 built-first | m1 late t1 f0 b1 s1 | m2 ok | m3 start t7 f0 b4 s4: ok

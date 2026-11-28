@@ -1,0 +1,1 @@
+exitmap hangs or keeps creating circuits after the controller died

@@ -1,0 +1,14 @@
+Preserve non-zero exit status and exceptions in bin/exitmap
+
+bin/exitmap ignores the value returned by exitmap's main() and calls
+sys.exit(failed) inside its finally block, which also discards any
+exception that is being propagated at that point.  As a result, exitmap
+exits with status 0 even if, e.g., Tor's data directory has insecure
+permissions, the given first hop is not in the consensus, or Tor could
+not be launched.
+
+Use the value returned by main() as exit status and move sys.exit() out
+of the finally block.  Tor's data directory is still removed in all
+cases.
+
+Closes #69.
