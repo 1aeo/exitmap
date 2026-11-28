@@ -1,0 +1,8 @@
+upstream-d02f923: 9 runs, 27 probes
+  connection 2: 27 of 27 failed
+  even connections 4..30: 5 of 105 failed
+  odd connections (3..29; 1 except dnsfail): 0 of 129 failed
+candidate-fix: 8 runs, 24 probes
+  connection 2: 0 of 24 failed
+  even connections 4..30: 0 of 99 failed
+  odd connections (3..29; 1 except dnsfail): 0 of 120 failed

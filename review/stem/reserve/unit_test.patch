@@ -1,0 +1,49 @@
+--- a/test/unit/control/controller.py
++++ b/test/unit/control/controller.py
+@@ -5,6 +5,8 @@
+ 
+ import datetime
+ import io
++import socket
++import threading
+ import unittest
+ 
+ import stem.descriptor.router_status_entry
+@@ -747,6 +749,37 @@
+     self._emit_event(BW_EVENT)
+     self.bw_listener.assert_called_once_with(BW_EVENT)
+ 
++  def test_event_listener_request_when_disconnected(self):
++    """
++    Have tor close the connection while an event listener awaits a reply. Its
++    request should raise SocketClosed, rather than leave our reader and event
++    threads waiting for each other.
++    """
++
++    our_socket, tor_socket = socket.socketpair()
++    tor_socket.settimeout(5)
++    listener_raised = threading.Event()
++
++    def listener(event):
++      try:
++        self.controller.msg('GETINFO version')
++      except stem.SocketClosed:
++        listener_raised.set()
++
++    self.bw_listener.side_effect = listener
++
++    with patch('stem.socket.ControlSocket._make_socket', Mock(return_value = our_socket)):
++      self.controller.connect()
++
++    tor_socket.sendall(b'650 BW 15 25\r\n')
++    self.assertEqual(b'GETINFO version\r\n', tor_socket.recv(1024))
++
++    with self.controller.get_socket()._get_send_lock():
++      pass  # our listener is done sending, and now awaits its reply
++
++    tor_socket.close()
++    self.assertTrue(listener_raised.wait(5), 'event listener is still awaiting its reply')
++
+   @patch('stem.control.Controller.get_version', Mock(return_value = stem.version.Version('0.5.0.14')))
+   @patch('stem.control.Controller.msg', Mock(return_value = ControlMessage.from_str('250 OK\r\n')))
+   @patch('stem.control.Controller.add_event_listener', Mock())
