@@ -80,6 +80,9 @@ def send_queue(sock_name):
 class _Torsocket(socks.socksocket):
     def __init__(self, *args, **kwargs):
         super(_Torsocket, self).__init__(*args, **kwargs)
+        # PySocks shares this dict among all sockets.  Use a copy, or every
+        # new socket would wrap the ourneg() of the previous one.
+        self._proxy_negotiators = dict(self._proxy_negotiators)
         orig_neg = self._proxy_negotiators[2]  # This is the original function
 
         def ourneg(*args, **kwargs):
