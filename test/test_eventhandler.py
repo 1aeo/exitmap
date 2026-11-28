@@ -1,5 +1,6 @@
 """Unit tests for the eventhandler module."""
 
+import logging
 import sys
 from unittest.mock import Mock, patch
 
@@ -93,6 +94,37 @@ def test_wait_gives_up_on_silent_modules(handler, caplog):
     handler.stats.successful_circuits += 1
     handler.check_finished()
     assert not handler.finished_event.is_set()
+
+
+def test_nothing_counted_after_giving_up(handler, caplog):
+    exit_relay = "A" * 40
+    handler.exit_destinations[exit_relay] = set()
+    handler.stats.total_circuits = 5
+    handler.stats.failed_circuits = 1
+    handler.stats.successful_circuits = 2
+    handler.stats.finished_streams = 1
+    with patch.object(eventhandler.time, "monotonic", side_effect=[0, 300]):
+        with patch.object(handler.finished_event, "wait", return_value=False):
+            handler.wait()
+    # wait() counted two circuits as failed and one module process as
+    # finished.  Late events for the circuits and a late message from the
+    # module process change nothing.
+    for status in [CircStatus.FAILED, CircStatus.BUILT]:
+        circ_event = Mock(status=status,
+                          path=[("B" * 40, "foo"), (exit_relay, "bar")])
+        with patch.object(eventhandler.multiprocessing, "Process") as process:
+            handler.new_circuit(circ_event)
+        process.assert_not_called()
+    handler.queue.put(("23", None))
+    # shutdown() stops the thread reading from the queue only once it has
+    # read this message.
+    with caplog.at_level(logging.DEBUG):
+        handler.shutdown()
+    handler.controller.close_circuit.assert_called_once_with("23")
+    assert "IPC queue received shutdown signal." in caplog.messages
+    assert 3 == handler.stats.failed_circuits
+    assert 2 == handler.stats.successful_circuits
+    assert 2 == handler.stats.finished_streams
 
 
 def test_queue_reader_notes_messages(handler):
